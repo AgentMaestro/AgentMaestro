@@ -1,0 +1,141 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>AgentMaestro WebSocket Dev Test</title>
+    <style>
+      body {
+        font-family: monospace;
+        background: #0f172a;
+        color: #e2e8f0;
+        padding: 20px;
+      }
+
+      h2 {
+        margin-top: 40px;
+      }
+
+      input {
+        padding: 6px;
+        margin-right: 8px;
+        width: 420px;
+      }
+
+      button {
+        padding: 6px 10px;
+        margin-right: 8px;
+        cursor: pointer;
+      }
+
+      .log {
+        background: #1e293b;
+        padding: 12px;
+        height: 240px;
+        overflow-y: auto;
+        border: 1px solid #334155;
+        margin-top: 12px;
+        white-space: pre-wrap;
+        font-size: 13px;
+      }
+
+      .row {
+        margin-bottom: 12px;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>AgentMaestro WebSocket Dev Console</h1>
+
+    <!-- ================= WORKSPACE ================= -->
+    <h2>Workspace Stream</h2>
+    <div class="row">
+      <input id="workspaceId" placeholder="Workspace UUID" />
+      <button onclick="connectWorkspace()">Connect</button>
+      <button onclick="subscribeApprovals()">Subscribe Approvals</button>
+      <button onclick="pingWorkspace()">Ping</button>
+    </div>
+    <div id="workspaceLog" class="log"></div>
+
+    <!-- ================= RUN ================= -->
+    <h2>Run Stream</h2>
+    <div class="row">
+      <input id="runId" placeholder="Run UUID" />
+      <button onclick="connectRun()">Connect</button>
+      <button onclick="pingRun()">Ping</button>
+      <button onclick="requestSnapshot()">Snapshot</button>
+      <button onclick="cancelRun()">Cancel</button>
+    </div>
+    <div id="runLog" class="log"></div>
+
+    <!-- ================= SCRIPTS ================= -->
+    <script src="{% static 'ui/js/workspace_ws.js' %}"></script>
+    <script src="{% static 'ui/js/run_ws.js' %}"></script>
+    <script>
+      let workspaceWS = null;
+      let runWS = null;
+
+      function logTo(elId, message) {
+        const el = document.getElementById(elId);
+        el.textContent += message + "\n";
+        el.scrollTop = el.scrollHeight;
+      }
+
+      function wrapLogging(ws, logId) {
+        const origOnMessage = ws.onmessage;
+        ws.onmessage = (evt) => {
+          try {
+            const msg = JSON.parse(evt.data);
+            logTo(logId, JSON.stringify(msg, null, 2));
+          } catch (e) {
+            logTo(logId, evt.data);
+          }
+          if (typeof origOnMessage === "function") {
+            origOnMessage(evt);
+          }
+        };
+      }
+
+      // ===== Workspace =====
+      function connectWorkspace() {
+        const id = document.getElementById("workspaceId").value.trim();
+        if (!id) return alert("Workspace UUID required");
+        workspaceWS = AgentMaestroWS.connectWorkspace(id);
+        wrapLogging(workspaceWS, "workspaceLog");
+      }
+
+      function subscribeApprovals() {
+        if (!workspaceWS) return;
+        workspaceWS.send(JSON.stringify({ type: "cmd", cmd: "subscribe_approvals" }));
+      }
+
+      function pingWorkspace() {
+        if (!workspaceWS) return;
+        workspaceWS.send(JSON.stringify({ type: "cmd", cmd: "ping", data: { test: "workspace_ping" } }));
+      }
+
+      // ===== Run =====
+      function connectRun() {
+        const id = document.getElementById("runId").value.trim();
+        if (!id) return alert("Run UUID required");
+        runWS = AgentMaestroWS.connectRun(id);
+        wrapLogging(runWS, "runLog");
+      }
+
+      function pingRun() {
+        if (!runWS) return;
+        runWS.send(JSON.stringify({ type: "cmd", cmd: "ping", data: { test: "run_ping" } }));
+      }
+
+      function requestSnapshot() {
+        if (!runWS) return;
+        runWS.send(JSON.stringify({ type: "cmd", cmd: "request_snapshot", since_seq: 0 }));
+      }
+
+      function cancelRun() {
+        if (!runWS) return;
+        runWS.send(JSON.stringify({ type: "cmd", cmd: "cancel_run" }));
+      }
+    </script>
+  </body>
+</html>

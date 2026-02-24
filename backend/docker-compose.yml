@@ -1,0 +1,87 @@
+version: '3.9'
+
+services:
+  db:
+    image: postgres:17
+    container_name: agentmaestro-db
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-agentmaestro}
+      POSTGRES_USER: ${POSTGRES_USER:-agentmaestro}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-agentmaestro}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - agentmaestro_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-agentmaestro} -d ${POSTGRES_DB:-agentmaestro}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  redis:
+    image: redis:7
+    container_name: agentmaestro-redis
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - agentmaestro_redisdata:/data
+    command: ["redis-server", "--appendonly", "yes"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  web:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: agentmaestro-web
+    env_file:
+      - ./.env
+    environment:
+      DJANGO_SETTINGS_MODULE: ${DJANGO_SETTINGS_MODULE:-agentmaestro.settings.dev}
+      DATABASE_URL: ${DATABASE_URL:-postgresql://agentmaestro:agentmaestro@db:5432/agentmaestro}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      CHANNEL_LAYER_REDIS_URL: ${CHANNEL_LAYER_REDIS_URL:-redis://redis:6379/1}
+      CELERY_BROKER_URL: ${CELERY_BROKER_URL:-redis://redis:6379/2}
+      CELERY_RESULT_BACKEND: ${CELERY_RESULT_BACKEND:-redis://redis:6379/3}
+    volumes:
+      - ./backend:/app
+    ports:
+      - "${DJANGO_PORT:-8000}:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: >
+      sh -c "python manage.py migrate && python manage.py collectstatic --noinput || true && daphne -b 0.0.0.0 -p 8000 ${ASGI_APP:-agentmaestro.asgi:application}"
+
+  worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: agentmaestro-worker
+    env_file:
+      - ./.env
+    environment:
+      DJANGO_SETTINGS_MODULE: ${DJANGO_SETTINGS_MODULE:-agentmaestro.settings.dev}
+      DATABASE_URL: ${DATABASE_URL:-postgresql://agentmaestro:agentmaestro@db:5432/agentmaestro}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      CHANNEL_LAYER_REDIS_URL: ${CHANNEL_LAYER_REDIS_URL:-redis://redis:6379/1}
+      CELERY_BROKER_URL: ${CELERY_BROKER_URL:-redis://redis:6379/2}
+      CELERY_RESULT_BACKEND: ${CELERY_RESULT_BACKEND:-redis://redis:6379/3}
+    volumes:
+      - ./backend:/app
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: >
+      sh -c "celery -A ${CELERY_APP:-agentmaestro} worker -l ${CELERY_LOGLEVEL:-INFO} -Q ${CELERY_QUEUE:-default}"
+
+volumes:
+  agentmaestro_pgdata:
+  agentmaestro_redisdata:

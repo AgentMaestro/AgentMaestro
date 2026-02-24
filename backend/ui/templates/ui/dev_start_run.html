@@ -1,0 +1,129 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>AgentMaestro Dev Run Starter</title>
+    <style>
+      body {
+        font-family: "Inter", system-ui, sans-serif;
+        background: #0f172a;
+        color: #e2e8f0;
+        margin: 0;
+        padding: 40px;
+      }
+
+      .card {
+        background: #1e1b4b;
+        border-radius: 16px;
+        padding: 32px;
+        max-width: 640px;
+        margin: 0 auto;
+        box-shadow: 0 20px 60px rgba(15, 23, 42, 0.45);
+      }
+
+      h1 {
+        margin-top: 0;
+        font-size: 28px;
+      }
+
+      textarea {
+        width: 100%;
+        height: 120px;
+        border-radius: 10px;
+        border: 1px solid #334155;
+        background: #0f172a;
+        color: #e2e8f0;
+        padding: 12px;
+        font-family: inherit;
+        resize: vertical;
+      }
+
+      button {
+        border: none;
+        border-radius: 999px;
+        padding: 14px 24px;
+        font-size: 15px;
+        font-weight: 600;
+        background: #38bdf8;
+        color: #0f172a;
+        cursor: pointer;
+        transition: transform 0.15s ease, opacity 0.15s ease;
+      }
+
+      button:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+      }
+
+      button:not(:disabled):hover {
+        transform: translateY(-2px);
+      }
+
+      .status {
+        margin-top: 20px;
+        font-size: 14px;
+        color: #e2e8f0;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="card">
+      <h1>Start Run (Dev)</h1>
+      <p>Creates an AgentRun, enqueues Celery tick, and redirects you into the WS-driven run page.</p>
+
+      <label for="inputText">Initial Prompt</label>
+      <textarea id="inputText">Hello Maestro, what should I do?</textarea>
+
+      <div style="margin-top: 16px;">
+        <button id="startRunBtn">Start Run</button>
+      </div>
+
+      <p id="status" class="status">Awaiting action…</p>
+    </div>
+
+    <script>
+      function getCookie(name) {
+        const value = `; ${document.cookie}`;
+        const parts = value.split(`; ${name}=`);
+        if (parts.length === 2) return parts.pop().split(";").shift();
+        return "";
+      }
+
+      const statusEl = document.getElementById("status");
+      const startBtn = document.getElementById("startRunBtn");
+      const endpoint = "{% url 'ui:dev_start_run' %}";
+
+      async function startRun() {
+        const prompt = document.getElementById("inputText").value.trim();
+        if (!prompt) {
+          statusEl.textContent = "Please add an initial prompt before starting.";
+          return;
+        }
+        startBtn.disabled = true;
+        statusEl.textContent = "Creating run…";
+        try {
+          const resp = await fetch(endpoint, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "X-CSRFToken": getCookie("csrftoken"),
+            },
+            body: JSON.stringify({ input_text: prompt }),
+          });
+          if (!resp.ok) {
+            throw new Error("Server returned " + resp.status);
+          }
+          const payload = await resp.json();
+          statusEl.textContent = "Run created, redirecting…";
+          window.location.assign(payload.run_url);
+        } catch (error) {
+          statusEl.textContent = "Failed to start run: " + error.message;
+          startBtn.disabled = false;
+        }
+      }
+
+      startBtn.addEventListener("click", startRun);
+    </script>
+  </body>
+</html>

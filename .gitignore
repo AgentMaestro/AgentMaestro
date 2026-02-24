@@ -1,0 +1,100 @@
+# =========================================
+# Python
+# =========================================
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+*.pyd
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+backend/.venv/
+toolrunner/.venv/
+
+# =========================================
+# Django
+# =========================================
+*.log
+local_settings.py
+db.sqlite3
+db.sqlite3-journal
+media/
+staticfiles/
+backend/staticfiles/
+
+# =========================================
+# Environment variables / secrets
+# =========================================
+.env
+.env.*
+!.env.example
+
+# =========================================
+# Coverage / Testing
+# =========================================
+.coverage
+.coverage.*
+htmlcov/
+.pytest_cache/
+.tox/
+.mypy_cache/
+.dmypy.json
+
+# =========================================
+# Celery
+# =========================================
+celerybeat-schedule
+celerybeat.pid
+
+# =========================================
+# Redis
+# =========================================
+dump.rdb
+
+# =========================================
+# IDEs
+# =========================================
+
+# PyCharm
+.idea/
+*.iml
+
+# VS Code
+.vscode/
+
+# =========================================
+# OS Files
+# =========================================
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# =========================================
+# Docker
+# =========================================
+*.env
+docker-compose.override.yml
+
+# =========================================
+# Logs
+# =========================================
+logs/
+*.log
+
+# =========================================
+# Temporary files
+# =========================================
+tmp/
+temp/
+*.swp
+*.swo

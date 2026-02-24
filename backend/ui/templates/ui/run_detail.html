@@ -1,0 +1,110 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>AgentMaestro Run {{ run.id }}</title>
+    <style>
+      body {
+        font-family: "Inter", system-ui, sans-serif;
+        background: #050816;
+        color: #f8fafc;
+        margin: 0;
+        padding: 32px;
+      }
+
+      .card {
+        max-width: 960px;
+        margin: 0 auto;
+        border-radius: 20px;
+        background: radial-gradient(circle at top, rgba(14, 165, 233, 0.15), transparent 60%),
+          #0f172a;
+        padding: 32px;
+        box-shadow: 0 20px 50px rgba(2, 6, 23, 0.6);
+      }
+
+      h1 {
+        margin-bottom: 10px;
+      }
+
+      .meta {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+      }
+
+      .badge {
+        padding: 6px 12px;
+        border-radius: 999px;
+        background: #1d4ed8;
+        font-size: 13px;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+      }
+
+      .log {
+        margin-top: 24px;
+        background: rgba(148, 163, 184, 0.08);
+        border: 1px solid rgba(148, 163, 184, 0.2);
+        padding: 16px;
+        border-radius: 14px;
+        height: 360px;
+        overflow-y: auto;
+        font-family: "JetBrains Mono", "Space Mono", monospace;
+        font-size: 13px;
+        line-height: 1.5;
+      }
+
+      .log-entry {
+        margin-bottom: 6px;
+      }
+
+      .link {
+        text-decoration: none;
+        color: #38bdf8;
+        font-weight: 600;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="card">
+      <div class="meta">
+        <h1 style="margin: 0;">Run {{ run.id }}</h1>
+        <span class="badge" id="statusBadge">{{ run.status }}</span>
+      </div>
+      <p>Connected to <code>{{ run.workspace.name }}</code> · Agent <code>{{ run.agent.name }}</code></p>
+      <p><a class="link" href="{% url 'ui:dev_start_run' %}">Start another dev run</a></p>
+
+      <div class="log" id="eventLog"></div>
+    </div>
+
+    <script src="{% static 'ui/js/run_ws.js' %}"></script>
+    <script>
+      function logMessage(text) {
+        const log = document.getElementById("eventLog");
+        const entry = document.createElement("div");
+        entry.classList.add("log-entry");
+        entry.textContent = text;
+        log.prepend(entry);
+      }
+
+      const runId = "{{ run.id }}";
+      const runWS = window.AgentMaestroWS?.connectRun(runId);
+      if (runWS) {
+        runWS.addEventListener("message", (evt) => {
+          try {
+            const payload = JSON.parse(evt.data);
+            logMessage(JSON.stringify(payload, null, 2));
+            if (payload.event === "state_changed") {
+              document.getElementById("statusBadge").textContent = payload.data.to;
+            }
+          } catch (error) {
+            logMessage(evt.data);
+          }
+        });
+      } else {
+        logMessage("WebSocket helper unavailable. Ensure static JS is loaded.");
+      }
+    </script>
+  </body>
+</html>

@@ -1,0 +1,15 @@
+Django>=4.2,<5.0
+channels>=4.0
+daphne>=4.0
+psycopg[binary]>=3.1
+celery>=5.3
+redis>=5.0
+python-dotenv>=1.0
+dj-database-url>=2.1
+djangorestframework>=3.14
+pydantic>=2.0
+httpx>=0.25
+pytest>=7.0
+pytest-django>=4.5
+pytest-asyncio>=0.23
+channels-redis>=4.3
