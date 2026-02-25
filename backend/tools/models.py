@@ -75,6 +75,7 @@ class ToolCall(TimeStampedModel):
         default=Risk.SAFE,
     )
     requires_approval = models.BooleanField(default=False)
+    correlation_id = models.UUIDField(default=uuid.uuid4, db_index=True)
     status = models.CharField(
         max_length=12,
         choices=Status.choices,

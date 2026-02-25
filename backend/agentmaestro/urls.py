@@ -9,8 +9,7 @@ urlpatterns = [
     # UI app
     path("ui/", include(("ui.urls", "ui"), namespace="ui")),
 
-    # Future:
-    # path("api/", include("api.urls")),
+    path("api/", include(("api.urls", "api"), namespace="api")),
 ]
 
 

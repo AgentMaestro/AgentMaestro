@@ -52,25 +52,59 @@
     ws.send(JSON.stringify({ type: "cmd", cmd: "approve_tool_call", tool_call_id: toolCallId }));
   }
 
-  function sendCancelRun(ws, runId) {
-    if (!ws || ws.readyState !== WebSocket.OPEN) {
-      console.warn("[run_ws] WS not open.");
-      return;
-    }
-    ws.send(JSON.stringify({ type: "cmd", cmd: "cancel_run", run_id: runId }));
+function sendCancelRun(ws, runId) {
+  if (!ws || ws.readyState !== WebSocket.OPEN) {
+    console.warn("[run_ws] WS not open.");
+    return;
   }
+  ws.send(JSON.stringify({ type: "cmd", cmd: "cancel_run", run_id: runId }));
+}
 
-  function sendRetryRun(ws, runId) {
-    if (!ws || ws.readyState !== WebSocket.OPEN) {
-      console.warn("[run_ws] WS not open.");
-      return;
-    }
-    ws.send(JSON.stringify({ type: "cmd", cmd: "retry_run", run_id: runId }));
+function sendPauseRun(ws) {
+  if (!ws || ws.readyState !== WebSocket.OPEN) {
+    console.warn("[run_ws] WS not open.");
+    return;
   }
+  ws.send(JSON.stringify({ type: "cmd", cmd: "pause_run" }));
+}
 
-  window.AgentMaestroWS = window.AgentMaestroWS || {};
-  window.AgentMaestroWS.connectRun = connectRunWS;
-  window.AgentMaestroWS.approveToolCall = sendApproveToolCall;
-  window.AgentMaestroWS.cancelRun = sendCancelRun;
-  window.AgentMaestroWS.retryRun = sendRetryRun;
+function sendResumeRun(ws) {
+  if (!ws || ws.readyState !== WebSocket.OPEN) {
+    console.warn("[run_ws] WS not open.");
+    return;
+  }
+  ws.send(JSON.stringify({ type: "cmd", cmd: "resume_run" }));
+}
+
+function sendSpawnSubrun(ws, prompt, options = {}) {
+  if (!ws || ws.readyState !== WebSocket.OPEN) {
+    console.warn("[run_ws] WS not open.");
+    return;
+  }
+  const payload = { type: "cmd", cmd: "spawn_subrun" };
+  if (prompt) {
+    payload.input_text = prompt;
+  }
+  if (options && typeof options === "object" && Object.keys(options).length) {
+    payload.options = options;
+  }
+  ws.send(JSON.stringify(payload));
+}
+
+function sendRetryRun(ws, runId) {
+  if (!ws || ws.readyState !== WebSocket.OPEN) {
+    console.warn("[run_ws] WS not open.");
+    return;
+  }
+  ws.send(JSON.stringify({ type: "cmd", cmd: "retry_run", run_id: runId }));
+}
+
+window.AgentMaestroWS = window.AgentMaestroWS || {};
+window.AgentMaestroWS.connectRun = connectRunWS;
+window.AgentMaestroWS.approveToolCall = sendApproveToolCall;
+window.AgentMaestroWS.cancelRun = sendCancelRun;
+window.AgentMaestroWS.pauseRun = sendPauseRun;
+window.AgentMaestroWS.resumeRun = sendResumeRun;
+window.AgentMaestroWS.spawnSubrun = sendSpawnSubrun;
+window.AgentMaestroWS.retryRun = sendRetryRun;
 })();

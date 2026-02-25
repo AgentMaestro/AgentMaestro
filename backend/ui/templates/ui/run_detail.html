@@ -31,6 +31,117 @@
         display: inline-flex;
         align-items: center;
         gap: 8px;
+        flex-wrap: wrap;
+      }
+      .run-controls {
+        margin-top: 16px;
+        display: flex;
+        gap: 10px;
+        flex-wrap: wrap;
+      }
+
+      .spawn-control {
+        margin-top: 12px;
+        display: flex;
+        gap: 10px;
+        flex-wrap: wrap;
+        align-items: center;
+      }
+
+      .spawn-control input {
+        flex: 1;
+        min-width: 220px;
+        border-radius: 10px;
+        border: 1px solid #334155;
+        background: #0f172a;
+        color: #f8fafc;
+        padding: 8px 12px;
+        font-size: 13px;
+      }
+
+      .subrun-list {
+        margin-top: 12px;
+        border-radius: 14px;
+        border: 1px solid rgba(148, 163, 184, 0.3);
+        background: rgba(148, 163, 184, 0.06);
+        padding: 16px;
+        font-family: "JetBrains Mono", "Space Mono", monospace;
+        font-size: 13px;
+      }
+
+      .subrun-entry {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 8px 0;
+        border-bottom: 1px solid rgba(148, 163, 184, 0.2);
+      }
+
+      .subrun-entry:last-child {
+        border-bottom: none;
+      }
+
+      .archive-list {
+        margin-top: 16px;
+        border-radius: 14px;
+        border: 1px solid rgba(148, 163, 184, 0.3);
+        background: rgba(16, 185, 129, 0.08);
+        padding: 16px;
+        font-family: "JetBrains Mono", "Space Mono", monospace;
+        font-size: 13px;
+      }
+
+      .archive-entry {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 10px 0;
+        border-bottom: 1px solid rgba(148, 163, 184, 0.3);
+      }
+
+      .archive-entry:last-child {
+        border-bottom: none;
+      }
+
+      .archive-meta {
+        display: flex;
+        flex-direction: column;
+        gap: 3px;
+      }
+
+      .subrun-meta {
+        display: flex;
+        flex-direction: column;
+        gap: 3px;
+      }
+
+      .subrun-status {
+        font-size: 12px;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        color: #38bdf8;
+      }
+
+      .control-btn {
+        border: none;
+        padding: 8px 14px;
+        border-radius: 10px;
+        font-size: 13px;
+        font-weight: 600;
+        color: #0f172a;
+        background: #38bdf8;
+        cursor: pointer;
+        transition: transform 0.15s, box-shadow 0.15s;
+      }
+
+      .control-btn--danger {
+        background: #f87171;
+        color: #fff;
+      }
+
+      .control-btn:active {
+        transform: translateY(1px);
+        box-shadow: inset 0 0 5px rgba(15, 23, 42, 0.4);
       }
 
       .badge {
@@ -42,27 +153,91 @@
         letter-spacing: 0.08em;
       }
 
-      .log {
+      .link {
+        text-decoration: none;
+        color: #38bdf8;
+        font-weight: 600;
+      }
+
+      section {
         margin-top: 24px;
+      }
+
+      .table-wrapper {
+        overflow-x: auto;
+      }
+
+      .steps-table {
+        width: 100%;
+        border-collapse: collapse;
+        font-family: "JetBrains Mono", "Space Mono", monospace;
+        font-size: 13px;
+      }
+
+      .steps-table th,
+      .steps-table td {
+        border-bottom: 1px solid rgba(148, 163, 184, 0.3);
+        padding: 8px 12px;
+        text-align: left;
+      }
+
+      .steps-table th {
+        text-transform: uppercase;
+        font-size: 11px;
+        letter-spacing: 0.1em;
+        color: #94a3b8;
+      }
+
+      .log {
+        margin-top: 16px;
         background: rgba(148, 163, 184, 0.08);
-        border: 1px solid rgba(148, 163, 184, 0.2);
+        border: 1px solid rgba(148, 163, 184, 0.3);
         padding: 16px;
         border-radius: 14px;
-        height: 360px;
+        height: 320px;
         overflow-y: auto;
         font-family: "JetBrains Mono", "Space Mono", monospace;
         font-size: 13px;
         line-height: 1.5;
+        white-space: pre-wrap;
       }
 
       .log-entry {
         margin-bottom: 6px;
       }
+      .log-filter {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        margin-top: 12px;
+      }
 
-      .link {
-        text-decoration: none;
+      .log-filter input {
+        flex: 1;
+        min-width: 200px;
+        border-radius: 10px;
+        border: 1px solid #334155;
+        background: #0f172a;
+        color: #f8fafc;
+        padding: 8px 12px;
+        font-size: 13px;
+      }
+
+      .corr-pill {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        margin-left: 6px;
+        padding: 2px 8px;
+        border-radius: 999px;
+        background: rgba(14, 116, 144, 0.35);
         color: #38bdf8;
-        font-weight: 600;
+        font-size: 11px;
+        cursor: pointer;
+      }
+
+      .corr-pill:hover {
+        background: rgba(14, 116, 144, 0.6);
       }
     </style>
   </head>
@@ -71,40 +246,370 @@
       <div class="meta">
         <h1 style="margin: 0;">Run {{ run.id }}</h1>
         <span class="badge" id="statusBadge">{{ run.status }}</span>
+        <span>Connected to <code>{{ run.workspace.name }}</code> · Agent <code>{{ run.agent.name }}</code></span>
+        <a class="link" href="{% url 'ui:dev_start_run' %}">Start another dev run</a>
       </div>
-      <p>Connected to <code>{{ run.workspace.name }}</code> · Agent <code>{{ run.agent.name }}</code></p>
-      <p><a class="link" href="{% url 'ui:dev_start_run' %}">Start another dev run</a></p>
 
-      <div class="log" id="eventLog"></div>
+      <div class="run-controls">
+        <button id="pauseRunBtn" class="control-btn">Pause Run</button>
+        <button id="resumeRunBtn" class="control-btn">Resume Run</button>
+        <button id="cancelRunBtn" class="control-btn control-btn--danger">Cancel Run</button>
+      </div>
+
+      <div class="spawn-control">
+        <input id="childPrompt" placeholder="Child run prompt (optional)" />
+        <button id="spawnSubrunBtn" class="control-btn">Spawn Subrun</button>
+      </div>
+
+      <section>
+        <h2>Subruns</h2>
+        <div id="subrunTree" class="subrun-list">
+          <p>No subruns yet.</p>
+        </div>
+      </section>
+
+      <section>
+        <h2>Run Archives</h2>
+        <div class="archive-list">
+          {% if run_archives %}
+            {% for archive in run_archives %}
+              <div class="archive-entry">
+                <div class="archive-meta">
+                  <strong>{{ archive.created_at }}</strong>
+                  <span>{{ archive.summary.steps }} steps · {{ archive.summary.events }} events</span>
+                  {% if archive.notes %}
+                    <em>{{ archive.notes }}</em>
+                  {% endif %}
+                </div>
+                <a
+                  class="link"
+                  href="{% url 'ui:run_archive_download' run_id=run.id archive_id=archive.id %}"
+                  >Download bundle</a
+                >
+              </div>
+            {% endfor %}
+          {% else %}
+            <p>No archives yet.</p>
+          {% endif %}
+        </div>
+      </section>
+
+      <section>
+        <h2>Steps</h2>
+        <div class="table-wrapper">
+          <table class="steps-table">
+            <thead>
+              <tr>
+                <th>Index</th>
+                <th>Kind</th>
+                <th>Payload</th>
+                <th>Created</th>
+              </tr>
+            </thead>
+            <tbody id="stepsBody"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section>
+        <h2>Event Log</h2>
+        <div class="log-filter">
+          <input id="eventCorrelationFilter" placeholder="Filter by correlation ID" />
+          <button id="clearCorrelationFilter" class="control-btn">Show all</button>
+        </div>
+        <div id="eventLog" class="log"></div>
+      </section>
     </div>
 
     <script src="{% static 'ui/js/run_ws.js' %}"></script>
     <script>
-      function logMessage(text) {
-        const log = document.getElementById("eventLog");
-        const entry = document.createElement("div");
-        entry.classList.add("log-entry");
-        entry.textContent = text;
-        log.prepend(entry);
+      const runId = "{{ run.id }}";
+      const snapshotUrl = "{% url 'ui:run_snapshot' run_id=run.id %}";
+      const stepsBody = document.getElementById("stepsBody");
+      const eventLog = document.getElementById("eventLog");
+      const statusBadge = document.getElementById("statusBadge");
+      const pauseBtn = document.getElementById("pauseRunBtn");
+      const resumeBtn = document.getElementById("resumeRunBtn");
+      const cancelBtn = document.getElementById("cancelRunBtn");
+      const childTree = document.getElementById("subrunTree");
+      const childPrompt = document.getElementById("childPrompt");
+      const spawnSubrunBtn = document.getElementById("spawnSubrunBtn");
+      const correlationFilterInput = document.getElementById("eventCorrelationFilter");
+      const clearCorrelationFilterBtn = document.getElementById("clearCorrelationFilter");
+      const eventEntries = [];
+      let eventCorrelationFilter = "";
+      let runWS = null;
+      const childRuns = new Map();
+
+      const CONTROL_STATES = {
+        pause: new Set(["RUNNING"]),
+        resume: new Set(["PAUSED", "WAITING_FOR_APPROVAL"]),
+        cancel: new Set([
+          "PENDING",
+          "RUNNING",
+          "WAITING_FOR_APPROVAL",
+          "WAITING_FOR_TOOL",
+          "WAITING_FOR_SUBRUN",
+          "WAITING_FOR_USER",
+          "PAUSED",
+        ]),
+      };
+
+      const FINAL_STATES = new Set(["COMPLETED", "FAILED", "CANCELED"]);
+
+      function updateControlStates(status) {
+        if (!pauseBtn || !resumeBtn || !cancelBtn) return;
+        pauseBtn.disabled = !CONTROL_STATES.pause.has(status);
+        resumeBtn.disabled = !CONTROL_STATES.resume.has(status);
+        cancelBtn.disabled = FINAL_STATES.has(status) || !CONTROL_STATES.cancel.has(status);
       }
 
-      const runId = "{{ run.id }}";
-      const runWS = window.AgentMaestroWS?.connectRun(runId);
-      if (runWS) {
-        runWS.addEventListener("message", (evt) => {
+      function setStatus(status) {
+        statusBadge.textContent = status;
+        updateControlStates(status);
+      }
+
+      function normalizeChild(child) {
+        return {
+          id: child.id,
+          status: child.status,
+          agent_name: child.agent__name || child.agent_name || "Subrun",
+          created_at: child.created_at,
+          started_at: child.started_at,
+          ended_at: child.ended_at,
+          input_text: child.input_text,
+          current_step_index: child.current_step_index,
+        };
+      }
+
+      function formatTimestamp(ts) {
+        if (!ts) return "—";
+        return new Date(ts).toLocaleString();
+      }
+
+      function renderChildTree() {
+        if (!childTree) return;
+        childTree.innerHTML = "";
+        if (!childRuns.size) {
+          childTree.innerHTML = "<p>No subruns yet.</p>";
+          return;
+        }
+        childRuns.forEach((child) => {
+          const row = document.createElement("div");
+          row.className = "subrun-entry";
+          row.innerHTML = `
+            <div class="subrun-meta">
+              <strong>${child.agent_name}</strong>
+              <span>${child.input_text || "Child run"}</span>
+              <span>Started: ${formatTimestamp(child.started_at)}</span>
+              <span>Ended: ${formatTimestamp(child.ended_at)}</span>
+            </div>
+            <div class="subrun-status">${child.status}</div>
+          `;
+          childTree.appendChild(row);
+        });
+      }
+
+      function updateChildMapFromSnapshot(children = []) {
+        childRuns.clear();
+        children.forEach((child) => {
+          childRuns.set(child.id, normalizeChild(child));
+        });
+        renderChildTree();
+      }
+
+      function addOrUpdateChild(child) {
+        const existing = childRuns.get(child.id) || {};
+        childRuns.set(child.id, { ...existing, ...normalizeChild(child) });
+        renderChildTree();
+      }
+
+      function handleSubrunSpawned(data) {
+        if (!data?.child_run_id) return;
+        addOrUpdateChild({
+          id: data.child_run_id,
+          status: data.status,
+          input_text: data.input_text,
+        });
+      }
+
+      function handleSubrunCompleted(data) {
+        if (!data?.child_run_id) return;
+        const existing = childRuns.get(data.child_run_id) || {};
+        addOrUpdateChild({
+          ...existing,
+          id: data.child_run_id,
+          status: data.child_status,
+          ended_at: data.ended_at,
+        });
+      }
+
+      function spawnChildRun() {
+        if (!runWS) {
+          logEvent({ event: "control_error", data: { message: "Not connected to run stream" } });
+          return;
+        }
+        const prompt = childPrompt?.value?.trim();
+        window.AgentMaestroWS.spawnSubrun(runWS, prompt);
+        if (childPrompt) {
+          childPrompt.value = "";
+        }
+      }
+
+      function renderSteps(steps) {
+        stepsBody.innerHTML = "";
+        steps.forEach((step) => {
+          const row = document.createElement("tr");
+          row.innerHTML = `
+            <td>${step.step_index}</td>
+            <td>${step.kind}</td>
+            <td><pre>${JSON.stringify(step.payload, null, 2)}</pre></td>
+            <td>${new Date(step.created_at).toLocaleString()}</td>
+          `;
+          stepsBody.appendChild(row);
+        });
+      }
+
+      function normalizeEvent(entry) {
+        const data = entry.data ?? entry.payload ?? {};
+        const correlationId = data?.correlation_id ?? entry.correlation_id;
+        return {
+          seq: entry.seq,
+          event: entry.event ?? entry.event_type ?? "event",
+          data,
+          correlation_id: correlationId,
+        };
+      }
+
+      function renderLogEntry(entry) {
+        const div = document.createElement("div");
+        div.classList.add("log-entry");
+        div.textContent = `[seq ${entry.seq ?? "?"}] ${entry.event}: ${JSON.stringify(entry.data ?? {}, null, 2)}`;
+        if (entry.correlation_id) {
+          const pill = document.createElement("span");
+          pill.className = "corr-pill";
+          pill.textContent = entry.correlation_id;
+          pill.addEventListener("click", () => setCorrelationFilter(entry.correlation_id));
+          div.appendChild(document.createTextNode(" "));
+          div.appendChild(pill);
+        }
+        return div;
+      }
+
+      function renderEventLog() {
+        if (!eventLog) return;
+        eventLog.innerHTML = "";
+        const entries = eventCorrelationFilter
+          ? eventEntries.filter((entry) => entry.correlation_id === eventCorrelationFilter)
+          : eventEntries;
+        entries.forEach((entry) => {
+          eventLog.appendChild(renderLogEntry(entry));
+        });
+      }
+
+      function setCorrelationFilter(value) {
+        eventCorrelationFilter = (value || "").trim();
+        if (correlationFilterInput && correlationFilterInput.value !== eventCorrelationFilter) {
+          correlationFilterInput.value = eventCorrelationFilter;
+        }
+        renderEventLog();
+      }
+
+      function logEvent(entry) {
+        const normalized = normalizeEvent(entry);
+        eventEntries.unshift(normalized);
+        renderEventLog();
+      }
+
+      async function initSnapshot() {
+        try {
+          const response = await fetch(snapshotUrl);
+          if (!response.ok) throw new Error("Snapshot request failed");
+          const snapshot = await response.json();
+          setStatus(snapshot.run.status);
+          renderSteps(snapshot.steps);
+          updateChildMapFromSnapshot(snapshot.child_runs);
+          snapshot.events_since_seq.forEach((evt) => logEvent(evt));
+        } catch (error) {
+          logEvent({ event: "snapshot_error", data: { message: error.message } });
+        }
+      }
+
+      function handlePayload(payload) {
+        logEvent(payload);
+        if (payload.event === "state_changed" && payload.data?.to) {
+          setStatus(payload.data.to);
+        }
+        if (payload.event === "step_appended") {
+          const step = payload.data;
+          const row = document.createElement("tr");
+          row.innerHTML = `
+            <td>${step.step_index}</td>
+            <td>${step.kind}</td>
+            <td><pre>${JSON.stringify(step.payload, null, 2)}</pre></td>
+            <td>${new Date().toLocaleString()}</td>
+          `;
+          stepsBody.appendChild(row);
+        }
+        if (payload.event === "subrun_spawned") {
+          handleSubrunSpawned(payload.data);
+        }
+        if (payload.event === "subrun_completed") {
+          handleSubrunCompleted(payload.data);
+        }
+      }
+
+      function connectRun() {
+        runWS = window.AgentMaestroWS?.connectRun(runId);
+        if (!runWS) {
+          logEvent({ event: "ws_error", data: { message: "WebSocket helper unavailable" } });
+          return;
+        }
+        runWS.addEventListener("message", (event) => {
           try {
-            const payload = JSON.parse(evt.data);
-            logMessage(JSON.stringify(payload, null, 2));
-            if (payload.event === "state_changed") {
-              document.getElementById("statusBadge").textContent = payload.data.to;
-            }
+            const payload = JSON.parse(event.data);
+            handlePayload(payload);
           } catch (error) {
-            logMessage(evt.data);
+            logEvent({ event: "ws_parse_error", data: { raw: event.data } });
           }
         });
-      } else {
-        logMessage("WebSocket helper unavailable. Ensure static JS is loaded.");
       }
+
+      function pauseCurrentRun() {
+        if (!runWS) {
+          logEvent({ event: "control_error", data: { message: "Not connected to run stream" } });
+          return;
+        }
+        window.AgentMaestroWS.pauseRun(runWS);
+      }
+
+      function resumeCurrentRun() {
+        if (!runWS) {
+          logEvent({ event: "control_error", data: { message: "Not connected to run stream" } });
+          return;
+        }
+        window.AgentMaestroWS.resumeRun(runWS);
+      }
+
+      function cancelCurrentRun() {
+        if (!runWS) {
+          logEvent({ event: "control_error", data: { message: "Not connected to run stream" } });
+          return;
+        }
+        window.AgentMaestroWS.cancelRun(runWS, runId);
+      }
+
+      pauseBtn?.addEventListener("click", pauseCurrentRun);
+      resumeBtn?.addEventListener("click", resumeCurrentRun);
+      cancelBtn?.addEventListener("click", cancelCurrentRun);
+      spawnSubrunBtn?.addEventListener("click", spawnChildRun);
+      correlationFilterInput?.addEventListener("input", (event) => {
+        setCorrelationFilter(event.target.value);
+      });
+      clearCorrelationFilterBtn?.addEventListener("click", () => setCorrelationFilter(""));
+
+      initSnapshot();
+      connectRun();
     </script>
   </body>
 </html>

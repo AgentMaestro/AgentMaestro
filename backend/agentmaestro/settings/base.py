@@ -10,6 +10,7 @@ For the full list of settings and their values, see
 https://docs.djangoproject.com/en/4.2/ref/settings/
 """
 
+from datetime import timedelta
 from pathlib import Path
 import os
 import dj_database_url
@@ -22,13 +23,12 @@ BASE_DIR = Path(__file__).resolve().parent.parent.parent
 # See https://docs.djangoproject.com/en/4.2/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = 'django-insecure-eb)3wplkkck+@9l3iguv==+n9rs)rx8@q5+d#6=m7&6ul65)go'
+SECRET_KEY = os.getenv('DJANGO_SECRET_KEY', 'dev-secret-key')
 
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
-ALLOWED_HOSTS = []
-
+ALLOWED_HOSTS = ['http://127.0.0.1', 'localhost', '127.0.0.1', 'testserver']
 
 # Application definition
 
@@ -51,10 +51,12 @@ INSTALLED_APPS = [
     'tools',
     'ui',
     'integrations',
+    'api',
 ]
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
+    'whitenoise.middleware.WhiteNoiseMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
@@ -141,11 +143,40 @@ USE_TZ = True
 
 STATIC_URL = 'static/'
 STATIC_ROOT = BASE_DIR / "staticfiles"
+STATICFILES_STORAGE = 'whitenoise.storage.CompressedStaticFilesStorage'
 
 # Default primary key field type
 # https://docs.djangoproject.com/en/4.2/ref/settings/#default-auto-field
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
-CELERY_BROKER_URL=os.getenv("CELERY_BROKER_URL", "redis://127.0.0.1:6379/0")
-BROKER_URL=CELERY_BROKER_URL
+CELERY_BROKER_URL = os.getenv("CELERY_BROKER_URL", "redis://127.0.0.1:6379/0")
+BROKER_URL = CELERY_BROKER_URL
+
+AGENTMAESTRO_ARCHIVE_RETENTION_DAYS = int(os.getenv("AGENTMAESTRO_ARCHIVE_RETENTION_DAYS", "30"))
+AGENTMAESTRO_ARCHIVE_INTERVAL_HOURS = int(os.getenv("AGENTMAESTRO_ARCHIVE_INTERVAL_HOURS", "6"))
+AGENTMAESTRO_ARCHIVE_LIMIT = int(os.getenv("AGENTMAESTRO_ARCHIVE_LIMIT", "25"))
+AGENTMAESTRO_ARCHIVE_COMPACT_EVENTS = os.getenv("AGENTMAESTRO_ARCHIVE_COMPACT_EVENTS", "true").lower() in {
+    "1",
+    "true",
+    "yes",
+}
+
+AGENTMAESTRO_RECONCILE_INTERVAL = int(os.getenv("AGENTMAESTRO_RECONCILE_INTERVAL", "30"))
+
+CELERY_BEAT_SCHEDULE = {
+    "runs.reconcile_waiting_subruns": {
+        "task": "runs.tasks.reconcile_waiting_subruns",
+        "schedule": timedelta(seconds=AGENTMAESTRO_RECONCILE_INTERVAL),
+    },
+    "runs.archive_completed_runs": {
+        "task": "runs.tasks.archive_completed_runs",
+        "schedule": timedelta(hours=AGENTMAESTRO_ARCHIVE_INTERVAL_HOURS),
+    },
+}
+
+AGENTMAESTRO_TOOLRUNNER_URL = os.getenv("AGENTMAESTRO_TOOLRUNNER_URL", "http://127.0.0.1:8001/v1/execute")
+AGENTMAESTRO_TOOLRUNNER_SECRET = os.getenv("AGENTMAESTRO_TOOLRUNNER_SECRET", "insecure-toolrunner")
+AGENTMAESTRO_TOOLRUNNER_TIMEOUT = int(os.getenv("AGENTMAESTRO_TOOLRUNNER_TIMEOUT", "30"))
+AGENTMAESTRO_TOOLRUNNER_OUTPUT_LIMIT = int(os.getenv("AGENTMAESTRO_TOOLRUNNER_OUTPUT_LIMIT", "4096"))
+AGENTMAESTRO_TOOLRUNNER_HTTP_TIMEOUT = int(os.getenv("AGENTMAESTRO_TOOLRUNNER_HTTP_TIMEOUT", "45"))

@@ -8,7 +8,8 @@ from django.db import connections, transaction
 from agents.models import Agent
 from core.models import Workspace, WorkspaceMembership
 from runs.models import AgentRun, AgentStep, RunEvent
-from runs.services.ticker import RunTickLocked, run_tick
+from runs.services.recovery import RunTickLocked
+from runs.services.ticker import run_tick
 
 
 def _make_run(name_suffix: str) -> AgentRun:
@@ -54,7 +55,33 @@ def test_run_tick_progresses_status_and_records_steps_and_events():
     assert RunEvent.objects.filter(run=run).count() == 4
 
     event_types = list(RunEvent.objects.filter(run=run).order_by("seq").values_list("event_type", flat=True))
-    assert event_types == ["state_changed", "step_appended", "step_appended", "state_changed"]
+    assert event_types == ["state_changed", "step_created", "step_created", "state_changed"]
+
+
+@pytest.mark.django_db(transaction=True)
+def test_run_tick_waits_for_approval():
+    run = _make_run("waiting")
+    run.status = AgentRun.Status.WAITING_FOR_APPROVAL
+    run.save(update_fields=["status", "updated_at"])
+
+    result = run_tick(run_id=str(run.id))
+    run.refresh_from_db()
+
+    assert result["action"] == "waiting_for_approval"
+    assert run.status == AgentRun.Status.WAITING_FOR_APPROVAL
+
+
+@pytest.mark.django_db(transaction=True)
+def test_run_tick_waits_for_subrun():
+    run = _make_run("waiting_subrun")
+    run.status = AgentRun.Status.WAITING_FOR_SUBRUN
+    run.save(update_fields=["status", "updated_at"])
+
+    result = run_tick(run_id=str(run.id))
+    run.refresh_from_db()
+
+    assert result["action"] == "waiting_for_subrun"
+    assert run.status == AgentRun.Status.WAITING_FOR_SUBRUN
 
 
 @pytest.mark.django_db(transaction=True)

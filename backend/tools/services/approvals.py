@@ -12,6 +12,8 @@ from runs.services.events import (
 from runs.services.state import transition_run
 from runs.services.steps import append_step
 from tools.models import ToolCall
+from tools.services.execution import execute_tool_call
+from tools.services.quotas import acquire_tool_call_slots, release_tool_call_slots
 
 
 TOOL_CALL_REQUESTED_EVENT = "tool_call_requested"
@@ -59,7 +61,11 @@ def request_tool_call_approval(
         args=args or {},
         requires_approval=requires_approval,
         status=ToolCall.Status.PENDING if requires_approval else ToolCall.Status.APPROVED,
+        correlation_id=step.correlation_id,
     )
+
+    if requires_approval:
+        acquire_tool_call_slots(str(run.workspace_id), str(run.id), str(tool_call.id))
 
     append_event(
         run_id=run_id,
@@ -70,6 +76,7 @@ def request_tool_call_approval(
             "args": tool_call.args,
             "step_index": step.step_index,
         },
+        correlation_id=step.correlation_id,
     )
 
     if requires_approval:
@@ -84,6 +91,9 @@ def request_tool_call_approval(
                 "status": ToolCall.Status.PENDING,
             },
         )
+
+    if not requires_approval:
+        transaction.on_commit(lambda: execute_tool_call(str(tool_call.id)))
 
     return tool_call
 
@@ -113,6 +123,7 @@ def approve_tool_call(*, tool_call_id: str, user) -> ToolCall:
             "tool_call_id": str(tool_call.id),
             "approved_by": getattr(user, "username", None),
         },
+        correlation_id=tool_call.correlation_id,
     )
 
     transition_run(run_id=str(tool_call.run_id), new_status=AgentRun.Status.RUNNING)
@@ -127,5 +138,7 @@ def approve_tool_call(*, tool_call_id: str, user) -> ToolCall:
             "status": ToolCall.Status.APPROVED,
         },
     )
+
+    transaction.on_commit(lambda: execute_tool_call(str(tool_call.id)))
 
     return tool_call

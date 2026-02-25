@@ -18,6 +18,7 @@ class Agent(TimeStampedModel):
     default_model = models.CharField(max_length=80, default="gpt-5")
     temperature = models.DecimalField(max_digits=4, decimal_places=2, default=0.70)
     system_prompt = models.TextField()
+    policy_name = models.CharField(max_length=32, default="react")
     plan_enabled = models.BooleanField(default=False)
     tool_policy_json = models.JSONField(default=dict, blank=True)
     created_by = models.ForeignKey(

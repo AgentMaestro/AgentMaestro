@@ -7,12 +7,19 @@ from agentmaestro.asgi import application
 from agents.models import Agent
 from core.models import Workspace, WorkspaceMembership
 from django.contrib.auth import get_user_model
+from django.test import Client
 from runs.models import AgentRun, RunEvent
-from tools.models import ToolCall
+from tools.models import ToolCall, ToolDefinition
 from tools.services.approvals import (
     approve_tool_call,
     request_tool_call_approval,
 )
+
+
+def _session_cookie_for_user(user):
+    client = Client()
+    client.force_login(user)
+    return client.cookies["sessionid"].value
 
 
 def _setup_run(user_suffix: str):
@@ -28,6 +35,8 @@ def _setup_run(user_suffix: str):
         created_by=user,
     )
 
+    ToolDefinition.objects.create(workspace=workspace, name="search", enabled=True)
+
     return AgentRun.objects.create(
         workspace=workspace,
         agent=agent,
@@ -40,8 +49,13 @@ def _setup_run(user_suffix: str):
 @pytest.mark.asyncio
 @pytest.mark.django_db(transaction=True)
 async def test_request_tool_call_broadcasts_approval_event():
-    run, _ = await sync_to_async(_setup_run, thread_sensitive=True)("request")
-    communicator = WebsocketCommunicator(application, f"/ws/ui/workspace/?workspace_id={run.workspace_id}")
+    run, user = await sync_to_async(_setup_run, thread_sensitive=True)("request")
+    sessionid = await sync_to_async(_session_cookie_for_user)(user)
+    communicator = WebsocketCommunicator(
+        application,
+        f"/ws/ui/workspace/?workspace_id={run.workspace_id}",
+        headers=[(b"cookie", f"sessionid={sessionid}".encode())],
+    )
     connected, _ = await communicator.connect()
     assert connected
 
@@ -88,7 +102,12 @@ async def test_approve_tool_call_transitions_run_and_notifies():
     assert run.status == AgentRun.Status.WAITING_FOR_APPROVAL
     assert tool_call.status == ToolCall.Status.PENDING
 
-    communicator = WebsocketCommunicator(application, f"/ws/ui/workspace/?workspace_id={run.workspace_id}")
+    sessionid = await sync_to_async(_session_cookie_for_user)(user)
+    communicator = WebsocketCommunicator(
+        application,
+        f"/ws/ui/workspace/?workspace_id={run.workspace_id}",
+        headers=[(b"cookie", f"sessionid={sessionid}".encode())],
+    )
     connected, _ = await communicator.connect()
     assert connected
     await communicator.receive_json_from()

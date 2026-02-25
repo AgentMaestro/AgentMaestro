@@ -3,12 +3,19 @@ import pytest
 from asgiref.sync import sync_to_async
 from channels.testing import WebsocketCommunicator
 from django.contrib.auth import get_user_model
+from django.test import Client
 
 from agentmaestro.asgi import application
 from core.models import Workspace, WorkspaceMembership
 from agents.models import Agent
 from runs.models import AgentRun, RunEvent
 from runs.services.events import append_event
+
+
+def _session_cookie_for_user(user):
+    client = Client()
+    client.force_login(user)
+    return client.cookies["sessionid"].value
 
 
 @pytest.mark.django_db(transaction=True)
@@ -66,7 +73,7 @@ async def test_append_event_broadcasts_to_run_group():
     User = get_user_model()
 
     # MUST be sync, because sync_to_async only wraps sync functions.
-    def setup_db_sync() -> str:
+    def setup_db_sync() -> tuple[str, str]:
         user = User.objects.create_user(username="wsuser", password="x")
         ws = Workspace.objects.create(name="WS Workspace")
         WorkspaceMembership.objects.create(workspace=ws, user=user, role=WorkspaceMembership.Role.OWNER)
@@ -85,11 +92,16 @@ async def test_append_event_broadcasts_to_run_group():
             status=AgentRun.Status.PENDING,
             input_text="Hello",
         )
-        return str(run.id)
+        return str(run.id), user.username
+    run_id, username = await sync_to_async(setup_db_sync, thread_sensitive=True)()
+    worker = await sync_to_async(get_user_model().objects.get, thread_sensitive=True)(username=username)
+    sessionid = await sync_to_async(_session_cookie_for_user)(worker)
 
-    run_id = await sync_to_async(setup_db_sync, thread_sensitive=True)()
-
-    communicator = WebsocketCommunicator(application, f"/ws/ui/run/{run_id}/")
+    communicator = WebsocketCommunicator(
+        application,
+        f"/ws/ui/run/{run_id}/",
+        headers=[(b"cookie", f"sessionid={sessionid}".encode())],
+    )
     connected, _ = await communicator.connect()
     assert connected is True
 

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from typing import Any, Dict, Optional, Tuple
+from uuid import UUID, uuid4
 
 from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
@@ -38,6 +39,7 @@ def append_event(
     broadcast_to_run: bool = True,
     broadcast_to_workspace: bool = False,
     workspace_summary_event: str = "run_event",
+    correlation_id: Optional[UUID] = None,
 ) -> Tuple[RunEvent, int]:
     """
     Append a RunEvent with a DB-safe, per-run monotonically increasing seq.
@@ -65,11 +67,13 @@ def append_event(
     agg = RunEvent.objects.filter(run_id=run_id).aggregate(m=Max("seq"))
     next_seq = int((agg["m"] or 0) + 1)
 
+    resolved_correlation = correlation_id or uuid4()
     evt = RunEvent.objects.create(
         run_id=run_id,
         seq=next_seq,
         event_type=event_type,
         payload=payload or {},
+        correlation_id=resolved_correlation,
         created_at=timezone.now(),
         updated_at=timezone.now(),
     )
@@ -82,7 +86,7 @@ def append_event(
                 workspace_id=str(run.workspace_id),
                 seq=next_seq,
                 event=event_type,
-                data=payload or {},
+                data={**(payload or {}), "correlation_id": str(resolved_correlation)},
             )
 
         if broadcast_to_workspace:
@@ -94,6 +98,7 @@ def append_event(
                     "seq": next_seq,
                     "event_type": event_type,
                     "payload": payload or {},
+                    "correlation_id": str(resolved_correlation),
                 },
             )
 

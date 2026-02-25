@@ -23,15 +23,51 @@ RUN_FIELDS = [
     "max_tool_calls",
     "locked_by",
     "lock_expires_at",
+    "locked_at",
     "started_at",
     "ended_at",
     "error_summary",
+    "correlation_id",
     "created_at",
     "updated_at",
 ]
 
-STEP_FIELDS = ["id", "run_id", "step_index", "kind", "payload", "created_at", "updated_at"]
-EVENT_FIELDS = ["id", "run_id", "seq", "event_type", "payload", "created_at", "updated_at"]
+STEP_FIELDS = [
+    "id",
+    "run_id",
+    "step_index",
+    "kind",
+    "payload",
+    "correlation_id",
+    "created_at",
+    "updated_at",
+]
+EVENT_FIELDS = [
+    "id",
+    "run_id",
+    "seq",
+    "event_type",
+    "payload",
+    "correlation_id",
+    "created_at",
+    "updated_at",
+]
+CHILD_RUN_FIELDS = [
+    "id",
+    "status",
+    "started_at",
+    "ended_at",
+    "created_at",
+    "agent_id",
+    "current_step_index",
+    "agent__name",
+    "subrun_link__group_id",
+    "subrun_link__join_policy",
+    "subrun_link__quorum",
+    "subrun_link__timeout_seconds",
+    "subrun_link__failure_policy",
+    "correlation_id",
+]
 
 
 def _serialize_value(value: Any) -> Any:
@@ -72,8 +108,15 @@ def get_run_snapshot(run_id: str, since_seq: Optional[int] = None) -> Dict[str, 
         events_qs = events_qs.filter(seq__gt=since_seq)
     events_qs = events_qs.order_by("seq").values(*EVENT_FIELDS)
 
+    child_runs_qs = (
+        AgentRun.objects.filter(parent_run_id=run_id)
+        .order_by("created_at")
+        .values(*CHILD_RUN_FIELDS)
+    )
+
     return {
         "run": _serialize(run_record),
         "steps": _serialize_queryset(steps_qs),
         "events_since_seq": _serialize_queryset(events_qs),
+        "child_runs": _serialize_queryset(child_runs_qs),
     }

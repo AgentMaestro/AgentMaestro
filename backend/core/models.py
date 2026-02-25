@@ -56,3 +56,34 @@ class WorkspaceMembership(TimeStampedModel):
 
     def __str__(self):
         return f"{self.workspace} - {self.user} ({self.role})"
+
+
+class UserActionLog(TimeStampedModel):
+    ACTION_CHOICES = (
+        ("spawn_subrun", "Subrun Spawn"),
+        ("approve_tool_call", "Tool Call Approval"),
+    )
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="action_logs",
+    )
+    workspace = models.ForeignKey(
+        Workspace,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="action_logs",
+    )
+    action = models.CharField(max_length=32, choices=ACTION_CHOICES)
+    details = models.JSONField(default=dict, blank=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["user", "action", "created_at"]),
+        ]
+
+    def __str__(self):
+        return f"{self.user} {self.action} @ {self.created_at.isoformat()}"

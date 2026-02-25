@@ -1,10 +1,12 @@
 # backend/runs/tests/test_append_event_on_commit.py
 import asyncio
 import pytest
+from asgiref.sync import sync_to_async
 from channels.db import database_sync_to_async
 from channels.testing import WebsocketCommunicator
 from django.contrib.auth import get_user_model
 from django.db import transaction
+from django.test import Client
 
 from agentmaestro.asgi import application
 from core.models import Workspace, WorkspaceMembership
@@ -13,19 +15,25 @@ from runs.models import AgentRun
 from runs.services.events import append_event
 
 
+def _session_cookie_for_user(user):
+    client = Client()
+    client.force_login(user)
+    return client.cookies["sessionid"].value
+
+
 @pytest.mark.asyncio
 @pytest.mark.django_db(transaction=True)
 async def test_append_event_does_not_broadcast_on_rollback():
     User = get_user_model()
 
     @database_sync_to_async
-    def setup_db() -> str:
+    def setup_db() -> tuple[str, str]:
         user = User.objects.create_user(username="rbuser", password="x")
         ws = Workspace.objects.create(name="Rollback WS")
         WorkspaceMembership.objects.create(workspace=ws, user=user, role=WorkspaceMembership.Role.OWNER)
         agent = Agent.objects.create(workspace=ws, name="A", system_prompt="x", created_by=user)
         run = AgentRun.objects.create(workspace=ws, agent=agent, started_by=user, input_text="x")
-        return str(run.id)
+        return str(run.id), user.username
 
     @database_sync_to_async
     def do_rollback(run_id: str) -> None:
@@ -41,9 +49,15 @@ async def test_append_event_does_not_broadcast_on_rollback():
         except RuntimeError:
             pass
 
-    run_id = await setup_db()
+    run_id, username = await setup_db()
+    user = await sync_to_async(get_user_model().objects.get, thread_sensitive=True)(username=username)
+    sessionid = await sync_to_async(_session_cookie_for_user)(user)
 
-    communicator = WebsocketCommunicator(application, f"/ws/ui/run/{run_id}/")
+    communicator = WebsocketCommunicator(
+        application,
+        f"/ws/ui/run/{run_id}/",
+        headers=[(b"cookie", f"sessionid={sessionid}".encode())],
+    )
     ok, _ = await communicator.connect()
     assert ok is True
 

@@ -26,10 +26,10 @@ while not done:
 
 This approach makes systems difficult to:
 
--   Inspect\
--   Resume\
--   Audit\
--   Scale safely\
+-   Inspect
+-   Resume
+-   Audit
+-   Scale safely
 -   Run in multi-tenant environments
 
 AgentMaestro takes a different approach.
@@ -40,12 +40,12 @@ recorded. All tool calls are tracked. All transitions are explicit.
 
 This design enables:
 
--   Reliable concurrency\
--   Safe cancellation\
--   Approval-gated execution\
--   Event replay\
--   Clear debugging\
--   Sub-agent orchestration\
+-   Reliable concurrency
+-   Safe cancellation
+-   Approval-gated execution
+-   Event replay
+-   Clear debugging
+-   Sub-agent orchestration
 -   Production-grade multi-user control
 
 ------------------------------------------------------------------------
@@ -58,7 +58,7 @@ Each run moves through explicit states:
 
     PENDING → RUNNING → WAITING_FOR_APPROVAL → RUNNING → COMPLETED
 
-Transitions are controlled by a clear decision table --- not hidden
+Transitions are controlled by a clear decision table—not hidden
 recursion.
 
 ------------------------------------------------------------------------
@@ -69,9 +69,9 @@ All agents, runs, and tool calls belong to a workspace.
 
 Designed for:
 
--   Multiple users\
--   Multiple agents\
--   Shared environments\
+-   Multiple users
+-   Multiple agents
+-   Shared environments
 -   Clear permission boundaries
 
 ------------------------------------------------------------------------
@@ -82,8 +82,8 @@ Tool execution is explicit and auditable.
 
 Risk levels:
 
--   SAFE\
--   ELEVATED\
+-   SAFE
+-   ELEVATED
 -   DANGEROUS
 
 Dangerous actions can require manual approval before execution.
@@ -94,9 +94,9 @@ Dangerous actions can require manual approval before execution.
 
 Every significant action generates a `RunEvent`.
 
--   Monotonic sequence numbers\
--   WebSocket streaming\
--   Replayable history\
+-   Monotonic sequence numbers
+-   WebSocket streaming
+-   Replayable history
 -   Live observability
 
 ------------------------------------------------------------------------
@@ -107,8 +107,8 @@ Runs can spawn sub-runs.
 
 Parent/child relationships are first-class, enabling:
 
--   Hierarchical workflows\
--   Coordinated multi-agent systems\
+-   Hierarchical workflows
+-   Coordinated multi-agent systems
 -   Controlled delegation
 
 ------------------------------------------------------------------------
@@ -127,10 +127,10 @@ Parent/child relationships are first-class, enabling:
 ### Components
 
 -   **Django** --- Control plane, state persistence, workspace
-    management\
--   **Channels** --- Real-time WebSocket streaming\
--   **PostgreSQL** --- Durable run + step history\
--   **Celery + Redis** --- Background orchestration ticks\
+    management
+-   **Channels** --- Real-time WebSocket streaming
+-   **PostgreSQL** --- Durable run + step history, agent memory
+-   **Celery + Redis** --- Background orchestration ticks
 -   **FastAPI Tool Runner** --- Sandboxed tool execution
 
 ------------------------------------------------------------------------
@@ -139,19 +139,19 @@ Parent/child relationships are first-class, enabling:
 
 Each run progresses through atomic "ticks":
 
-1.  `MODEL_CALL` step\
-2.  `TOOL_CALL` step (if requested)\
-3.  `OBSERVATION` step\
-4.  `MODEL_CALL` (repeat)\
+1.  `MODEL_CALL` step
+2.  `TOOL_CALL` step (if requested)
+3.  `OBSERVATION` step
+4.  `MODEL_CALL` (repeat)
 5.  `MESSAGE` step (completion)
 
 Every step is stored. Every transition is persisted.
 
 This allows:
 
--   Safe crash recovery\
--   Resume from mid-execution\
--   Deterministic debugging\
+-   Safe crash recovery
+-   Resume from mid-execution
+-   Deterministic debugging
 -   Concurrency control
 
 ------------------------------------------------------------------------
@@ -162,12 +162,12 @@ This allows:
 
 ### Planned Milestones
 
--   [ ] Workspace + multi-tenant foundation\
--   [ ] Deterministic run engine\
--   [ ] Tool registry + approval workflow\
--   [ ] Sub-agent orchestration\
--   [ ] Telegram integration\
--   [ ] Budget enforcement + quotas\
+-   [ ] Workspace + multi-tenant foundation
+-   [ ] Deterministic run engine
+-   [ ] Tool registry and approval workflow
+-   [ ] Sub-agent orchestration
+-   [ ] Telegram integration
+-   [ ] Budget enforcement and quotas
 -   [ ] Observability dashboard
 
 ------------------------------------------------------------------------
@@ -176,8 +176,7 @@ This allows:
 
 AgentMaestro is built on a simple belief:
 
-> AI reasoning may be probabilistic ---\
-> but orchestration should be deterministic.
+> AI reasoning may be probabilistic, but orchestration should be deterministic.
 
 Control flow should be explicit.\
 Execution should be inspectable.\
@@ -203,15 +202,15 @@ Planned stack:
 
 ## Contributing
 
-AgentMaestro is designed as a long-term open infrastructure project.
+AgentMaestro is designed as a long-term, open, infrastructure project.
 
 We welcome contributions in:
 
--   Orchestration logic\
--   Tool integrations\
--   Concurrency improvements\
--   Documentation\
--   UI enhancements\
+-   Orchestration logic
+-   Tool integrations
+-   Concurrency improvements
+-   Documentation
+-   UI enhancements
 -   Security reviews
 
 Please read `CONTRIBUTING.md` before submitting a PR.

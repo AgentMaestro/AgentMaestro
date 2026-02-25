@@ -1,0 +1,83 @@
+name: CI
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+
+jobs:
+  test-and-lint:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: agentmaestro
+          POSTGRES_USER: agentmaestro
+          POSTGRES_PASSWORD: agentmaestro
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U agentmaestro -d agentmaestro"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
+
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd="redis-cli ping"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
+
+    env:
+      # Django
+      DJANGO_SETTINGS_MODULE: agentmaestro.settings.dev
+      SECRET_KEY: ci-not-a-secret
+      DEBUG: "0"
+
+      # DB (adjust to match your settings module env usage)
+      DATABASE_URL: postgres://agentmaestro:agentmaestro@127.0.0.1:5432/agentmaestro
+
+      # Channels/Redis
+      USE_REDIS_CHANNEL_LAYER: "1"
+      CHANNEL_LAYER_REDIS_URL: redis://127.0.0.1:6379/1
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install backend deps
+        working-directory: backend
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Lint (ruff)
+        run: |
+          ruff check .
+
+      - name: Format check (black)
+        run: |
+          black --check .
+
+      - name: Django migrations check
+        working-directory: backend
+        run: |
+          python manage.py migrate --noinput
+
+      - name: Run tests
+        working-directory: backend
+        run: |
+          pytest -q

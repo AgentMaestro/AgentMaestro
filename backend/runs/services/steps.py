@@ -10,7 +10,11 @@ from runs.models import AgentRun, AgentStep
 
 @transaction.atomic
 def append_step(
-    run_id: str, *, kind: str, payload: Optional[Dict[str, Any]] = None
+    run_id: str,
+    *,
+    kind: str,
+    payload: Optional[Dict[str, Any]] = None,
+    correlation_id: Optional[str] = None,
 ) -> AgentStep:
     """
     Append an AgentStep to a run with an atomic, sequential step_index.
@@ -20,12 +24,14 @@ def append_step(
     run = AgentRun.objects.select_for_update().get(id=run_id)
 
     next_index = run.current_step_index + 1
+    resolved_correlation = correlation_id or run.correlation_id
 
     step = AgentStep.objects.create(
         run=run,
         step_index=next_index,
         kind=kind,
         payload=payload or {},
+        correlation_id=resolved_correlation,
     )
 
     run.current_step_index = next_index

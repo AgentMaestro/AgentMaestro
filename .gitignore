@@ -98,3 +98,20 @@ tmp/
 temp/
 *.swp
 *.swo
+
+# =========================================
+# Test folders
+# =========================================
+pytest_*
+.pytest_*
+**/pytest_*
+**/.pytest_*
+DevAgentMaestrotool*
+**/DevAgentMaestrotool*
+backend/DevAgentMaestrobackendpytest_temp/
+
+
+# =========================================
+# Codex personal files
+# =========================================
+AGENTS.md
