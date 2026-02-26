@@ -5,3 +5,4 @@ httpx==0.29.0
 python-multipart==0.0.6
 pytest==8.2.0
 pypatch==1.0.2
+jsonschema==4.22.1

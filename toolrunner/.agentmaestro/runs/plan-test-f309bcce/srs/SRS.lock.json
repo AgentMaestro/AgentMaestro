@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "updated_at": "2026-02-26T08:44:59.854170Z",
+  "locked_sections": {
+    "project_summary": {
+      "title": "Project Summary",
+      "content": "Executive summary.\n- Value proposition",
+      "sha256": "57a5e2cd0b5ebc297f32ce11b7ea0182dc0db02b711e2129516d566b0a0b9458",
+      "locked_at": "2026-02-26T08:44:59.842491Z"
+    },
+    "goals_non_goals": {
+      "title": "Goals and Non-Goals",
+      "content": "Goals and non-goals.\n- Goal 1\n- Non-goal A",
+      "sha256": "e8285192ea496425fae47205e45048572a863fbce9b2b1602ca3f8164efebd8f",
+      "locked_at": "2026-02-26T08:44:59.846491Z"
+    },
+    "functional_requirements": {
+      "title": "Functional Requirements",
+      "content": "- FR1\n- FR2\n- FR3\n- FR4",
+      "sha256": "8b15da1b646b2a6fc47fb71e3bdfda46c6976a25125f735c8e438838817c5860",
+      "locked_at": "2026-02-26T08:44:59.850731Z"
+    },
+    "acceptance_criteria": {
+      "title": "Acceptance Criteria / Definition of Done",
+      "content": "- AC1\n- AC2\n- AC3",
+      "sha256": "dca89c7cbf4b03d8e9d3d98c386b47ddb19695a2a0f00caa40044b6074abae61",
+      "locked_at": "2026-02-26T08:44:59.854170Z"
+    }
+  }
+}

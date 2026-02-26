@@ -64,15 +64,29 @@ def _ensure_backup(target: Path, run_dir: Path) -> Path:
 def _write_rejects(run_dir: Path, target: Path, patch_text: str) -> Path:
     rejects_dir = run_dir / REJECT_DIR / target.parent.relative_to(run_dir)
     rejects_dir.mkdir(parents=True, exist_ok=True)
-    rejects_path = rejects_dir / f"{target.name}.rej"
+    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    rejects_path = rejects_dir / f"{target.name}.{ts}.rej"
     rejects_path.write_text(patch_text)
     return rejects_path
 
 def _ensure_diff_header(patch_text: str, path: str) -> str:
-    stripped = patch_text.lstrip()
-    if stripped.startswith("diff "):
+    normalized = path.replace("\\", "/")
+    lines = patch_text.splitlines()
+    has_diff = any(line.startswith("diff ") for line in lines)
+    has_from = any(line.startswith("--- ") for line in lines)
+    has_to = any(line.startswith("+++ ") for line in lines)
+    header_lines: list[str] = []
+    if not has_diff:
+        header_lines.append(f"diff --git a/{normalized} b/{normalized}")
+    if not has_from:
+        header_lines.append(f"--- a/{normalized}")
+    if not has_to:
+        header_lines.append(f"+++ b/{normalized}")
+    if not header_lines:
         return patch_text
-    return f"diff --git a/{path} b/{path}\n{patch_text}"
+    prefix = "\n".join(header_lines)
+    suffix = "\n".join(lines)
+    return f"{prefix}\n{suffix}" if suffix else f"{prefix}\n"
 
 
 def _split_path_suffix(value: str) -> tuple[str, str]:
@@ -165,14 +179,27 @@ def _detect_strip_prefix(target_path: str, patch_text: str) -> int:
     return 0
 
 
-def _parse_patch_hunks(patch_text: str) -> list[PatchHunk]:
+def _normalize_path_for_patch(path: str) -> str:
+    candidate = PurePosixPath(path.replace("\\", "/"))
+    return candidate.as_posix()
+
+
+def _parse_patch_hunks(patch_text: str, path: str) -> list[PatchHunk]:
     patchset = patch_parser.fromstring(patch_text)
     if not patchset:
         raise ValueError("patch could not be parsed")
     if not patchset.items:
         raise ValueError("patch does not contain any files")
     hunks: list[PatchHunk] = []
-    for item in patchset.items:
+    normalized_target = _normalize_path_for_patch(path)
+    filtered_items = [
+        item
+        for item in patchset.items
+        if item.target and _normalize_path_for_patch(item.target) == normalized_target
+    ]
+    if not filtered_items:
+        raise ValueError("patch does not contain hunks for the requested file")
+    for item in filtered_items:
         for hunk in item.hunks:
             lines = [line for line in hunk.text]
             old_len = hunk.linessrc or sum(1 for line in lines if line.startswith(" ") or line.startswith("-"))
@@ -203,13 +230,20 @@ def _apply_hunk(lines: list[str], hunk: PatchHunk, offset: int) -> tuple[list[st
             continue
         prefix = patch_line[0]
         body = patch_line[1:]
+        body_content = body.rstrip("\r\n")
         if prefix == " ":
-            if scan_idx >= len(lines) or lines[scan_idx] != body:
+            if scan_idx >= len(lines):
                 raise PatchApplicationError("context mismatch for hunk")
-            result_lines.append(body)
+            line_value = lines[scan_idx]
+            if line_value.rstrip("\r\n") != body_content:
+                raise PatchApplicationError("context mismatch for hunk")
+            result_lines.append(line_value)
             scan_idx += 1
         elif prefix == "-":
-            if scan_idx >= len(lines) or lines[scan_idx] != body:
+            if scan_idx >= len(lines):
+                raise PatchApplicationError("removal did not match file")
+            line_value = lines[scan_idx]
+            if line_value.rstrip("\r\n") != body_content:
                 raise PatchApplicationError("removal did not match file")
             scan_idx += 1
         elif prefix == "+":
@@ -255,7 +289,7 @@ def apply_patch(run_dir: Path, args: FilePatchArgs):
     if strip_prefix > 0:
         patch_text = _rewrite_patch_paths(patch_text, strip_prefix)
     try:
-        hunks = _parse_patch_hunks(patch_text)
+        hunks = _parse_patch_hunks(patch_text, args.path)
     except ValueError as exc:
         return _error("PATCH_FAILED", str(exc))
 
@@ -264,21 +298,28 @@ def apply_patch(run_dir: Path, args: FilePatchArgs):
     rejects_path: Path | None = None
     offset = 0
 
+    applied_hunks = 0
+    stop_processing = False
+
     for idx, hunk in enumerate(hunks, start=1):
+        if stop_processing:
+            break
         try:
             working_lines, delta = _apply_hunk(working_lines, hunk, offset)
         except PatchApplicationError:
             failed_hunks.append(idx)
-            rejects_path = _write_rejects(run_dir, target, original_patch)
-            break
+            if rejects_path is None:
+                rejects_path = _write_rejects(run_dir, target, original_patch)
+            if args.fail_on_reject:
+                stop_processing = True
+            continue
+        applied_hunks += 1
         offset += delta
-
-    hunks_applied = len(hunks) - len(failed_hunks)
 
     if failed_hunks and args.fail_on_reject:
         details = {
             "hunks_total": len(hunks),
-            "hunks_applied": hunks_applied,
+            "hunks_applied": applied_hunks,
             "failed_hunks": failed_hunks,
             "rejects_path": str(rejects_path) if rejects_path else None,
         }
@@ -302,7 +343,7 @@ def apply_patch(run_dir: Path, args: FilePatchArgs):
                 "applied": applied,
                 "applied_partially": applied_partially,
                 "hunks_total": len(hunks),
-                "hunks_applied": hunks_applied,
+                "hunks_applied": applied_hunks,
                 "hunks_failed": len(failed_hunks),
                 "failed_hunks": failed_hunks,
                 "sha256_before": sha_before,

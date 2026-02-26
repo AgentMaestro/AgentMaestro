@@ -1,0 +1,4 @@
+{"id": 1, "ts": "2026-02-25T17:38:42.700627Z", "type": "RUN_CREATED", "data": {"run_id": "srs-test-1b86bb0c", "slug": "srs-test"}}
+{"id": 2, "ts": "2026-02-25T17:38:42.725386Z", "type": "SRS_SECTION_PROMPTED", "data": {"run_id": "srs-test-1b86bb0c", "section_id": "project_summary"}}
+{"id": 3, "ts": "2026-02-25T17:38:42.729578Z", "type": "SRS_SECTION_DRAFT_SAVED", "data": {"run_id": "srs-test-1b86bb0c", "section_id": "project_summary"}}
+{"id": 4, "ts": "2026-02-25T17:38:42.732578Z", "type": "SRS_SECTION_LOCKED", "data": {"run_id": "srs-test-1b86bb0c", "section_id": "project_summary", "sha256": "d284c9aa403aeacd20a0cfa51fb8fd0c59ba081486b4103a2e27d2acaa9cbfa3"}}

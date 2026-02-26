@@ -59,7 +59,12 @@ def write_file(run_dir: Path, args: FileWriteArgs):
             return _error_response("CONFLICT", "Existing file checksum mismatch")
 
     if args.mode == "text":
-        content_bytes = args.content.encode(args.encoding)
+        try:
+            content_bytes = args.content.encode(args.encoding)
+        except LookupError as exc:
+            return _error_response("UNSUPPORTED_ENCODING", str(exc))
+        except UnicodeEncodeError as exc:
+            return _error_response("INVALID_ARGUMENT", "text encoding failed", {"err": str(exc)})
     else:
         try:
             content_bytes = base64.b64decode(args.content_base64, validate=True)

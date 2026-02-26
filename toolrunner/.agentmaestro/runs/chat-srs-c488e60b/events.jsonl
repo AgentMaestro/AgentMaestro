@@ -1,0 +1,5 @@
+{"id": 1, "ts": "2026-02-26T02:01:36.623794Z", "type": "RUN_CREATED", "data": {"run_id": "chat-srs-c488e60b", "slug": "chat-srs"}}
+{"id": 2, "ts": "2026-02-26T02:01:36.634003Z", "type": "CHAT_MESSAGE", "data": {"run_id": "chat-srs-c488e60b", "role": "user", "message_id": 1, "content": "lock project summary final summary"}}
+{"id": 3, "ts": "2026-02-26T02:01:36.637644Z", "type": "SRS_UPDATED", "data": {"run_id": "chat-srs-c488e60b", "section_id": "project_summary", "action": "lock"}}
+{"id": 4, "ts": "2026-02-26T02:01:36.638011Z", "type": "SRS_SECTION_LOCKED", "data": {"run_id": "chat-srs-c488e60b", "section_id": "project_summary", "sha256": "a29215ee53a787930d92e0782b70e4d0ba9aac3ec749dbd58157cbd9987091b3"}}
+{"id": 5, "ts": "2026-02-26T02:01:36.638516Z", "type": "CHAT_MESSAGE", "data": {"run_id": "chat-srs-c488e60b", "role": "maestro", "message_id": 2, "content": "I recorded a lock for Project Summary. It's now locked."}}

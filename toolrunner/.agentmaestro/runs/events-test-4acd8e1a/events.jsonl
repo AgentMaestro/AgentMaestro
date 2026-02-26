@@ -1,0 +1,2 @@
+{"id": 1, "ts": "2026-02-26T08:33:14.913049Z", "type": "RUN_CREATED", "data": {"run_id": "events-test-4acd8e1a", "slug": "events-test"}}
+{"id": 2, "ts": "2026-02-26T08:33:14.918298Z", "type": "SRS_SECTION_PROMPTED", "data": {"run_id": "events-test-4acd8e1a", "section_id": "project_summary"}}

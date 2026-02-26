@@ -1,0 +1,237 @@
+{
+  "schema_version": "1.0",
+  "plan_id": "plan-283754",
+  "run_id": "ui-e7fe86fe",
+  "created_at": "2026-02-25T18:14:23.901768Z",
+  "goal": "Execute work derived from SRS ui",
+  "assumptions": [
+    "Locked sections: project_summary, goals_non_goals, functional_requirements, interfaces, acceptance_criteria, risks_assumptions"
+  ],
+  "complete": false,
+  "milestones": [
+    {
+      "milestone_id": "milestone-1",
+      "title": "Deliver baseline SRS tasks",
+      "description": "Carry out the primary tool calls that reflect the documented sections.",
+      "steps": [
+        {
+          "step_id": "S001",
+          "intent": "Process SRS section: Project Summary",
+          "tool_calls": [
+            {
+              "call_id": "C001",
+              "tool": "run_command",
+              "args": {
+                "cmd": [
+                  "echo",
+                  "Review Project Summary"
+                ]
+              }
+            }
+          ],
+          "acceptance_checks": [
+            {
+              "name": "verify",
+              "tool": "run_command",
+              "args": {
+                "cmd": [
+                  "python",
+                  "--version"
+                ]
+              },
+              "required": false
+            }
+          ],
+          "rollback": {
+            "strategy": "none"
+          },
+          "requires_approval": false,
+          "risk_tags": [
+            "srs.project_summary"
+          ]
+        },
+        {
+          "step_id": "S002",
+          "intent": "Process SRS section: Goals and Non-Goals",
+          "tool_calls": [
+            {
+              "call_id": "C002",
+              "tool": "run_command",
+              "args": {
+                "cmd": [
+                  "echo",
+                  "Review Goals and Non-Goals"
+                ]
+              }
+            }
+          ],
+          "acceptance_checks": [
+            {
+              "name": "verify",
+              "tool": "run_command",
+              "args": {
+                "cmd": [
+                  "python",
+                  "--version"
+                ]
+              },
+              "required": false
+            }
+          ],
+          "rollback": {
+            "strategy": "none"
+          },
+          "requires_approval": false,
+          "risk_tags": [
+            "srs.goals_non_goals"
+          ]
+        },
+        {
+          "step_id": "S003",
+          "intent": "Process SRS section: Functional Requirements",
+          "tool_calls": [
+            {
+              "call_id": "C003",
+              "tool": "run_command",
+              "args": {
+                "cmd": [
+                  "echo",
+                  "Review Functional Requirements"
+                ]
+              }
+            }
+          ],
+          "acceptance_checks": [
+            {
+              "name": "verify",
+              "tool": "run_command",
+              "args": {
+                "cmd": [
+                  "python",
+                  "--version"
+                ]
+              },
+              "required": false
+            }
+          ],
+          "rollback": {
+            "strategy": "none"
+          },
+          "requires_approval": false,
+          "risk_tags": [
+            "srs.functional_requirements"
+          ]
+        },
+        {
+          "step_id": "S004",
+          "intent": "Process SRS section: Interfaces",
+          "tool_calls": [
+            {
+              "call_id": "C004",
+              "tool": "run_command",
+              "args": {
+                "cmd": [
+                  "echo",
+                  "Review Interfaces"
+                ]
+              }
+            }
+          ],
+          "acceptance_checks": [
+            {
+              "name": "verify",
+              "tool": "run_command",
+              "args": {
+                "cmd": [
+                  "python",
+                  "--version"
+                ]
+              },
+              "required": false
+            }
+          ],
+          "rollback": {
+            "strategy": "none"
+          },
+          "requires_approval": false,
+          "risk_tags": [
+            "srs.interfaces"
+          ]
+        },
+        {
+          "step_id": "S005",
+          "intent": "Process SRS section: Acceptance Criteria / Definition of Done",
+          "tool_calls": [
+            {
+              "call_id": "C005",
+              "tool": "run_command",
+              "args": {
+                "cmd": [
+                  "echo",
+                  "Review Acceptance Criteria / Definition of Done"
+                ]
+              }
+            }
+          ],
+          "acceptance_checks": [
+            {
+              "name": "verify",
+              "tool": "run_command",
+              "args": {
+                "cmd": [
+                  "python",
+                  "--version"
+                ]
+              },
+              "required": false
+            }
+          ],
+          "rollback": {
+            "strategy": "none"
+          },
+          "requires_approval": false,
+          "risk_tags": [
+            "srs.acceptance_criteria"
+          ]
+        },
+        {
+          "step_id": "S006",
+          "intent": "Process SRS section: Risks & Assumptions",
+          "tool_calls": [
+            {
+              "call_id": "C006",
+              "tool": "run_command",
+              "args": {
+                "cmd": [
+                  "echo",
+                  "Review Risks & Assumptions"
+                ]
+              }
+            }
+          ],
+          "acceptance_checks": [
+            {
+              "name": "verify",
+              "tool": "run_command",
+              "args": {
+                "cmd": [
+                  "python",
+                  "--version"
+                ]
+              },
+              "required": false
+            }
+          ],
+          "rollback": {
+            "strategy": "none"
+          },
+          "requires_approval": true,
+          "risk_tags": [
+            "srs.risks_assumptions",
+            "history_rewrite"
+          ]
+        }
+      ]
+    }
+  ]
+}

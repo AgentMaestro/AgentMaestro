@@ -1,0 +1,4 @@
+{"id": 1, "ts": "2026-02-26T08:33:17.574329Z", "type": "RUN_CREATED", "data": {"run_id": "plan-test-3a17636f", "slug": "plan-test"}}
+{"id": 2, "ts": "2026-02-26T08:33:17.594642Z", "type": "SRS_SECTION_LOCKED", "data": {"run_id": "plan-test-3a17636f", "section_id": "project_summary", "sha256": "01fa069799c0bcde129779ca0387b0f1988bf628c5c2681ea19bc43033e9f652"}}
+{"id": 3, "ts": "2026-02-26T08:33:17.598121Z", "type": "PLAN_GENERATED", "data": {"plan_id": "plan-3eabb4"}}
+{"id": 4, "ts": "2026-02-26T08:33:17.600126Z", "type": "SRS_READINESS_COMPUTED", "data": {"run_id": "plan-test-3a17636f", "score": 15}}

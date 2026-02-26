@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import os
 import subprocess
 from pathlib import Path
 
@@ -28,7 +29,8 @@ def run_python(
         cmd = [PYTHON_INTERPRETER, "-I", str(main_file)]
     else:
         cmd = [PYTHON_INTERPRETER, "-I", "-c", args.code or ""]
-    env = {"PYTHONNOUSERSITE": "1"}
+    env = os.environ.copy()
+    env["PYTHONNOUSERSITE"] = "1"
     try:
         completed = subprocess.run(
             cmd,

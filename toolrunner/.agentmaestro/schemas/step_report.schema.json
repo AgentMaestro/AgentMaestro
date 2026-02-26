@@ -1,0 +1,94 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schema_version",
+    "run_id",
+    "plan_id",
+    "milestone_id",
+    "step_id",
+    "started_at",
+    "finished_at",
+    "status",
+    "tool_results",
+    "repo_state"
+  ],
+  "properties": {
+    "schema_version": { "type": "string" },
+    "run_id": { "type": "string" },
+    "plan_id": { "type": "string" },
+    "milestone_id": { "type": "string" },
+    "step_id": { "type": "string" },
+    "started_at": { "type": "string" },
+    "finished_at": { "type": "string" },
+    "status": { "type": "string" },
+    "tool_results": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["call_id", "tool", "ok"],
+        "properties": {
+          "call_id": { "type": "string" },
+          "tool": { "type": "string" },
+          "ok": { "type": "boolean" },
+          "error": { "type": ["object", "null"] },
+          "result": { "type": ["object", "null"] }
+        }
+      }
+    },
+    "repo_state": {
+      "type": "object",
+      "required": ["branch", "head_oid", "is_clean", "changed_files"],
+      "properties": {
+        "branch": { "type": "string" },
+        "head_oid": { "type": "string" },
+        "is_clean": { "type": "boolean" },
+        "changed_files": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "diff_summary": {
+      "type": "object",
+      "properties": {
+        "paths": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "truncated": { "type": "boolean" }
+      }
+    },
+    "verification": {
+      "type": "object",
+      "required": ["overall_pass", "gates"],
+      "properties": {
+        "overall_pass": { "type": "boolean" },
+        "gates": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": { "type": "string" },
+              "tool": { "type": "string" },
+              "ok": { "type": "boolean" },
+              "summary": { "type": ["object", "null"] },
+              "raw": { "type": ["object", "null"] }
+            }
+          }
+        }
+      }
+    },
+    "blocked_reason": { "type": "string" },
+    "failure_count": { "type": "integer" },
+    "cycle_index": { "type": "integer" }
+  },
+  "if": {
+    "properties": { "status": { "const": "blocked" } },
+    "required": ["status"]
+  },
+  "then": {
+    "required": ["blocked_reason"]
+  }
+}

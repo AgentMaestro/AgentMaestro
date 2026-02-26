@@ -1,0 +1,4 @@
+{"id": 1, "ts": "2026-02-26T08:49:31.656880Z", "role": "user", "content": "Hello Maestro", "meta": {"mode": "srs_builder"}}
+{"id": 2, "ts": "2026-02-26T08:49:31.658884Z", "role": "maestro", "content": "I recorded a draft for Project Summary.", "meta": {"questions": ["Summarize the initiative briefly: what is being built and why?"], "srs_updates": [{"section_id": "project_summary", "action": "draft", "content": "Hello Maestro"}], "requires_user_decision": false}}
+{"id": 3, "ts": "2026-02-26T08:49:31.661884Z", "role": "user", "content": "lock project summary overview", "meta": {"mode": "srs_builder"}}
+{"id": 4, "ts": "2026-02-26T08:49:31.664391Z", "role": "maestro", "content": "I recorded a lock for Project Summary. It's now locked.", "meta": {"questions": ["Summarize the initiative briefly: what is being built and why?"], "srs_updates": [{"section_id": "project_summary", "action": "lock", "content": "lock project summary overview"}], "requires_user_decision": true}}

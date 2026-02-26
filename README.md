@@ -178,9 +178,9 @@ AgentMaestro is built on a simple belief:
 
 > AI reasoning may be probabilistic, but orchestration should be deterministic.
 
-Control flow should be explicit.\
-Execution should be inspectable.\
-State should be durable.\
+Control flow should be explicit.
+Execution should be inspectable.
+State should be durable.
 Tools should be governed.
 
 ------------------------------------------------------------------------
@@ -191,11 +191,11 @@ Tools should be governed.
 
 Planned stack:
 
--   Python 3.11+\
--   Django 4.x+\
--   Channels\
--   Redis\
--   PostgreSQL\
+-   Python 3.11+
+-   Django 4.x+
+-   Channels
+-   Redis
+-   PostgreSQL
 -   FastAPI
 
 ------------------------------------------------------------------------
@@ -229,9 +229,9 @@ See `LICENSE` for details.
 
 The long-term goal of AgentMaestro is to provide:
 
--   A transparent alternative to opaque agent frameworks\
--   A safe foundation for multi-agent systems\
--   A deterministic orchestration layer for AI systems\
+-   A transparent alternative to opaque agent frameworks
+-   A safe foundation for multi-agent systems
+-   A deterministic orchestration layer for AI systems
 -   A production-grade control plane for tool-using agents
 
 ------------------------------------------------------------------------
@@ -240,21 +240,21 @@ The long-term goal of AgentMaestro is to provide:
 
 ## Short Term
 
--   Deterministic run engine\
--   WebSocket live streaming\
+-   Deterministic run engine
+-   WebSocket live streaming
 -   Tool approval workflow
 
 ## Medium Term
 
--   Sub-agent tree visualization\
--   Quotas + budgeting\
+-   Sub-agent tree visualization
+-   Quotas + budgeting
 -   External integrations (Telegram, API)
 
 ## Long Term
 
--   Plugin ecosystem\
--   Observability tooling\
--   Production deployment patterns\
+-   Plugin ecosystem
+-   Observability tooling
+-   Production deployment patterns
 -   Hosted orchestration layer
 
 ------------------------------------------------------------------------

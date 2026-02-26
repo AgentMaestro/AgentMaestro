@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["call_id", "tool", "args"],
+  "properties": {
+    "call_id": { "type": "string" },
+    "tool": { "type": "string" },
+    "schema_version": { "type": "string", "const": "1.0" },
+    "run_id": { "type": "string" },
+    "repo_dir": { "type": "string" },
+    "args": { "type": "object" },
+    "timeout_ms_override": { "type": "integer", "minimum": 0 },
+    "max_output_bytes_override": { "type": "integer", "minimum": 0 },
+    "note": { "type": ["string", "null"] }
+  }
+}

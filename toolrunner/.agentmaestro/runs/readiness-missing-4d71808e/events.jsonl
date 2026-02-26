@@ -1,0 +1,3 @@
+{"id": 1, "ts": "2026-02-26T01:56:59.741490Z", "type": "RUN_CREATED", "data": {"run_id": "readiness-missing-4d71808e", "slug": "readiness-missing"}}
+{"id": 2, "ts": "2026-02-26T01:56:59.741490Z", "type": "SRS_SECTION_LOCKED", "data": {"run_id": "readiness-missing-4d71808e", "section_id": "project_summary", "sha256": "019ba45d1748031fdc208ab47efbb1474469e8a10400f24da25218ccb9e2f808"}}
+{"id": 3, "ts": "2026-02-26T01:56:59.741490Z", "type": "SRS_READINESS_COMPUTED", "data": {"run_id": "readiness-missing-4d71808e", "score": 15}}

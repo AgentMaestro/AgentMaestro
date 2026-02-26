@@ -1,0 +1,23 @@
+{
+  "score": 0,
+  "locked_sections": [],
+  "checks": {
+    "project_summary_locked": false,
+    "goals_locked": false,
+    "functional_requirements_locked": false,
+    "acceptance_criteria_locked": false,
+    "risks_locked": false
+  },
+  "counts": {
+    "functional_requirements_bullets": 0,
+    "acceptance_criteria_bullets": 0
+  },
+  "missing": [
+    "Project Summary is not locked yet.",
+    "Goals & Non-Goals is not locked yet.",
+    "Functional Requirements is not locked yet.",
+    "Acceptance Criteria is not locked yet.",
+    "Risks & Assumptions is not locked yet."
+  ],
+  "warnings": []
+}

@@ -1,0 +1,2 @@
+{"id": 1, "ts": "2026-02-26T08:44:59.821778Z", "type": "RUN_CREATED", "data": {"run_id": "plan-test-03278364", "slug": "plan-test"}}
+{"id": 2, "ts": "2026-02-26T08:44:59.825743Z", "type": "SRS_READINESS_COMPUTED", "data": {"run_id": "plan-test-03278364", "score": 0}}

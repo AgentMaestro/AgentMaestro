@@ -1,0 +1,56 @@
+{
+  "schema_version": "1.0",
+  "plan_id": "plan-3d6dc4",
+  "run_id": "plan-test-577c124a",
+  "created_at": "2026-02-25T17:48:07.823616Z",
+  "goal": "Execute work derived from SRS plan-test",
+  "assumptions": [
+    "Locked sections: project_summary"
+  ],
+  "complete": false,
+  "milestones": [
+    {
+      "milestone_id": "milestone-1",
+      "title": "Deliver baseline SRS tasks",
+      "description": "Carry out the primary tool calls that reflect the documented sections.",
+      "steps": [
+        {
+          "step_id": "S001",
+          "intent": "Process SRS section: Project Summary",
+          "tool_calls": [
+            {
+              "call_id": "C001",
+              "tool": "run_command",
+              "args": {
+                "cmd": [
+                  "echo",
+                  "Review Project Summary"
+                ]
+              }
+            }
+          ],
+          "acceptance_checks": [
+            {
+              "name": "verify",
+              "tool": "run_command",
+              "args": {
+                "cmd": [
+                  "python",
+                  "--version"
+                ]
+              },
+              "required": false
+            }
+          ],
+          "rollback": {
+            "strategy": "none"
+          },
+          "requires_approval": false,
+          "risk_tags": [
+            "srs.project_summary"
+          ]
+        }
+      ]
+    }
+  ]
+}

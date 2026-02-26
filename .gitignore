@@ -109,6 +109,7 @@ pytest_*
 DevAgentMaestrotool*
 **/DevAgentMaestrotool*
 backend/DevAgentMaestrobackendpytest_temp/
+toolrunner/DevAgentMaestrotoolrunnerpytest_temp/
 
 
 # =========================================

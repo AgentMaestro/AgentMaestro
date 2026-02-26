@@ -1,0 +1,24 @@
+{
+  "score": 100,
+  "locked_sections": [
+    "project_summary",
+    "goals_non_goals",
+    "functional_requirements",
+    "acceptance_criteria",
+    "risks_assumptions",
+    "interfaces"
+  ],
+  "checks": {
+    "project_summary_locked": true,
+    "goals_locked": true,
+    "functional_requirements_locked": true,
+    "acceptance_criteria_locked": true,
+    "risks_locked": true
+  },
+  "counts": {
+    "functional_requirements_bullets": 3,
+    "acceptance_criteria_bullets": 2
+  },
+  "missing": [],
+  "warnings": []
+}

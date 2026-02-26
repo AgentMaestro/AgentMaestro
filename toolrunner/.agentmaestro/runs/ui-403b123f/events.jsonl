@@ -1,0 +1,2 @@
+{"id": 1, "ts": "2026-02-26T08:45:01.358295Z", "type": "RUN_CREATED", "data": {"run_id": "ui-403b123f", "slug": "ui"}}
+{"id": 2, "ts": "2026-02-26T08:47:05.919533Z", "type": "SRS_READINESS_COMPUTED", "data": {"run_id": "ui-403b123f", "score": 0}}

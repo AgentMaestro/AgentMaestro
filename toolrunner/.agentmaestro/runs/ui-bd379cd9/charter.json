@@ -1,0 +1,74 @@
+{
+  "schema_version": "1.0",
+  "run_id": "ui-bd379cd9",
+  "slug": "ui",
+  "created_at": "2026-01-01T00:00:00Z",
+  "repo_dir": ".",
+  "srs": {
+    "path": "srs/SRS.md",
+    "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "models": {
+    "maestro": {
+      "name": "maestro"
+    },
+    "apprentice": {
+      "name": "apprentice"
+    }
+  },
+  "allowed_tools": {
+    "tier1": [
+      "file_write",
+      "git_add",
+      "git_commit",
+      "test_runner",
+      "run_command"
+    ],
+    "tier2": [],
+    "git": [
+      "git_status"
+    ]
+  },
+  "quality_gates": {
+    "default": [
+      {
+        "name": "format",
+        "tool": "run_command",
+        "args": {
+          "cmd": [
+            "python",
+            "--version"
+          ]
+        }
+      }
+    ],
+    "on_merge_candidate": [
+      {
+        "name": "format",
+        "tool": "run_command",
+        "args": {
+          "cmd": [
+            "python",
+            "--version"
+          ]
+        }
+      }
+    ]
+  },
+  "branch_strategy": {
+    "type": "feature_branch",
+    "name_template": "agent/{run_id}/ui",
+    "base_branch": "main"
+  },
+  "stop_conditions": {
+    "max_cycles": 10,
+    "max_failures": 2,
+    "max_minutes": 60
+  },
+  "policies": {
+    "require_approval_for": [],
+    "prohibit_outside_workspace": true,
+    "prefer_revert_over_reset": true,
+    "secrets_handling": "redact"
+  }
+}

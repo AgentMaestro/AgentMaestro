@@ -1,0 +1,2 @@
+{"id": 1, "ts": "2026-02-26T02:02:38.112715Z", "role": "user", "content": "lock project summary final summary", "meta": {"mode": "srs_builder"}}
+{"id": 2, "ts": "2026-02-26T02:02:38.115373Z", "role": "maestro", "content": "I recorded a lock for Project Summary. It's now locked.", "meta": {"questions": ["Summarize the initiative briefly: what is being built and why?"], "srs_updates": [{"section_id": "project_summary", "action": "lock", "content": "lock project summary final summary"}], "requires_user_decision": true}}

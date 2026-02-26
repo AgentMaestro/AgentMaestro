@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "updated_at": "2026-02-26T02:01:38.679008Z",
+  "locked_sections": {
+    "project_summary": {
+      "title": "Project Summary",
+      "content": "Section content",
+      "sha256": "01fa069799c0bcde129779ca0387b0f1988bf628c5c2681ea19bc43033e9f652",
+      "locked_at": "2026-02-26T02:01:38.679008Z"
+    }
+  }
+}

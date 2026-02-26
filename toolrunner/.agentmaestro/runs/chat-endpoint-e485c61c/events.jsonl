@@ -1,0 +1,8 @@
+{"id": 1, "ts": "2026-02-26T08:44:57.958316Z", "type": "RUN_CREATED", "data": {"run_id": "chat-endpoint-e485c61c", "slug": "chat-endpoint"}}
+{"id": 2, "ts": "2026-02-26T08:44:57.964051Z", "type": "CHAT_MESSAGE", "data": {"run_id": "chat-endpoint-e485c61c", "role": "user", "message_id": 1, "content": "Hello Maestro"}}
+{"id": 3, "ts": "2026-02-26T08:44:57.964051Z", "type": "SRS_UPDATED", "data": {"run_id": "chat-endpoint-e485c61c", "section_id": "project_summary", "action": "draft"}}
+{"id": 4, "ts": "2026-02-26T08:44:57.964051Z", "type": "CHAT_MESSAGE", "data": {"run_id": "chat-endpoint-e485c61c", "role": "maestro", "message_id": 2, "content": "I recorded a draft for Project Summary."}}
+{"id": 5, "ts": "2026-02-26T08:44:57.964051Z", "type": "CHAT_MESSAGE", "data": {"run_id": "chat-endpoint-e485c61c", "role": "user", "message_id": 3, "content": "lock project summary overview"}}
+{"id": 6, "ts": "2026-02-26T08:44:57.964051Z", "type": "SRS_UPDATED", "data": {"run_id": "chat-endpoint-e485c61c", "section_id": "project_summary", "action": "lock"}}
+{"id": 7, "ts": "2026-02-26T08:44:57.964051Z", "type": "SRS_SECTION_LOCKED", "data": {"run_id": "chat-endpoint-e485c61c", "section_id": "project_summary", "sha256": "b1d9d2b15f70037c206e44e0f39f44452ca18576a5b166ee4b2ba51681b3b265"}}
+{"id": 8, "ts": "2026-02-26T08:44:57.964051Z", "type": "CHAT_MESSAGE", "data": {"run_id": "chat-endpoint-e485c61c", "role": "maestro", "message_id": 4, "content": "I recorded a lock for Project Summary. It's now locked."}}

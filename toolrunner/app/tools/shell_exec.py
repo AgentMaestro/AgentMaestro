@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 
@@ -19,6 +20,9 @@ def run_shell(
         raise ValueError("cmd is required")
     validate_command(cmd[0])
     working_dir = safe_join(run_dir, cwd or ".")
+    merged_env = os.environ.copy()
+    if env:
+        merged_env.update(env)
     try:
         completed = subprocess.run(
             cmd,
@@ -27,7 +31,7 @@ def run_shell(
             check=False,
             shell=False,
             cwd=working_dir,
-            env=env,
+            env=merged_env,
             text=True,
         )
         return (

@@ -1,0 +1,42 @@
+{
+  "version": 1,
+  "updated_at": "2026-02-26T02:01:39.200498Z",
+  "locked_sections": {
+    "project_summary": {
+      "title": "Project Summary",
+      "content": "Executive summary.\n- Key customer support",
+      "sha256": "5e417b07e8f05a1ab54c521493281a2ca57dde43c3e8a3feeea7596cea9af9c5",
+      "locked_at": "2026-02-26T02:01:39.156637Z"
+    },
+    "goals_non_goals": {
+      "title": "Goals and Non-Goals",
+      "content": "Goals and non-goals explained.\n- Goal 1\n- Non-goal A",
+      "sha256": "55b660c8a1a4f3130c33d4148a602021529b5c2b5c215672002194593a0c8369",
+      "locked_at": "2026-02-26T02:01:39.160164Z"
+    },
+    "functional_requirements": {
+      "title": "Functional Requirements",
+      "content": "- FR1\n- FR2\n- FR3",
+      "sha256": "5ff19b19c72c31f0271f9ea0a85378ffacbca4427ae150190123266185abfea4",
+      "locked_at": "2026-02-26T02:01:39.189922Z"
+    },
+    "acceptance_criteria": {
+      "title": "Acceptance Criteria / Definition of Done",
+      "content": "- AC1\n- AC2",
+      "sha256": "9d99fe04f201b92140d761a870da146bf5e79e1a04b9a48428c9f867f945d7ad",
+      "locked_at": "2026-02-26T02:01:39.193428Z"
+    },
+    "risks_assumptions": {
+      "title": "Risks & Assumptions",
+      "content": "Risk bracket",
+      "sha256": "eb10a9cbabc1e442ad272a90f9e7e2790c6a5c11061f93bc8dcf740eaf66e922",
+      "locked_at": "2026-02-26T02:01:39.196433Z"
+    },
+    "interfaces": {
+      "title": "Interfaces",
+      "content": "Interfaces locked.",
+      "sha256": "a64e0e38c2b2628c19b71d2e12b826bfac5f2e038d3c92e636be71914acb09cc",
+      "locked_at": "2026-02-26T02:01:39.199498Z"
+    }
+  }
+}

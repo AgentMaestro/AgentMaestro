@@ -10,6 +10,7 @@ from ..sandbox import safe_join
 
 DEFAULT_MAX_BYTES = 262144
 HARD_SIZE_LIMIT = 4 * 1024 * 1024
+MAX_LINE_RANGE = 200_000
 
 
 class FileReadError(Exception):
@@ -46,7 +47,8 @@ def _read_text(target: Path, args: FileReadArgs) -> dict:
             if lineno < start:
                 continue
             if end and lineno > end:
-                continue
+                total_lines = end
+                break
             encoded = line.encode(args.encoding, errors="replace")
             if bytes_accum + len(encoded) > args.max_bytes:
                 truncated = True
@@ -95,6 +97,10 @@ def read_file(run_dir: Path, args: FileReadArgs):
         size = target.stat().st_size
     except OSError as exc:
         return _error_response("INVALID_ARGUMENT", str(exc))
+    if args.end_line:
+        start_line = args.start_line or 1
+        if args.end_line - start_line + 1 > MAX_LINE_RANGE:
+            return _error_response("TOO_LARGE", "Requested line range exceeds maximum permitted number of lines")
     if not args.start_line and not args.end_line and size > HARD_SIZE_LIMIT:
         return _error_response("TOO_LARGE", "File exceeds maximum permitted size")
     if args.mode == "text":
