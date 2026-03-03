@@ -6,9 +6,10 @@ from typing import Any, Iterable, Sequence
 
 
 class ProgressTracker:
-    def __init__(self, run_root: Path, window: int = 3):
-        self.run_root = run_root
-        self.state_path = self.run_root / "progress_state.json"
+    def __init__(self, state_dir: Path, window: int = 3):
+        self.state_dir = state_dir
+        self.state_dir.mkdir(parents=True, exist_ok=True)
+        self.state_path = self.state_dir / "progress.json"
         self.window = window
         self._state = self._load_state()
 

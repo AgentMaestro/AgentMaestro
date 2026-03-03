@@ -5,7 +5,7 @@ AgentMaestro keeps every completed run reproducible by materializing snapshots +
 ## Bundle creation
 
 - `runs.services.checkpoints.create_checkpoint(run_id, compress=True)` generates a JSON description of the run, ordered steps, events, and child summaries (including the join/failure policy metadata).
-- Bundles are written under `AGENTMAESTRO_ARCHIVE_ROOT` (default: `<BASE_DIR>/run_archives`). Each checkpoint records summary stats (`steps`, `events`, `status`, `created`) and is zipped before persisting.
+- Bundles are written under `ARCHIVE_ROOT` (default: `<BASE_DIR>/run_archives`). Each checkpoint records summary stats (`steps`, `events`, `status`, `created`) and is zipped before persisting.
 - After the bundle is stored, `RunArchive` tracks the archive path + metadata, and a `run_archived` event is appended to the run stream so the UI and logs can surf the “export run as bundle” milestone. The event includes:
 
 ```json
@@ -23,9 +23,9 @@ AgentMaestro keeps every completed run reproducible by materializing snapshots +
 
 ## Scheduled retention & compaction
 
-- `runs.tasks.archive_completed_runs` is called periodically by Celery beat (see `AGENTMAESTRO_ARCHIVE_INTERVAL_HOURS` or `CELERY_BEAT_SCHEDULE`).
-- The task runs `archive_completed_runs` with the configured `AGENTMAESTRO_ARCHIVE_RETENTION_DAYS`, `AGENTMAESTRO_ARCHIVE_LIMIT`, and `AGENTMAESTRO_ARCHIVE_COMPACT_EVENTS`. It snapshots runs that have ended before the cutoff and, if requested, prunes `RunEvent` records matching `AGENTMAESTRO_VERBOSE_EVENT_TYPES` that are older than `AGENTMAESTRO_EVENT_RETENTION_DAYS`.
-- Use `python manage.py archive_runs --older-than 0 --limit 10 --compact --verbose-events token_stream debug_log` from a management shell to trigger ad-hoc retention runs. The CLI respects the same compacting and `AGENTMAESTRO_VERBOSE_EVENT_TYPES` settings as the periodic job.
+- `runs.tasks.archive_completed_runs` is called periodically by Celery beat (see `ARCHIVE_INTERVAL_HOURS` or `CELERY_BEAT_SCHEDULE`).
+- The task runs `archive_completed_runs` with the configured `ARCHIVE_RETENTION_DAYS`, `ARCHIVE_LIMIT`, and `ARCHIVE_COMPACT_EVENTS`. It snapshots runs that have ended before the cutoff and, if requested, prunes `RunEvent` records matching `VERBOSE_EVENT_TYPES` that are older than `EVENT_RETENTION_DAYS`.
+- Use `python manage.py archive_runs --older-than 0 --limit 10 --compact --verbose-events token_stream debug_log` from a management shell to trigger ad-hoc retention runs. The CLI respects the same compacting and `VERBOSE_EVENT_TYPES` settings as the periodic job.
 
 ## Compacting verbose events
 
@@ -42,12 +42,12 @@ AgentMaestro keeps every completed run reproducible by materializing snapshots +
 
 | Environment variable | Purpose |
 | --- | --- |
-| `AGENTMAESTRO_ARCHIVE_ROOT` | Directory used for run snapshots. |
-| `AGENTMAESTRO_ARCHIVE_RETENTION_DAYS` | Default `older_than` threshold in the Celery retention job. |
-| `AGENTMAESTRO_ARCHIVE_LIMIT` | Max runs archived per invocation (Celery job + CLI). |
-| `AGENTMAESTRO_ARCHIVE_COMPACT_EVENTS` | Control whether verbose events are pruned during archiving. |
-| `AGENTMAESTRO_EVENT_RETENTION_DAYS` | Age threshold for deleting verbose events; `compact_events` uses this when `retention_days` is `None`. |
-| `AGENTMAESTRO_VERBOSE_EVENT_TYPES` | Default list of verbose events removed by the compactor. |
+| `ARCHIVE_ROOT` | Directory used for run snapshots. |
+| `ARCHIVE_RETENTION_DAYS` | Default `older_than` threshold in the Celery retention job. |
+| `ARCHIVE_LIMIT` | Max runs archived per invocation (Celery job + CLI). |
+| `ARCHIVE_COMPACT_EVENTS` | Control whether verbose events are pruned during archiving. |
+| `EVENT_RETENTION_DAYS` | Age threshold for deleting verbose events; `compact_events` uses this when `retention_days` is `None`. |
+| `VERBOSE_EVENT_TYPES` | Default list of verbose events removed by the compactor. |
 
 ## Export workflow
 

@@ -33,7 +33,7 @@ def test_start_run_api_creates_run(client, factory_user):
     user = factory_user("api-starter")
     workspace = Workspace.objects.create(name="API WS")
     _ensure_membership(workspace, user)
-    agent = Agent.objects.create(workspace=workspace, name="API Agent", system_prompt="Prompt")
+    agent = Agent.objects.create(workspace=workspace, name="API Agent", soul="Prompt")
 
     client.force_login(user)
     payload = {
@@ -61,7 +61,7 @@ def test_spawn_subrun_api_returns_child(client, factory_user):
     user = factory_user("api-spawner")
     workspace = Workspace.objects.create(name="Spawn WS")
     _ensure_membership(workspace, user)
-    agent = Agent.objects.create(workspace=workspace, name="Spawn Agent", system_prompt="Prompt")
+    agent = Agent.objects.create(workspace=workspace, name="Spawn Agent", soul="Prompt")
     run = AgentRun.objects.create(workspace=workspace, agent=agent, status=AgentRun.Status.RUNNING, input_text="parent")
 
     client.force_login(user)
@@ -85,7 +85,7 @@ def test_approve_tool_call_api_transitions_run(client, factory_user):
     user = factory_user("api-approver")
     workspace = Workspace.objects.create(name="Approval WS")
     _ensure_membership(workspace, user)
-    agent = Agent.objects.create(workspace=workspace, name="Approval Agent", system_prompt="Prompt")
+    agent = Agent.objects.create(workspace=workspace, name="Approval Agent", soul="Prompt")
     run = AgentRun.objects.create(workspace=workspace, agent=agent, status=AgentRun.Status.RUNNING, input_text="approval")
 
     tool_call = request_tool_call_approval(
@@ -113,7 +113,7 @@ def test_snapshot_api_filters_by_since_seq(client, factory_user):
     user = factory_user("api-snapshot")
     workspace = Workspace.objects.create(name="Snapshot WS")
     _ensure_membership(workspace, user)
-    agent = Agent.objects.create(workspace=workspace, name="Snapshot Agent", system_prompt="Prompt")
+    agent = Agent.objects.create(workspace=workspace, name="Snapshot Agent", soul="Prompt")
     run = AgentRun.objects.create(workspace=workspace, agent=agent, status=AgentRun.Status.PENDING, input_text="snapshot")
 
     append_step(run_id=str(run.id), kind=AgentStep.Kind.PLAN, payload={"plan": 1})

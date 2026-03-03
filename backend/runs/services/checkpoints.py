@@ -14,8 +14,8 @@ from runs.models import AgentRun, RunArchive, RunEvent
 from runs.services.events import append_event
 from runs.services.snapshot import get_run_snapshot
 
-DEFAULT_RETENTION_DAYS = int(os.getenv("AGENTMAESTRO_EVENT_RETENTION_DAYS", "30"))
-VERBOSE_EVENT_TYPES = getattr(settings, "AGENTMAESTRO_VERBOSE_EVENT_TYPES", ["token_stream", "debug_log"])
+DEFAULT_RETENTION_DAYS = int(os.getenv("EVENT_RETENTION_DAYS", "30"))
+VERBOSE_EVENT_TYPES = getattr(settings, "VERBOSE_EVENT_TYPES", ["token_stream", "debug_log"])
 FINAL_RUN_STATUSES = (
     AgentRun.Status.COMPLETED,
     AgentRun.Status.FAILED,
@@ -24,7 +24,7 @@ FINAL_RUN_STATUSES = (
 
 
 def _archive_root() -> Path:
-    base = getattr(settings, "AGENTMAESTRO_ARCHIVE_ROOT", settings.BASE_DIR / "run_archives")
+    base = getattr(settings, "ARCHIVE_ROOT", settings.BASE_DIR / "run_archives")
     root = Path(base)
     root.mkdir(parents=True, exist_ok=True)
     return root

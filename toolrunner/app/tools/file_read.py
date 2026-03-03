@@ -5,8 +5,15 @@ from pathlib import Path
 
 from fastapi.responses import JSONResponse
 
+from ..config import (
+    EXCLUDE_FROM_SEARCH_LIST,
+    is_under_allowed_root,
+    normalize_search_root,
+    policy_metadata,
+)
 from ..models import FileReadArgs
 from ..sandbox import safe_join
+from .path_filters import first_matching_pattern, glob_candidates
 
 DEFAULT_MAX_BYTES = 262144
 HARD_SIZE_LIMIT = 4 * 1024 * 1024
@@ -20,12 +27,16 @@ class FileReadError(Exception):
         self.details = details or {}
 
 
+FILE_POLICY_META = policy_metadata()
+
+
 def _error_response(code: str, message: str, details: dict | None = None, status_code: int = 400):
     return JSONResponse(
         status_code=status_code,
         content={
             "ok": False,
             "error": {"code": f"tool_runner.{code}", "message": message, "details": details or {}},
+            "meta": {"policy": FILE_POLICY_META},
         },
     )
 
@@ -85,10 +96,26 @@ def _read_binary(target: Path, args: FileReadArgs) -> dict:
 
 
 def read_file(run_dir: Path, args: FileReadArgs):
+    if not is_under_allowed_root(run_dir):
+        return _error_response("PATH_NOT_ALLOWED", "Run directory not permitted")
+    base_dir = run_dir
+    if args.absolute_root:
+        absolute_root_path = Path(args.absolute_root).resolve()
+        if not is_under_allowed_root(absolute_root_path):
+            return _error_response("PATH_NOT_ALLOWED", "absolute_root not permitted")
+        base_dir = absolute_root_path
+    allowed_context_root = normalize_search_root(base_dir)
     try:
-        target = safe_join(run_dir, args.path)
+        target = safe_join(base_dir, args.path)
     except ValueError as exc:
         return _error_response("PATH_OUTSIDE_WORKSPACE", str(exc))
+
+    if not is_under_allowed_root(target, (allowed_context_root,)):
+        return _error_response("PATH_NOT_ALLOWED", "Path not permitted")
+
+    exclusion = _matching_exclusion(target, base_dir)
+    if exclusion:
+        return _error_response("PATH_EXCLUDED", "Path excluded by policy", {"pattern": exclusion})
     if target.is_dir():
         return _error_response("IS_DIRECTORY", "Path is a directory")
     if not target.exists():
@@ -110,4 +137,14 @@ def read_file(run_dir: Path, args: FileReadArgs):
             return _error_response(exc.code, exc.message, exc.details)
     else:
         result = _read_binary(target, args)
-    return JSONResponse(status_code=200, content={"ok": True, "result": result})
+    return JSONResponse(
+        status_code=200,
+        content={"ok": True, "result": result, "meta": {"policy": FILE_POLICY_META}},
+    )
+
+
+def _matching_exclusion(target: Path, run_dir: Path) -> str | None:
+    if not EXCLUDE_FROM_SEARCH_LIST:
+        return None
+    candidates = glob_candidates(target, run_dir, run_dir, is_dir=target.is_dir())
+    return first_matching_pattern(candidates, EXCLUDE_FROM_SEARCH_LIST)

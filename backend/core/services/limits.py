@@ -144,7 +144,7 @@ class QuotaManager:
         self.redis = redis_client or redis.Redis.from_url(
             getattr(settings, "CELERY_BROKER_URL", "redis://127.0.0.1:6379/0")
         )
-        self.namespace = getattr(settings, "AGENTMAESTRO_QUOTA_NAMESPACE", "agentmaestro:quota")
+        self.namespace = getattr(settings, "QUOTA_NAMESPACE", "agentmaestro:quota")
 
     def _key(self, workspace_id: str, limit_key: str) -> str:
         return f"{self.namespace}:{workspace_id}:{limit_key}"
@@ -167,7 +167,7 @@ class QuotaManager:
         pipe.expire(key, limit.window_seconds)
         count, _ = pipe.execute()
         if count > limit.max_requests:
-            if getattr(settings, "AGENTMAESTRO_DISABLE_RATE_LIMITS", False):
+            if getattr(settings, "DISABLE_RATE_LIMITS", False):
                 return count
             raise LimitExceeded(limit=limit, current=count)
         return count

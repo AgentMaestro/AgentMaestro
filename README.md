@@ -113,16 +113,47 @@ Parent/child relationships are first-class, enabling:
 
 ------------------------------------------------------------------------
 
+## Quick Start
+
+1.  `cd backend`, copy `.env.example` to `.env`, and populate the required secrets (`SECRET_KEY`, `DATABASE_URL`, `CELERY_BROKER_URL`, `CHANNEL_LAYER_REDIS_URL`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, etc.).
+2.  Create a virtual environment (`python -m venv .venv`), activate it, and install dependencies (`.venv\\Scripts\\pip install -r requirements.txt`).
+3.  Run `python manage.py migrate`.
+4.  Seed the tool catalog: `python manage.py seed_tools`.
+5.  Seed the workspace tool shelf: `python manage.py seed_workspace_tools --workspace 'Dev Workspace' --enable-all` (add `--include-unreleased` if you need unreleased tools).
+6.  Launch Redis, then start Celery worker + beat in separate consoles:
+    - `celery -A agentmaestro worker --loglevel=info --pool=solo`
+    - `celery -A agentmaestro beat --loglevel=info`
+7.  Run Django: `python manage.py runserver`.
+8.  Visit `/agents/new` to configure agents, `/agents/<slug>/` for the chat UI, and `/ui/agents/<uuid>/connect/telegram/` to pair bots.
+9.  Use `backend/scripts/test.ps1` to execute the test suite safely on Windows.
+
 ## Architecture Overview
 
-    Browser (UI)  ── WebSockets ──> Django (ASGI + Channels)
-                                             │
-                                             │ Celery + Redis
-                                             ▼
-                                     Agent Orchestrator
-                                             │
-                                             ▼
-                                     FastAPI Tool Runner
+    Browser (UI)  --> WebSockets --> Django (ASGI + Channels)
+                                     |
+                                     v
+                               Celery + Redis
+                                     |
+                                     v
+                             Agent Orchestrator
+                                     |
+                                     v
+                               FastAPI Tool Runner
+
+### Security and tool governance
+
+- **Workspace isolation:** each Agent, AgentRun, and ToolCall belongs to a workspace that owns ToolDefinitions. Only enabled ToolDefinitions may appear in the wizard or be granted to agents.
+- **Tool policy hierarchy:** workspace shelves control which tools are visible, released gating keeps unreleased functionality locked for non-superusers, and AgentToolGrant enforces explicit enablement (default-deny) before an AI can invoke a tool.
+- **Risk tiers & approvals:** tools are classified as SAFE, ELEVATED, or DANGEROUS. Elevated/Dangerous calls create ToolCalls with status PENDING_APPROVAL; manual approval (via the WS approval card) progresses them to QUEUED/RUNNING while denials emit audit-friendly observations back to the provider.
+- **Async Celery execution:** approved tool calls enqueue `tools.execute_tool_call_async`, register `celery_task_id`, and persist the result or error payload. Completion events publish via the channel layer so the WebSocket consumer can resume the OpenAI session with the tool output without polling.
+- **Persisted observability:** every user/assistant/tool turn is stored as `LLMMessage` linked to `AgentRun` <-> `LLMRun`. The `/agents/<slug>/` page replays the last 50 turns, while RunEvents and ToolCalls provide a durable audit trail.
+- **Pairing & transport security:** pairing codes bind chat IDs to endpoints; Telegram adapters accept `/pair <code>` only from allowlisted users, and transports remain dormant until a valid pairing claims the conversation. Secrets (bot tokens, chat IDs, Celery credentials) stay in `.env` and are never logged.
+
+### Observability
+
+- WebSocket consumers stream `RunEvent`/`LLMMessage` updates, show approval cards, and emit tool status events in the chat UI.
+- Celery logs surface Telegram polling retries (timeout default 25s) and tool execution progress.
+- `backend/scripts/test.ps1` handles Windows permission quirks by clearing `.pytest-temp` and passing `--basetemp`.
 
 ### Components
 
@@ -200,6 +231,26 @@ Planned stack:
 
 ------------------------------------------------------------------------
 
+## Telegram Control Surface
+
+- `TELEGRAM_BOT_TOKEN`: the bot token the polling worker uses to talk to Telegram.
+- `TELEGRAM_POLL_INTERVAL_SECONDS`: how frequently the scheduler enqueues `comms.telegram_poll_scheduler` (defaults to 5s).
+- `TELEGRAM_POLL_TIMEOUT_SECONDS`: the long-poll timeout we pass to Telegram (default 25s).
+- `TELEGRAM_POLL_LOCK_REDIS_URL` / `CHANNEL_LAYER_REDIS_URL` / `CELERY_BROKER_URL`: Redis connections used for channel layers, polling locks, and the Celery broker.
+
+### Running the poller
+
+Run the worker and beat to stream Telegram updates into Control:
+
+```
+celery -A agentmaestro worker -l info
+celery -A agentmaestro beat -l info
+```
+
+Once Celery is running, the scheduler enqueues `comms.telegram_poll_scheduler` which drives `comms.tasks.telegram_poll_once`. The new mirror UI is available at `/ui/chat/` (and the Telegram filter at `/ui/comms/telegram/`).
+
+------------------------------------------------------------------------
+
 ## Contributing
 
 AgentMaestro is designed as a long-term, open, infrastructure project.
@@ -261,7 +312,5 @@ The long-term goal of AgentMaestro is to provide:
 
 # Final Thought
 
-AgentMaestro is not just an AI agent framework.
-
-It is an orchestration engine.
+AgentMaestro is not just an AI agent framework.  It is an orchestration and tool approval engine that puts you in control.  Choose what files to share.  Choose what tools to allow.  Choose what the AI can do on your system and make the AI more efficient.
 

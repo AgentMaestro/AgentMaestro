@@ -31,7 +31,7 @@ async def test_append_event_does_not_broadcast_on_rollback():
         user = User.objects.create_user(username="rbuser", password="x")
         ws = Workspace.objects.create(name="Rollback WS")
         WorkspaceMembership.objects.create(workspace=ws, user=user, role=WorkspaceMembership.Role.OWNER)
-        agent = Agent.objects.create(workspace=ws, name="A", system_prompt="x", created_by=user)
+        agent = Agent.objects.create(workspace=ws, name="A", soul="x", created_by=user)
         run = AgentRun.objects.create(workspace=ws, agent=agent, started_by=user, input_text="x")
         return str(run.id), user.username
 

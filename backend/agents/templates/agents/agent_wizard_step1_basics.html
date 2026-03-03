@@ -1,0 +1,36 @@
+{% extends "agents/wizard_base.html" %}
+
+{% block wizard_content %}
+  <form method="post" action="?step={{ current_step }}">
+    {% csrf_token %}
+    <div class="form-section">
+      <div>
+        {{ form.name.label_tag }}
+        {{ form.name }}
+        {% if form.name.help_text %}
+          <div class="helper">{{ form.name.help_text }}</div>
+        {% endif %}
+        {{ form.name.errors }}
+      </div>
+      <div>
+        {{ form.description.label_tag }}
+        {{ form.description }}
+        {% if form.description.help_text %}
+          <div class="helper">{{ form.description.help_text }}</div>
+        {% endif %}
+        {{ form.description.errors }}
+      </div>
+      <div>
+        {{ form.soul.label_tag }}
+        {{ form.soul }}
+        {% if form.soul.help_text %}
+          <div class="helper">{{ form.soul.help_text }}</div>
+        {% endif %}
+        {{ form.soul.errors }}
+      </div>
+    </div>
+    <div style="margin-top: 24px;">
+      <button type="submit" class="primary">Next step</button>
+    </div>
+  </form>
+{% endblock %}

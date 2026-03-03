@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import bisect
-import fnmatch
 import os
 import re
 import time
@@ -10,11 +9,26 @@ from typing import Iterable, Sequence
 
 from fastapi.responses import JSONResponse
 
+from ..config import (
+    allowed_root_strings,
+    combine_exclude_patterns,
+    is_under_allowed_root,
+    normalize_globs,
+    normalize_search_root,
+    policy_metadata,
+)
 from ..models import SearchCodeArgs
 from ..sandbox import is_safe_path, safe_join
+from .path_filters import first_matching_pattern, glob_candidates, matches_patterns
 
-
-def _error(code: str, message: str, details: dict | None = None, status_code: int = 400):
+def _error(
+    code: str,
+    message: str,
+    details: dict | None = None,
+    status_code: int = 400,
+    *,
+    extra_patterns: Sequence[str] | None = None,
+):
     return JSONResponse(
         status_code=status_code,
         content={
@@ -24,36 +38,13 @@ def _error(code: str, message: str, details: dict | None = None, status_code: in
                 "message": message,
                 "details": details or {},
             },
+            "meta": {"policy": policy_metadata(extra_patterns)},
         },
     )
 
 
-def _glob_candidates(entry_path: Path, root_path: Path, run_dir: Path) -> list[str]:
-    candidates: list[str] = []
-    try:
-        relative_to_root = entry_path.relative_to(root_path)
-    except ValueError:
-        return candidates
-    relative_root_str = relative_to_root.as_posix()
-    if relative_root_str and relative_root_str != ".":
-        candidates.append(relative_root_str)
-        candidates.append(f"./{relative_root_str}")
-    try:
-        relative_to_run = entry_path.relative_to(run_dir).as_posix()
-    except ValueError:
-        return candidates
-    if relative_to_run:
-        candidates.append(relative_to_run)
-        candidates.append(f"./{relative_to_run}")
-    return candidates
-
-
-def _matches_patterns(candidates: Iterable[str], patterns: Sequence[str]) -> bool:
-    for pattern in patterns:
-        for candidate in candidates:
-            if fnmatch.fnmatchcase(candidate, pattern):
-                return True
-    return False
+def _path_under_allowed_root(path: Path, extra_roots: tuple[Path, ...] | None = None) -> bool:
+    return is_under_allowed_root(path, extra_roots)
 
 
 def _prepare_pattern(args: SearchCodeArgs) -> tuple[re.Pattern, dict | None]:
@@ -92,23 +83,61 @@ def _line_index_for_position(position: int, starts: list[int]) -> int:
 
 
 def list_search_code(run_dir: Path, args: SearchCodeArgs):
-    try:
-        root_path = safe_join(run_dir, args.root)
-    except ValueError as exc:
-        return _error("PATH_OUTSIDE_WORKSPACE", str(exc))
+    workspace_context = run_dir
+    if args.absolute_root:
+        root_path = Path(args.absolute_root).resolve()
+        if not _path_under_allowed_root(root_path):
+            return _error(
+                "PATH_NOT_ALLOWED",
+                "absolute_root not permitted",
+                extra_patterns=args.exclude_globs,
+            )
+        workspace_context = root_path
+    else:
+        try:
+            root_path = safe_join(run_dir, args.root)
+        except ValueError as exc:
+            return _error(
+                "PATH_OUTSIDE_WORKSPACE",
+                str(exc),
+                extra_patterns=args.exclude_globs,
+            )
+        root_path = root_path.resolve()
+
+    allowed_context_roots = (normalize_search_root(workspace_context),)
+    if not _path_under_allowed_root(root_path, allowed_context_roots):
+        return _error(
+            "PATH_NOT_ALLOWED",
+            "root path not permitted",
+            extra_patterns=args.exclude_globs,
+        )
 
     if not root_path.exists():
-        return _error("NOT_FOUND", "root path missing")
+        return _error(
+            "NOT_FOUND",
+            "root path missing",
+            extra_patterns=args.exclude_globs,
+        )
 
     pattern, compile_error = _prepare_pattern(args)
     if compile_error:
-        return _error("INVALID_ARGUMENT", "query pattern could not be compiled", compile_error)
+        return _error(
+            "INVALID_ARGUMENT",
+            "query pattern could not be compiled",
+            compile_error,
+            extra_patterns=args.exclude_globs,
+        )
 
     entries: list[dict] = []
     files_scanned = 0
     files_with_matches = 0
     total_matches = 0
     truncated = False
+    excluded_count = 0
+    include_patterns = normalize_globs(args.include_globs)
+    combined_patterns = combine_exclude_patterns(args.exclude_globs)
+    excluded_pattern_counts: dict[str, int] = {pattern: 0 for pattern in combined_patterns}
+    candidate_run_dir = workspace_context
 
     start_time = time.monotonic()
     deadline = start_time + args.timeout_ms / 1000 if args.timeout_ms > 0 else None
@@ -120,16 +149,22 @@ def list_search_code(run_dir: Path, args: SearchCodeArgs):
         return time.monotonic() > deadline
 
     def _should_exclude(path: Path) -> bool:
-        if not args.exclude_globs:
+        if not combined_patterns:
             return False
-        candidates = _glob_candidates(path, root_path, run_dir)
-        return bool(candidates) and _matches_patterns(candidates, args.exclude_globs)
+        candidates = glob_candidates(path, root_path, candidate_run_dir)
+        pattern = first_matching_pattern(candidates, combined_patterns)
+        if not pattern:
+            return False
+        nonlocal excluded_count
+        excluded_count += 1
+        excluded_pattern_counts[pattern] += 1
+        return True
 
     def _passes_include(path: Path) -> bool:
-        if args.include_globs is None:
+        if not include_patterns:
             return True
-        candidates = _glob_candidates(path, root_path, run_dir)
-        return bool(candidates) and _matches_patterns(candidates, args.include_globs)
+        candidates = glob_candidates(path, root_path, candidate_run_dir)
+        return bool(candidates) and matches_patterns(candidates, include_patterns)
 
     def _collect_snippet(
         match: re.Match,
@@ -191,13 +226,13 @@ def list_search_code(run_dir: Path, args: SearchCodeArgs):
         nonlocal files_scanned, files_with_matches, truncated, stop
         if _should_exclude(root_path) or not _passes_include(root_path):
             return
-        if not is_safe_path(run_dir, root_path):
+        if not is_safe_path(candidate_run_dir, root_path):
             return
         files_scanned += 1
         match_count, snippets = _process_file(root_path)
         if match_count:
             files_with_matches += 1
-            _add_match_entry(root_path.relative_to(run_dir).as_posix(), match_count, snippets)
+            _add_match_entry(root_path.relative_to(candidate_run_dir).as_posix(), match_count, snippets)
         if _timed_out() or total_matches >= args.max_results:
             truncated = True
             stop = True
@@ -213,7 +248,7 @@ def list_search_code(run_dir: Path, args: SearchCodeArgs):
             pruned_dirs: list[str] = []
             for directory in dirs:
                 dir_path = Path(current_root) / directory
-                if not is_safe_path(run_dir, dir_path):
+                if not is_safe_path(candidate_run_dir, dir_path):
                     continue
                 if _should_exclude(dir_path):
                     continue
@@ -225,7 +260,7 @@ def list_search_code(run_dir: Path, args: SearchCodeArgs):
                     truncated = True
                     break
                 file_path = Path(current_root) / filename
-                if not is_safe_path(run_dir, file_path):
+                if not is_safe_path(candidate_run_dir, file_path):
                     continue
                 if _should_exclude(file_path):
                     continue
@@ -235,13 +270,14 @@ def list_search_code(run_dir: Path, args: SearchCodeArgs):
                 match_count, snippets = _process_file(file_path)
                 if match_count:
                     files_with_matches += 1
-                    rel_path = file_path.relative_to(run_dir).as_posix()
+                    rel_path = file_path.relative_to(candidate_run_dir).as_posix()
                     _add_match_entry(rel_path, match_count, snippets)
             if stop and not _timed_out():
                 break
     if entries:
         entries.sort(key=lambda entry: entry["path"])
-    result = {
+    policy_meta = policy_metadata(args.exclude_globs)
+    stats: dict[str, object] = {
         "query": args.query,
         "is_regex": args.is_regex,
         "case_sensitive": args.case_sensitive,
@@ -251,6 +287,13 @@ def list_search_code(run_dir: Path, args: SearchCodeArgs):
             "files_scanned": files_scanned,
             "files_with_matches": files_with_matches,
             "total_matches": total_matches,
+            "excluded": excluded_count,
+            "excluded_patterns": list(combined_patterns),
+            "excluded_matches_by_pattern": dict(excluded_pattern_counts),
+            "allowed_roots": list(allowed_root_strings()),
         },
     }
-    return JSONResponse(status_code=200, content={"ok": True, "result": result})
+    return JSONResponse(
+        status_code=200,
+        content={"ok": True, "result": stats, "meta": {"policy": policy_meta}},
+    )

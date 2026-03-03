@@ -33,7 +33,7 @@ def test_missing_signature():
     payload = json.dumps(_fixture_payload()).encode("utf-8")
     timestamp, _ = signer(payload)
     response = client.post(
-        "/v1/execute",
+        "/v1/run/tool",
         data=payload,
         headers={"X-AM-Timestamp": timestamp},
     )
@@ -44,7 +44,7 @@ def test_invalid_signature():
     payload = json.dumps(_fixture_payload()).encode("utf-8")
     timestamp, _ = signer(payload)
     response = client.post(
-        "/v1/execute",
+        "/v1/run/tool",
         data=payload,
         headers={"X-AM-Timestamp": timestamp, "X-AM-Signature": "bad"},
     )
@@ -55,7 +55,7 @@ def test_valid_signature():
     payload = json.dumps(_fixture_payload()).encode("utf-8")
     timestamp, signature = signer(payload)
     response = client.post(
-        "/v1/execute",
+        "/v1/run/tool",
         data=payload,
         headers={
             "X-AM-Signature": signature,
@@ -75,7 +75,7 @@ def test_stale_timestamp_rejected():
     stale_timestamp = str(int(time.time()) - TIMESTAMP_SKEW_SECONDS - 5)
     timestamp, signature = signer(payload, timestamp=stale_timestamp)
     response = client.post(
-        "/v1/execute",
+        "/v1/run/tool",
         data=payload,
         headers={
             "X-AM-Signature": signature,

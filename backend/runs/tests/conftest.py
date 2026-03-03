@@ -12,13 +12,13 @@ def disable_rate_limits_env(request):
         yield
         return
 
-    previous = os.environ.get("AGENTMAESTRO_DISABLE_RATE_LIMITS")
-    os.environ["AGENTMAESTRO_DISABLE_RATE_LIMITS"] = "1"
-    settings.AGENTMAESTRO_DISABLE_RATE_LIMITS = True
+    previous = os.environ.get("DISABLE_RATE_LIMITS")
+    os.environ["DISABLE_RATE_LIMITS"] = "1"
+    settings.DISABLE_RATE_LIMITS = True
     yield
     if previous is None:
-        os.environ.pop("AGENTMAESTRO_DISABLE_RATE_LIMITS", None)
-        settings.AGENTMAESTRO_DISABLE_RATE_LIMITS = False
+        os.environ.pop("DISABLE_RATE_LIMITS", None)
+        settings.DISABLE_RATE_LIMITS = False
     else:
-        os.environ["AGENTMAESTRO_DISABLE_RATE_LIMITS"] = previous
-        settings.AGENTMAESTRO_DISABLE_RATE_LIMITS = previous.lower() in {"1", "true", "yes"}
+        os.environ["DISABLE_RATE_LIMITS"] = previous
+        settings.DISABLE_RATE_LIMITS = previous.lower() in {"1", "true", "yes"}

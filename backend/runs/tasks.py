@@ -28,10 +28,10 @@ def run_tick(self, run_id: str):
 @app.task(name="runs.tasks.archive_completed_runs")
 def archive_completed_runs_task():
     return archive_completed_runs(
-        older_than_days=getattr(settings, "AGENTMAESTRO_ARCHIVE_RETENTION_DAYS", 30),
-        limit=getattr(settings, "AGENTMAESTRO_ARCHIVE_LIMIT", None),
-        compact=getattr(settings, "AGENTMAESTRO_ARCHIVE_COMPACT_EVENTS", True),
-        event_types=getattr(settings, "AGENTMAESTRO_VERBOSE_EVENT_TYPES", None),
+        older_than_days=getattr(settings, "ARCHIVE_RETENTION_DAYS", 30),
+        limit=getattr(settings, "ARCHIVE_LIMIT", None),
+        compact=getattr(settings, "ARCHIVE_COMPACT_EVENTS", True),
+        event_types=getattr(settings, "VERBOSE_EVENT_TYPES", None),
     )
 
 

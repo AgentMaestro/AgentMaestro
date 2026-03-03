@@ -24,7 +24,6 @@ toolrunner/.venv/
 # =========================================
 # Django
 # =========================================
-*.log
 local_settings.py
 db.sqlite3
 db.sqlite3-journal
@@ -99,6 +98,7 @@ temp/
 *.swp
 *.swo
 
+
 # =========================================
 # Test folders
 # =========================================
@@ -106,11 +106,13 @@ pytest_*
 .pytest_*
 **/pytest_*
 **/.pytest_*
-DevAgentMaestrotool*
-**/DevAgentMaestrotool*
+DevAgentMaestrotool*/
+**/DevAgentMaestrotool*/
 backend/DevAgentMaestrobackendpytest_temp/
 toolrunner/DevAgentMaestrotoolrunnerpytest_temp/
-
+.agentmaestro_smoke_ws/
+debug_patch*
+toolrunner/.agentmaestro/
 
 # =========================================
 # Codex personal files

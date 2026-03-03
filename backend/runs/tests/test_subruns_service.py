@@ -26,7 +26,7 @@ def _make_run(name_suffix: str) -> AgentRun:
     agent = Agent.objects.create(
         workspace=workspace,
         name=f"Subrun Agent {name_suffix}",
-        system_prompt="Subrun prompt.",
+        soul="Subrun prompt.",
         created_by=user,
     )
 

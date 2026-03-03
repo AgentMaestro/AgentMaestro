@@ -6,7 +6,7 @@ from django.contrib.auth import get_user_model, login
 from django.core.exceptions import PermissionDenied
 from django.db import transaction
 from django.http import FileResponse, Http404, JsonResponse
-from django.shortcuts import get_object_or_404, render
+from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.views.decorators.http import require_http_methods
 
@@ -26,6 +26,16 @@ def dev_ws_test(request):
     return render(request, "ui/dev_ws_test.html")
 
 
+def dev_login_test_user(request):
+    User = get_user_model()
+    user, created = User.objects.get_or_create(username="test-user", defaults={"is_active": True})
+    if created or not user.has_usable_password():
+        user.set_unusable_password()
+        user.save(update_fields=["password"])
+    login(request, user)
+    return redirect("/agents/new")
+
+
 def _get_or_create_dev_workspace() -> Workspace:
     workspace, _ = Workspace.objects.get_or_create(name=DEFAULT_DEV_WORKSPACE, defaults={"is_active": True})
     return workspace
@@ -38,7 +48,7 @@ def _get_or_create_dev_agent(workspace: Workspace) -> Agent:
     return Agent.objects.create(
         workspace=workspace,
         name=DEFAULT_DEV_AGENT,
-        system_prompt="You are the Dev Runner. Follow instructions carefully.",
+        soul="You are the Dev Runner. Follow instructions carefully.",
     )
 
 

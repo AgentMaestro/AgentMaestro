@@ -6,6 +6,14 @@ urlpatterns = [
     # Django Admin
     path("admin/", admin.site.urls),
 
+    path("agents/", include(("agents.urls", "agents"), namespace="agents")),
+
+    path("control/", include(("control.urls", "control"), namespace="control")),
+
+    path("comms/", include(("comms.urls", "comms"), namespace="comms")),
+
+    path("llm/", include(("llm.urls", "llm"), namespace="llm")),
+
     # UI app
     path("ui/", include(("ui.urls", "ui"), namespace="ui")),
 

@@ -101,7 +101,7 @@ def setup_test_workspace():
     agent, _ = Agent.objects.get_or_create(
         workspace=workspace,
         name="Load Test Agent",
-        defaults={"system_prompt": "Load test agent."},
+        defaults={"soul": "Load test agent."},
     )
     membership.role = WorkspaceMembership.Role.OPERATOR
     membership.save(update_fields=["role"])

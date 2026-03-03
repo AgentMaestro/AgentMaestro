@@ -33,7 +33,7 @@ def test_append_event_seq_increments_and_persists():
     agent = Agent.objects.create(
         workspace=ws,
         name="TestAgent",
-        system_prompt="You are a test agent.",
+        soul="You are a test agent.",
         created_by=user,
     )
 
@@ -81,7 +81,7 @@ async def test_append_event_broadcasts_to_run_group():
         agent = Agent.objects.create(
             workspace=ws,
             name="WSAgent",
-            system_prompt="You are a test agent.",
+            soul="You are a test agent.",
             created_by=user,
         )
 

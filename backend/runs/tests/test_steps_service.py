@@ -18,7 +18,7 @@ def _make_run(name_suffix: str):
     agent = Agent.objects.create(
         workspace=ws,
         name=f"Steps Agent {name_suffix}",
-        system_prompt="You are a test agent.",
+        soul="You are a test agent.",
         created_by=user,
     )
 

@@ -272,7 +272,7 @@ def compile_plan(run_id: str) -> Plan:
         milestones=_build_milestones(run_id, locked_sections),
     )
 
-    plan_data = plan.model_dump()
+    plan_data = plan.model_dump(exclude_none=True)
     validate_plan(plan_data)
     plans_dir = _plan_dir(run_root)
     plan_path = plans_dir / f"{plan_id}.json"

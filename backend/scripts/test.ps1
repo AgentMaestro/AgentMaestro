@@ -12,10 +12,61 @@ New-Item -ItemType Directory -Force $tempRoot | Out-Null
 if (Test-Path $baseTemp) { Remove-Item -Recurse -Force $baseTemp -ErrorAction SilentlyContinue }
 New-Item -ItemType Directory -Force $baseTemp | Out-Null
 
+
+# Pre-delete workspace test path if it exists
+$testPath = "C:\tmp\agentmaestro\sandbox\pytest_temp"
+if (Test-Path $testPath) { Remove-Item -Recurse -Force $testPath -ErrorAction SilentlyContinue }
+
+# Pre-delete other test folders
+$test1Path = "C:\Dev\AgentMaestro\backtest\.pytest-temp"
+if (Test-Path $test1Path) { Remove-Item -Recurse -Force $test1Path -ErrorAction SilentlyContinue }
+
 $env:TMP = $tempRoot
 $env:TEMP = $tempRoot
 $env:PYTEST_ADDOPTS = "--basetemp=$baseTemp --ignore-glob=**\pytest_* --ignore-glob=**\.pytest_* --ignore-glob=**\pytest-*"
 
-Push-Location "C:\Dev\AgentMaestro\backend"
-.\.venv\Scripts\python -m pytest @Args
-Pop-Location
+$previousTransport = $env:OPENAI_TRANSPORT
+$env:OPENAI_TRANSPORT = "http"
+try {
+  Push-Location "C:\Dev\AgentMaestro\backend"
+  .\.venv\Scripts\python -m pytest @Args
+}
+finally {
+  Pop-Location
+  if ($previousTransport) {
+    $env:OPENAI_TRANSPORT = $previousTransport
+  }
+  else {
+    Remove-Item Env:OPENAI_TRANSPORT -ErrorAction SilentlyContinue
+  }
+}
+
+ $cleanupScript = @'
+import os
+import dj_database_url
+import psycopg
+from psycopg import sql
+
+db_url = os.getenv("DATABASE_URL") or "postgresql://agentmaestro:agentmaestro@localhost:5432/agentmaestro"
+cfg = dj_database_url.parse(db_url)
+drop_name = "test_agentmaestro"
+conn_params = {
+    "host": cfg.get("HOST") or "localhost",
+    "port": cfg.get("PORT") or 5432,
+    "user": cfg.get("USER"),
+    "password": cfg.get("PASSWORD"),
+    "dbname": "postgres",
+}
+try:
+    with psycopg.connect(**conn_params, autocommit=True) as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT 1 FROM pg_database WHERE datname=%s", (drop_name,))
+            if cur.fetchone():
+                cur.execute(
+                    sql.SQL("DROP DATABASE IF EXISTS {}").format(sql.Identifier(drop_name))
+                )
+except Exception as exc:
+    print(f"Unable to drop test database {drop_name}: {exc}")
+'@
+
+ $cleanupScript | .\.venv\Scripts\python -

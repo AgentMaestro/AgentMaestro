@@ -29,7 +29,7 @@ class Command(BaseCommand):
             "--verbose-events",
             nargs="*",
             type=str,
-            help="Event types to compact (defaults to AGENTMAESTRO_VERBOSE_EVENT_TYPES).",
+            help="Event types to compact (defaults to VERBOSE_EVENT_TYPES).",
         )
 
     def handle(self, *args, **options):

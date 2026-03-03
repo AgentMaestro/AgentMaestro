@@ -31,7 +31,7 @@ def _make_run(name_suffix: str) -> AgentRun:
     agent = Agent.objects.create(
         workspace=workspace,
         name=f"Recovery Agent {name_suffix}",
-        system_prompt="Recovery test prompt.",
+        soul="Recovery test prompt.",
         created_by=user,
     )
     return AgentRun.objects.create(

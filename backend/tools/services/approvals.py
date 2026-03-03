@@ -1,23 +1,22 @@
-# backend/tools/services/approvals.py
 from __future__ import annotations
 
 from typing import Any, Dict, Optional
 
 from django.db import transaction
+from django.utils import timezone
 from runs.models import AgentRun, AgentStep
-from runs.services.events import (
-    append_event,
-    broadcast_approvals_event,
-)
+from runs.services.events import append_event, broadcast_approvals_event
 from runs.services.state import transition_run
 from runs.services.steps import append_step
 from tools.models import ToolCall
-from tools.services.execution import execute_tool_call
 from tools.services.quotas import acquire_tool_call_slots, release_tool_call_slots
+from tools.tasks import execute_tool_call_async
 
 
 TOOL_CALL_REQUESTED_EVENT = "tool_call_requested"
 TOOL_CALL_APPROVED_EVENT = "tool_call_approved"
+TOOL_CALL_DENIED_EVENT = "tool_call_denied"
+TOOL_CALL_STATUS_EVENT = "tool_call_status"
 
 
 def _schedule_approvals_push(*, workspace_id: str, event: str, data: Dict[str, Any]) -> None:
@@ -25,6 +24,40 @@ def _schedule_approvals_push(*, workspace_id: str, event: str, data: Dict[str, A
         broadcast_approvals_event(workspace_id=workspace_id, event=event, data=data)
 
     transaction.on_commit(_do_broadcast)
+
+
+def _broadcast_tool_call_status(tool_call: ToolCall, *, status: Optional[str] = None, reason: Optional[str] = None) -> None:
+    payload = {
+        "tool_call_id": str(tool_call.id),
+        "tool_name": tool_call.tool_name,
+        "status": status or tool_call.status,
+        "requires_approval": tool_call.requires_approval,
+        "args": tool_call.args,
+        "celery_task_id": tool_call.celery_task_id,
+    }
+    if reason:
+        payload["error"] = reason
+    append_event(
+        run_id=str(tool_call.run_id),
+        event_type=TOOL_CALL_STATUS_EVENT,
+        payload=payload,
+        correlation_id=tool_call.correlation_id,
+    )
+
+
+def _enqueue_and_schedule(tool_call_id: str) -> None:
+    tool_call = ToolCall.objects.select_related("run").get(id=tool_call_id)
+    tool_call.status = ToolCall.Status.QUEUED
+    tool_call.updated_at = timezone.now()
+    tool_call.save(update_fields=["status", "updated_at"])
+    _broadcast_tool_call_status(tool_call, status=ToolCall.Status.QUEUED)
+    task = execute_tool_call_async.delay(tool_call_id)
+    tool_call.celery_task_id = task.id or ""
+    tool_call.save(update_fields=["celery_task_id", "updated_at"])
+
+
+def _schedule_execution_after_commit(tool_call_id: str) -> None:
+    transaction.on_commit(lambda: _enqueue_and_schedule(tool_call_id))
 
 
 @transaction.atomic
@@ -60,12 +93,25 @@ def request_tool_call_approval(
         tool_name=tool_name,
         args=args or {},
         requires_approval=requires_approval,
-        status=ToolCall.Status.PENDING if requires_approval else ToolCall.Status.APPROVED,
+        status=ToolCall.Status.PENDING_APPROVAL if requires_approval else ToolCall.Status.QUEUED,
         correlation_id=step.correlation_id,
     )
 
     if requires_approval:
         acquire_tool_call_slots(str(run.workspace_id), str(run.id), str(tool_call.id))
+        transition_run(run_id=run_id, new_status=AgentRun.Status.WAITING_FOR_APPROVAL)
+        _schedule_approvals_push(
+            workspace_id=str(run.workspace_id),
+            event=TOOL_CALL_REQUESTED_EVENT,
+            data={
+                "run_id": str(run.id),
+                "tool_call_id": str(tool_call.id),
+                "tool_name": tool_call.tool_name,
+                "status": tool_call.status,
+            },
+        )
+    else:
+        _schedule_execution_after_commit(str(tool_call.id))
 
     append_event(
         run_id=run_id,
@@ -75,25 +121,12 @@ def request_tool_call_approval(
             "tool_name": tool_call.tool_name,
             "args": tool_call.args,
             "step_index": step.step_index,
+            "status": tool_call.status,
         },
         correlation_id=step.correlation_id,
     )
 
-    if requires_approval:
-        transition_run(run_id=run_id, new_status=AgentRun.Status.WAITING_FOR_APPROVAL)
-        _schedule_approvals_push(
-            workspace_id=str(run.workspace_id),
-            event=TOOL_CALL_REQUESTED_EVENT,
-            data={
-                "run_id": str(run.id),
-                "tool_call_id": str(tool_call.id),
-                "tool_name": tool_call.tool_name,
-                "status": ToolCall.Status.PENDING,
-            },
-        )
-
-    if not requires_approval:
-        transaction.on_commit(lambda: execute_tool_call(str(tool_call.id)))
+    _broadcast_tool_call_status(tool_call)
 
     return tool_call
 
@@ -109,11 +142,10 @@ def approve_tool_call(*, tool_call_id: str, user) -> ToolCall:
 
     if not tool_call.requires_approval:
         raise RuntimeError("Tool call does not require approval")
-    if tool_call.status != ToolCall.Status.PENDING:
+    if tool_call.status != ToolCall.Status.PENDING_APPROVAL:
         raise RuntimeError("Tool call already acted on")
 
     tool_call.mark_approved(user)
-    tool_call.status = ToolCall.Status.APPROVED
     tool_call.save(update_fields=["status", "approved_by", "approved_at", "updated_at"])
 
     append_event(
@@ -122,6 +154,7 @@ def approve_tool_call(*, tool_call_id: str, user) -> ToolCall:
         payload={
             "tool_call_id": str(tool_call.id),
             "approved_by": getattr(user, "username", None),
+            "status": tool_call.status,
         },
         correlation_id=tool_call.correlation_id,
     )
@@ -135,10 +168,63 @@ def approve_tool_call(*, tool_call_id: str, user) -> ToolCall:
             "run_id": str(tool_call.run_id),
             "tool_call_id": str(tool_call.id),
             "approved_by": getattr(user, "username", None),
-            "status": ToolCall.Status.APPROVED,
+            "status": tool_call.status,
         },
     )
 
-    transaction.on_commit(lambda: execute_tool_call(str(tool_call.id)))
+    _schedule_execution_after_commit(str(tool_call.id))
+
+    return tool_call
+
+
+@transaction.atomic
+def deny_tool_call(*, tool_call_id: str, user, reason: Optional[str] = None) -> ToolCall:
+    tool_call = (
+        ToolCall.objects
+        .select_for_update()
+        .select_related("run", "run__workspace")
+        .get(id=tool_call_id)
+    )
+
+    if tool_call.status != ToolCall.Status.PENDING_APPROVAL:
+        raise RuntimeError("Tool call not awaiting approval")
+
+    tool_call.status = ToolCall.Status.DENIED
+    tool_call.error = reason or "Denied"
+    tool_call.observed_at = timezone.now()
+    tool_call.save(update_fields=["status", "error", "observed_at", "updated_at"])
+
+    release_tool_call_slots(
+        str(tool_call.run.workspace_id),
+        str(tool_call.run_id),
+        str(tool_call.id),
+    )
+
+    append_event(
+        run_id=str(tool_call.run_id),
+        event_type=TOOL_CALL_DENIED_EVENT,
+        payload={
+            "tool_call_id": str(tool_call.id),
+            "denied_by": getattr(user, "username", None),
+            "status": tool_call.status,
+            "reason": reason,
+        },
+        correlation_id=tool_call.correlation_id,
+    )
+
+    transition_run(run_id=str(tool_call.run_id), new_status=AgentRun.Status.RUNNING)
+
+    _schedule_approvals_push(
+        workspace_id=str(tool_call.run.workspace_id),
+        event=TOOL_CALL_DENIED_EVENT,
+        data={
+            "run_id": str(tool_call.run_id),
+            "tool_call_id": str(tool_call.id),
+            "denied_by": getattr(user, "username", None),
+            "status": tool_call.status,
+        },
+    )
+
+    _broadcast_tool_call_status(tool_call, status=ToolCall.Status.DENIED, reason=reason)
 
     return tool_call

@@ -16,7 +16,7 @@ def test_shell_exec_allowed(monkeypatch, tmp_path):
         return subprocess.CompletedProcess(args=[], returncode=0, stdout="ok", stderr="")
 
     monkeypatch.setattr(subprocess, "run", fake_run)
-    code, out, err = run_shell(
+    code, out, err, working_dir = run_shell(
         tmp_path,
         ["pytest", "-q"],
         cwd=".",
@@ -29,6 +29,7 @@ def test_shell_exec_allowed(monkeypatch, tmp_path):
     assert err == ""
     assert seen["cwd"] == tmp_path
     assert seen["cmd"] == ["pytest", "-q"]
+    assert working_dir == tmp_path
 
 
 def test_shell_exec_blocked(monkeypatch, tmp_path):
@@ -41,7 +42,7 @@ def test_shell_exec_timeout(monkeypatch, tmp_path):
         raise subprocess.TimeoutExpired(cmd="cmd", timeout=5)
 
     monkeypatch.setattr(subprocess, "run", fake_timeout)
-    code, out, err = run_shell(tmp_path, ["pytest"], cwd=".", timeout_s=5, max_output_bytes=128)
+    code, out, err, _ = run_shell(tmp_path, ["pytest"], cwd=".", timeout_s=5, max_output_bytes=128)
     assert code is None
     assert err == ""
 
@@ -55,7 +56,7 @@ def test_shell_exec_truncates_output(monkeypatch, tmp_path):
         )
 
     monkeypatch.setattr(subprocess, "run", fake_run)
-    code, out, err = run_shell(tmp_path, ["pytest"], cwd=".", timeout_s=5, max_output_bytes=10)
+    code, out, err, _ = run_shell(tmp_path, ["pytest"], cwd=".", timeout_s=5, max_output_bytes=10)
     assert code == 0
     assert out.endswith("…")
     assert len(out) <= 11

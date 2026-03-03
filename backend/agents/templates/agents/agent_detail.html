@@ -1,0 +1,223 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <title>{{ agent.name }} · Agent Chat</title>
+  <link rel="stylesheet" href="{% static 'control/chat.css' %}" />
+  <style>
+    body {
+      background: #030712;
+      margin: 0;
+    }
+
+    .agent-detail-shell {
+      min-height: 100vh;
+      gap: 0;
+    }
+
+    .agent-detail-panel {
+      background: #0f172a;
+      color: #f8fafc;
+      border-right: 1px solid rgba(255, 255, 255, 0.08);
+    }
+
+    .agent-detail-panel h3,
+    .agent-detail-panel p {
+      color: #f8fafc;
+    }
+
+    .agent-info-card,
+    .transport-status-card {
+      background: rgba(255, 255, 255, 0.04);
+      border-radius: 12px;
+      padding: 1rem;
+      margin-bottom: 1rem;
+      border: 1px solid rgba(255, 255, 255, 0.1);
+    }
+
+    details.agent-tools {
+      background: rgba(255, 255, 255, 0.04);
+      border-radius: 12px;
+      padding: 1rem;
+      border: 1px solid rgba(255, 255, 255, 0.1);
+    }
+
+    .agent-tools-summary {
+      font-size: 0.95rem;
+      color: rgba(248, 250, 252, 0.8);
+    }
+
+    .agent-tool {
+      padding: 0.6rem 0;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+    }
+
+    .agent-tool:last-child {
+      border-bottom: none;
+    }
+
+    .agent-tool small {
+      color: rgba(248, 250, 252, 0.6);
+    }
+
+    .transport-status-card a {
+      text-decoration: none;
+      color: #1d4ed8;
+      font-weight: 600;
+    }
+
+    .chat-stream-header h1 {
+      margin: 0;
+      color: #0f172a;
+    }
+
+    .chat-stream-subtitle {
+      margin: 0;
+      color: rgba(15, 23, 42, 0.65);
+    }
+
+    .status-pill[data-connection-status] {
+      background: rgba(15, 23, 42, 0.15);
+      color: #0f172a;
+    }
+
+    .chat-form button.secondary {
+      background: #f8fafc;
+      color: #0f172a;
+    }
+    .tool-request-panel {
+      background: rgba(15, 23, 42, 0.35);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 12px;
+      padding: 0.75rem 1rem;
+      margin: 0.75rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.4rem;
+    }
+    .tool-request-card {
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      border-radius: 10px;
+      padding: 0.65rem 0.85rem;
+      background: rgba(255, 255, 255, 0.02);
+      display: flex;
+      flex-direction: column;
+      gap: 0.35rem;
+    }
+    .tool-request-card-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      gap: 0.5rem;
+    }
+    .tool-request-card-actions {
+      display: flex;
+      gap: 0.4rem;
+    }
+    .tool-request-card-actions button {
+      border: none;
+      border-radius: 6px;
+      padding: 0.35rem 0.75rem;
+      cursor: pointer;
+    }
+    .tool-request-card-actions button.primary {
+      background: #2563eb;
+      color: #fff;
+    }
+    .tool-request-card-actions button.secondary {
+      background: rgba(255, 255, 255, 0.08);
+      color: #f8fafc;
+    }
+    .tool-request-status {
+      font-size: 0.8rem;
+      padding: 0.1rem 0.5rem;
+      border-radius: 999px;
+      background: rgba(248, 250, 252, 0.12);
+      color: #e2e8f0;
+    }
+    .tool-request-args {
+      background: rgba(15, 23, 42, 0.45);
+      border-radius: 6px;
+      padding: 0.45rem;
+      font-size: 0.85rem;
+      margin: 0;
+    }
+    .tool-request-footer {
+      font-size: 0.85rem;
+      color: #cbd5f5;
+    }
+  </style>
+</head>
+
+<body>
+  <div class="chat-shell agent-detail-shell">
+    <aside class="chat-list agent-detail-panel">
+      <div class="chat-list-header">
+        <div>
+          <h3>{{ agent.name }}</h3>
+          <p>{{ workspace.name }}</p>
+          <p class="chat-stream-subtitle">
+            Policy: {{ agent.policy_name }}
+          </p>
+        </div>
+      </div>
+      <div class="chat-list-body">
+        <div class="agent-info-card">
+          <strong>Model</strong>
+          <p>{{ agent.default_model }} · Temperature {{ agent.temperature }}</p>
+        </div>
+
+        <details class="agent-tools" open>
+          <summary class="agent-tools-summary">
+            Tools available ({{ tool_count }})
+          </summary>
+          {% if tools %}
+            {% for tool in tools %}
+              <div class="agent-tool">
+                <strong>{{ tool.name }}</strong>
+                <small>{{ tool.group }} · Risk {{ tool.risk }}</small>
+                <p>{{ tool.description }}</p>
+              </div>
+            {% endfor %}
+          {% else %}
+            <p class="chat-empty-state">No tools granted yet.</p>
+          {% endif %}
+        </details>
+
+        <div class="transport-status-card">
+          <p>{{ transport_status.detail }}</p>
+          <a href="{{ transport_status.cta_url }}">{{ transport_status.cta_label }}</a>
+        </div>
+      </div>
+    </aside>
+
+    <section class="chat-stream" data-agent-chat data-agent-slug="{{ agent.slug }}" data-ws-url="{{ websocket_url }}">
+      <header class="chat-stream-header">
+        <div>
+          <h1>Agent Chat</h1>
+          <p class="chat-stream-subtitle">
+            Workspace: {{ workspace.name }}
+          </p>
+        </div>
+        <span class="status-pill" data-connection-status>Connecting…</span>
+      </header>
+      <div class="tool-request-panel" data-tool-requests>
+        <p class="tool-request-empty">Tool calls and approvals will appear here.</p>
+      </div>
+      <div class="chat-messages" data-chat-messages></div>
+      <form class="chat-form" data-chat-form>
+        <textarea data-chat-input rows="3" placeholder="Say something to the agent…"></textarea>
+        <div style="display:flex; gap:0.5rem;">
+          <button type="submit">Send</button>
+          <button type="button" class="secondary" data-reconnect-btn>Reconnect</button>
+        </div>
+      </form>
+    </section>
+  </div>
+
+  <script src="{% static 'agents/chat.js' %}" defer></script>
+</body>
+
+</html>

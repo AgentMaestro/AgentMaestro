@@ -602,6 +602,37 @@ Run artifacts are persisted per run:
 - `srs/readiness.json` (cached gate report: score, checks, counts, missing items, and warnings)
 - `approvals.json` via the `/v1/runs/{run_id}/approve` endpoint
 
+### Trivial Trial button & API
+
+- The User tab now displays a **Trivial Trial (Seed + Plan + Run)** button above the chat area. Clicking it disables the button, shows the rolling status line (“Seeding SRS…”, “Generating plan…”, “Starting run…”), refreshes the User partial, updates the Run ID label, and jumps to the Apprentice tab so you can watch the generated events.
+- The button calls `POST /v1/trials/trivial` (accepting JSON or form data). Defaults: `repo_dir` is the workspace root, `slug` is normalized to start with `trial-` (default `trial-trivial`), `start=true`, `override_readiness=true`, and `template=todo_cli_v1`.
+- Request body example:
+  ```json
+  {
+    "repo_dir": ".",
+    "slug": "trivial-trial",
+    "start": true,
+    "override_readiness": true,
+    "template": "todo_cli_v1"
+  }
+  ```
+- The response highlights the new artifacts:
+  ```json
+  {
+    "ok": true,
+    "run_id": "trial-trivial-xxxxxxxx",
+    "paths": {
+      "run_dir": ".agentmaestro/runs/trial-trivial-xxxxxxxx",
+      "srs_md": ".agentmaestro/runs/trial-trivial-xxxxxxxx/srs/SRS.md",
+      "plan_latest": ".agentmaestro/runs/trial-trivial-xxxxxxxx/plans/latest.json"
+    },
+    "seeded_sections": ["project_summary", "goals_non_goals", "functional_requirements", "interfaces", "acceptance_criteria", "risks_assumptions"],
+    "plan_generated": true,
+    "run_started": true
+  }
+  ```
+- The trial run locks the required sections via `SRS_SECTION_LOCKED`, then emits `TRIAL_STARTED`, `TRIAL_SRS_SEEDED`, `PLAN_GENERATED`, `TRIAL_PLAN_GENERATED`, and (if `start=true`) `TRIAL_RUN_STARTED`. The Apprentice feed and stuck banner surface these signals so you can debug any blockers.
+
 Key API routes for the dashboard workflows:
 
 - `POST /v1/runs` – create a run (`slug`, optional `repo_dir`/`srs_path`)

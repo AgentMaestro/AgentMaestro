@@ -3,9 +3,7 @@ from __future__ import annotations
 import html
 import json
 import time
-import uuid
 from datetime import datetime, timezone
-from pathlib import Path
 from pathlib import Path
 from typing import Any, Literal, Optional, Sequence
 
@@ -17,6 +15,7 @@ from .auth import verify_signature
 from .models import (
     ExecuteRequest,
     ExecuteResponse,
+    FilePatchArgs,
     FileReadArgs,
     FileWriteArgs,
     PythonArgs,
@@ -24,11 +23,12 @@ from .models import (
     SearchCodeArgs,
     ShellArgs,
 )
-from .run_manager import RunContext, RunManager
+from .run_manager import REPO_ROOT, RunContext, RunManager
 from .schemas import SchemaValidationError
 from .srs.readiness import compute_readiness, ensure_readiness, READINESS_SCORE_THRESHOLD
 from .sandbox import get_run_dir
 from .tools import (
+    apply_patch,
     create_webhook,
     list_repo_tree,
     list_search_code,
@@ -37,17 +37,19 @@ from .tools import (
     run_shell,
     write_file,
 )
+from fastapi.responses import JSONResponse
 from .planning.plan_compiler import PlanCompilerError, compile_plan
+from .verify import read_run_metadata, run_post_run_verification
 
 
 def _make_execute_response(
-    request_id: str,
-    status_text: str,
-    exit_code: int | None,
-    stdout: str,
-    stderr: str,
-    duration_ms: int,
-    result: dict | None,
+        request_id: str,
+        status_text: str,
+        exit_code: int | None,
+        stdout: str,
+        stderr: str,
+        duration_ms: int,
+        result: dict | None,
 ) -> ExecuteResponse:
     return ExecuteResponse(
         request_id=request_id,
@@ -60,10 +62,126 @@ def _make_execute_response(
     )
 
 
+async def _handle_execute(payload: ExecuteRequest) -> ExecuteResponse:
+    run_dir = get_run_dir(payload.workspace_id, payload.run_id)
+
+    stdout = ""
+    stderr = ""
+    exit_code: int | None = None
+    duration_ms = 0
+    result: dict[str, object] = {"tool": payload.tool_name}
+    if payload.policy:
+        result["policy"] = payload.policy
+    start = time.monotonic()
+    success = False
+    tool_result: dict | None = None
+
+    try:
+        if payload.tool_name == "file_read":
+            tool_result = read_file(run_dir, FileReadArgs(**payload.args))
+            exit_code = 0
+            success = True
+        elif payload.tool_name == "file_write":
+            tool_result = write_file(run_dir, FileWriteArgs(**payload.args), payload.policy)
+            exit_code = 0
+            success = True
+        elif payload.tool_name == "file_patch":
+            tool_result = apply_patch(run_dir, FilePatchArgs(**payload.args), payload.policy)
+            exit_code = 0
+            success = True
+        elif payload.tool_name == "repo_tree":
+            tool_result = list_repo_tree(run_dir, RepoTreeArgs(**payload.args))
+            exit_code = 0
+            success = True
+        elif payload.tool_name == "search_code":
+            tool_result = list_search_code(run_dir, SearchCodeArgs(**payload.args))
+            exit_code = 0
+            success = True
+        elif payload.tool_name == "shell_exec":
+            shell = ShellArgs(**payload.args)
+            exit_code, stdout, stderr, working_dir = run_shell(
+                run_dir,
+                shell.cmd,
+                shell.cwd,
+                payload.limits.timeout_s,
+                payload.limits.max_output_bytes,
+                env=shell.env,
+            )
+            success = exit_code == 0
+            tool_result = {
+                "cmd": shell.cmd,
+                "cwd": str(working_dir),
+                "stdout": stdout,
+                "stderr": stderr,
+                "exit_code": exit_code,
+                "sandbox_root": str(run_dir.resolve()),
+            }
+        elif payload.tool_name == "python_exec":
+            python_args = PythonArgs(**payload.args)
+            exit_code, stdout, stderr = run_python(
+                run_dir,
+                python_args,
+                payload.limits.timeout_s,
+                payload.limits.max_output_bytes,
+            )
+            success = exit_code == 0
+        else:
+            raise ValueError("invalid tool")
+    except (ValueError, FileNotFoundError) as exc:
+        stderr = str(exc)
+    except Exception as exc:  # pragma: no cover
+        stderr = str(exc)
+    finally:
+        duration_ms = int(round((time.monotonic() - start) * 1000))
+
+    if tool_result is not None:
+        result["tool_result"] = _normalize_tool_result(tool_result)
+    status_text = "COMPLETED" if success else "FAILED"
+    if not success and stderr and "error" not in result:
+        result["error"] = stderr
+
+    return _make_execute_response(
+        payload.request_id,
+        status_text,
+        exit_code,
+        stdout,
+        stderr,
+        duration_ms,
+        result,
+    )
+
+
+def _normalize_tool_result(tool_result: object) -> object:
+    if isinstance(tool_result, JSONResponse):
+        return _extract_json_response(tool_result)
+    return tool_result
+
+
+def _extract_json_response(response: JSONResponse) -> dict:
+    content = response.body
+    if content is None:
+        return {}
+    if isinstance(content, bytes):
+        try:
+            decoded = content.decode(response.charset or "utf-8")
+            return json.loads(decoded)
+        except Exception:
+            return {"ok": False, "error": "failed to parse JSONResponse body"}
+    return {}
+
+
 class RunCreateRequest(BaseModel):
     repo_dir: str = "."
     slug: str
     srs_path: Optional[str] = None
+
+
+class TrivialTrialRequest(BaseModel):
+    repo_dir: Optional[str] = None
+    slug: Optional[str] = None
+    start: bool = True
+    override_readiness: bool = True
+    template: str = "todo_cli_v1"
 
 
 class SRSSectionUpdate(BaseModel):
@@ -83,6 +201,51 @@ class ChatRequest(BaseModel):
     message: str
     mode: str = "srs_builder"
 
+
+TRIVIAL_TRIAL_TEMPLATES: dict[str, list[tuple[str, str]]] = {
+    "todo_cli_v1": [
+        (
+            "project_summary",
+            "Build a tiny Python CLI app `todo` that supports add, list, done, saves tasks in a local JSON file, and ships with pytest unit tests for every command.",
+        ),
+        (
+            "goals_non_goals",
+            "Goals:\n- Implement add/list/done CLI commands backed by JSON persistence.\n- Keep help text clean and guidance focused.\n- Provide pytest coverage for the primary flows.\nNon-goals:\n- No web UI, external database, sync, or authentication.",
+        ),
+        (
+            "functional_requirements",
+            "- `python -m todo add \"text\"` appends a task with an integer ID and status open.\n- `python -m todo list` prints each task with id/status/text lines.\n- `python -m todo done <id>` marks the task completed and updates local `todo_data.json` (or `data/todo.json`).\n- Invalid arguments or unknown IDs exit with a non-zero status so automation can detect failures.",
+        ),
+        (
+            "interfaces",
+            "CLI entry point via `python -m todo`. Commands: add, list, done, plus `--help`. Output is plain text showing the identifier, status, and description for each task.",
+        ),
+        (
+            "acceptance_criteria",
+            "- `pytest -q` finishes successfully.\n- Running add then list shows the new task; running done updates its status.\n- Repository stays clean after the run and the feature branch commit exists.",
+        ),
+        (
+            "risks_assumptions",
+            "- Windows permissions may block temp/artifact folders; assume the workspace allows writing under `.agentmaestro` and `scripts`.\n- The existing `scripts/test.ps1` entry point can run inside the cloned repo and Python CLI tooling remains functional.",
+        ),
+    ],
+}
+
+TRIVIAL_TRIAL_ALLOWED_TOOLS = {
+    "tier1": [
+        "file_write",
+        "git_add",
+        "git_commit",
+        "repo_tree",
+        "format_runner",
+        "lint_runner",
+        "typecheck_runner",
+        "test_runner",
+        "run_command",
+    ],
+    "tier2": [],
+    "git": ["git_status"],
+}
 
 run_manager = RunManager()
 UI_RUN_CONTEXT = run_manager.create_run("ui")
@@ -105,89 +268,28 @@ async def read_body(request: Request, call_next):
     return await call_next(request)
 
 
-@app.post("/v1/execute")
-async def execute(request: Request, raw=Depends(verify_signature)):
+@app.post("/v1/run/tool")
+async def run_tool_endpoint(request: Request, raw=Depends(verify_signature)):
     payload = ExecuteRequest(**json.loads(raw.decode("utf-8")))
-    run_dir = get_run_dir(payload.workspace_id, payload.run_id)
-
-    stdout = ""
-    stderr = ""
-    exit_code: int | None = None
-    duration_ms = 0
-    result: dict[str, object] = {"tool": payload.tool_name}
-    if payload.policy:
-        result["policy"] = payload.policy
-    start = time.monotonic()
-    success = False
-    tool_result: dict | None = None
-
-    try:
-        if payload.tool_name == "file_read":
-            tool_result = read_file(run_dir, FileReadArgs(**payload.args))
-            exit_code = 0
-            success = True
-        elif payload.tool_name == "file_write":
-            tool_result = write_file(run_dir, FileWriteArgs(**payload.args))
-            exit_code = 0
-            success = True
-        elif payload.tool_name == "repo_tree":
-            tool_result = list_repo_tree(run_dir, RepoTreeArgs(**payload.args))
-            exit_code = 0
-            success = True
-        elif payload.tool_name == "search_code":
-            tool_result = list_search_code(run_dir, SearchCodeArgs(**payload.args))
-            exit_code = 0
-            success = True
-        elif payload.tool_name == "shell_exec":
-            shell = ShellArgs(**payload.args)
-            exit_code, stdout, stderr = run_shell(
-                run_dir,
-                shell.cmd,
-                shell.cwd,
-                payload.limits.timeout_s,
-                payload.limits.max_output_bytes,
-                env=shell.env,
-            )
-            success = exit_code == 0
-        elif payload.tool_name == "python_exec":
-            python_args = PythonArgs(**payload.args)
-            exit_code, stdout, stderr = run_python(
-                run_dir,
-                python_args,
-                payload.limits.timeout_s,
-                payload.limits.max_output_bytes,
-            )
-            success = exit_code == 0
-        else:
-            raise ValueError("invalid tool")
-    except (ValueError, FileNotFoundError) as exc:
-        stderr = str(exc)
-    except Exception as exc:  # pragma: no cover
-        stderr = str(exc)
-    finally:
-        duration_ms = int(round((time.monotonic() - start) * 1000))
-
-    if tool_result is not None:
-        result["tool_result"] = tool_result
-    status_text = "COMPLETED" if success else "FAILED"
-    if not success and stderr and "error" not in result:
-        result["error"] = stderr
-
-    return _make_execute_response(
-        payload.request_id,
-        status_text,
-        exit_code,
-        stdout,
-        stderr,
-        duration_ms,
-        result,
-    )
+    response = await _handle_execute(payload)
+    return response
 
 
-@app.post("/v1/webhook", response_model=ExecuteResponse)
-async def webhook_endpoint(request: Request, raw=Depends(verify_signature)):
+@app.post("/v1/run/tool/webhook")
+async def run_tool_webhook_endpoint(request: Request, raw=Depends(verify_signature)):
     payload = json.loads(raw.decode("utf-8"))
     return create_webhook(payload)
+
+
+# Legacy aliases (to be removed once clients migrate)
+@app.post("/v1/execute")
+async def execute(request: Request, raw=Depends(verify_signature)):
+    return await run_tool_endpoint(request, raw)
+
+
+@app.post("/v1/webhook")
+async def webhook_endpoint(request: Request, raw=Depends(verify_signature)):
+    return await run_tool_webhook_endpoint(request, raw)
 
 
 def _get_run_context(run_id: str) -> RunContext:
@@ -202,6 +304,11 @@ def _plan_dir(context: RunContext) -> Path:
     directory.mkdir(parents=True, exist_ok=True)
     return directory
 
+
+def _verification_paths(context: RunContext) -> tuple[Path, Path, Path]:
+    directory = context.run_root / "verify"
+    directory.mkdir(parents=True, exist_ok=True)
+    return directory, directory / "verification.json", directory / "verification.md"
 
 
 def _run_status_summary(context: RunContext) -> dict[str, Any]:
@@ -233,7 +340,8 @@ def _step_reports_for_run(context: RunContext) -> list[dict[str, str]]:
     return entries
 
 
-def _append_chat_message(context: RunContext, role: str, content: str, meta: dict[str, Any] | None = None) -> dict[str, Any]:
+def _append_chat_message(context: RunContext, role: str, content: str, meta: dict[str, Any] | None = None) -> dict[
+    str, Any]:
     message = context.chat_transcript.append(role, content, meta or {})
     context.event_logger.log(
         "CHAT_MESSAGE",
@@ -304,7 +412,6 @@ def _srs_preview_data(context: RunContext) -> dict[str, Any]:
         "md": builder.render_srs(),
         "locked_sections": list(builder.locked_sections.keys()),
     }
-
 
 
 def _render_user_partial(run_id: str, section_id: Optional[str] = None, log_prompt: bool = True) -> str:
@@ -529,11 +636,35 @@ def _render_apprentice_partial(run_id: str) -> str:
       <h3>Event Feed</h3>
       <div id="event-feed" class="event-feed"></div>
     </div>
-    <div class="reports-panel">
+  <div class="reports-panel">
       <h3>Step Reports</h3>
       <ul id="step-report-list" class="report-list"></ul>
       <h4>Report Viewer</h4>
       <pre id="step-report-viewer" class="report-viewer"><em>Select a report to view JSON.</em></pre>
+      <div class="verification-panel">
+        <h3>Post-Run Verification</h3>
+        <div id="verification-summary" class="verification-summary">
+          <div class="verification-overview">
+            <span id="verification-status">Verification pending</span>
+            <span id="verification-score"></span>
+          </div>
+          <div class="verification-flags">
+            <span id="verification-autonomy" class="verification-flag">Autonomy: pending</span>
+            <span id="verification-hygiene" class="verification-flag">Hygiene: pending</span>
+          </div>
+          <ul id="verification-findings" class="verification-findings">
+            <li>No verification data yet.</li>
+          </ul>
+          <ul id="verification-warnings" class="verification-warnings">
+            <li>No warnings.</li>
+          </ul>
+        </div>
+        <div class="verification-actions">
+          <button id="verification-json-btn">View verification.json</button>
+          <button id="verification-md-btn">View verification.md</button>
+        </div>
+        <pre id="verification-viewer" class="verification-viewer"><em>Verification output appears here.</em></pre>
+      </div>
     </div>
   </div>
   <div id="approval-modal" class="approval-modal">
@@ -551,6 +682,188 @@ def _render_apprentice_partial(run_id: str) -> str:
 """
 
 
+_CONSOLE_HTML = """
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>ToolRunner Console</title>
+    <style>
+      :root {
+        color-scheme: dark;
+      }
+      body {
+        margin: 0;
+        font-family: "JetBrains Mono", "Fira Mono", SFMono-Regular, Menlo, Consolas, monospace;
+        background: #05070c;
+        color: #f5f6fa;
+      }
+      .console-shell {
+        display: flex;
+        flex-direction: column;
+        height: 100vh;
+      }
+      .console-toolbar {
+        padding: 0.75rem 1rem;
+        border-bottom: 1px solid #1b1f2d;
+        display: flex;
+        align-items: center;
+        gap: 0.75rem;
+        background: #0f1119;
+      }
+      .console-toolbar button {
+        background: #394667;
+        color: #f5f6fa;
+        border: 1px solid #1b1f2d;
+        padding: 0.35rem 0.75rem;
+        border-radius: 0.35rem;
+        cursor: pointer;
+      }
+      .console-toolbar button:hover {
+        background: #54648c;
+      }
+      .console-toolbar label {
+        display: flex;
+        align-items: center;
+        gap: 0.35rem;
+        font-size: 0.9rem;
+      }
+      #console-status {
+        margin-left: auto;
+        font-size: 0.85rem;
+        color: #9aa7c6;
+      }
+      .console-terminal {
+        flex: 1;
+        overflow-y: auto;
+        padding: 1rem;
+        background: #03050a;
+        line-height: 1.4;
+        border: none;
+      }
+      .line {
+        padding: 0.25rem 0;
+        display: flex;
+        align-items: baseline;
+        gap: 0.5rem;
+      }
+      .line .summary {
+        flex: 1;
+      }
+      .line .details {
+        color: #58c7ff;
+        font-size: 0.85rem;
+        text-decoration: none;
+        border-bottom: 1px dotted #58c7ff;
+      }
+      .line.level-error {
+        color: #ff6b6b;
+      }
+      .line.level-tool {
+        color: #4ce0c3;
+      }
+      .line.level-info {
+        color: #e5e9ff;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="console-shell">
+      <div class="console-toolbar">
+        <label><input type="checkbox" id="auto-scroll" checked /> Auto-scroll</label>
+        <button id="clear-btn">Clear console</button>
+        <button id="copy-btn">Copy all</button>
+        <span id="console-status">Connecting...</span>
+      </div>
+      <div id="terminal" class="console-terminal" role="log" aria-live="polite"></div>
+    </div>
+    <script>
+      const streamUrl = "http://127.0.0.1:8000/llm/console/stream";
+      const terminal = document.getElementById("terminal");
+      const statusEl = document.getElementById("console-status");
+      const autoToggle = document.getElementById("auto-scroll");
+      let cursor = localStorage.getItem("consoleCursor") || "";
+      let autoScroll = true;
+      let source;
+
+      function appendLine(event) {
+        const line = document.createElement("div");
+        line.className = `line level-${event.level.toLowerCase()}`;
+        const summary = document.createElement("span");
+        summary.className = "summary";
+        summary.textContent = event.summary;
+        const details = document.createElement("a");
+        details.className = "details";
+        details.target = "_blank";
+        details.rel = "noreferrer";
+        details.href = event.details_url;
+        details.textContent = "[Details]";
+        line.appendChild(summary);
+        line.appendChild(details);
+        terminal.appendChild(line);
+        if (autoScroll) {
+          terminal.scrollTop = terminal.scrollHeight;
+        }
+      }
+
+      function connect() {
+        if (source) {
+          source.close();
+        }
+        const url = cursor ? `${streamUrl}?since=${encodeURIComponent(cursor)}` : streamUrl;
+        source = new EventSource(url);
+        statusEl.textContent = "Streaming console...";
+        source.onmessage = (event) => {
+          try {
+            const payload = JSON.parse(event.data);
+            cursor = payload.cursor;
+            localStorage.setItem("consoleCursor", cursor);
+            appendLine(payload);
+          } catch (err) {
+            console.error("Failed to parse console event:", err);
+          }
+        };
+        source.onopen = () => {
+          statusEl.textContent = "Connected";
+        };
+        source.onerror = () => {
+          statusEl.textContent = "Disconnected, retrying...";
+          source.close();
+          setTimeout(connect, 1500);
+        };
+      }
+
+      document.getElementById("clear-btn").addEventListener("click", () => {
+        terminal.innerHTML = "";
+      });
+
+      document.getElementById("copy-btn").addEventListener("click", async () => {
+        try {
+          await navigator.clipboard.writeText(terminal.innerText);
+          statusEl.textContent = "Copied to clipboard";
+          setTimeout(() => (statusEl.textContent = "Connected"), 1500);
+        } catch (error) {
+          statusEl.textContent = "Clipboard write failed";
+        }
+      });
+
+      autoToggle.addEventListener("change", (event) => {
+        autoScroll = event.target.checked;
+      });
+
+      window.addEventListener("beforeunload", () => {
+        if (source) {
+          source.close();
+        }
+      });
+
+      connect();
+    </script>
+  </body>
+</html>
+"""
+
+
 @app.get("/ui", response_class=HTMLResponse)
 def ui_dashboard():
     html_template = """
@@ -560,381 +873,779 @@ def ui_dashboard():
     <meta charset="utf-8" />
     <title>ToolRunner Dashboard</title>
     <script src="https://unpkg.com/htmx.org@1.9.5"></script>
-    <style>
-      body {{
-        font-family: system-ui, sans-serif;
-        margin: 0;
-        padding: 0;
-        background: #111;
-        color: #f2f7ff;
-      }}
-      .navbar {{
-        background: #0b1935;
-        padding: 1rem;
-        display: flex;
-        align-items: center;
-        gap: 1rem;
-      }}
-      .tabs {{
-        display: flex;
-        gap: 0.5rem;
-      }}
-      .tab-button {{
-        background: #1c2a4a;
-        border: none;
-        padding: 0.75rem 1.25rem;
-        color: inherit;
-        cursor: pointer;
-      }}
-      .tab-button.active {{
-        background: #f2f7ff;
-        color: #0b1935;
-      }}
-      .tab-panels {{
-        padding: 1rem;
-      }}
-      .tab-panel {{
-        display: none;
-      }}
-      .tab-panel.active {{
-        display: block;
-      }}
-      .chat-layout {{
-        display: grid;
-        grid-template-columns: minmax(0, 1.8fr) minmax(0, 1fr);
-        gap: 1rem;
-      }}
-      .chat-column,
-      .srs-column {{
-        display: flex;
-        flex-direction: column;
-        gap: 0.75rem;
-      }}
-      .chat-header h2 {{
-        margin: 0;
-      }}
-      .chat-subtitle {{
-        margin: 0.25rem 0 0;
-        color: #93a1c5;
-      }}
-      .chat-messages {{
-        background: #050b15;
-        border: 1px solid #394667;
-        padding: 0.75rem;
-        border-radius: 0.6rem;
-        max-height: 420px;
-        overflow-y: auto;
-        display: flex;
-        flex-direction: column;
-        gap: 0.75rem;
-      }}
-      .chat-message {{
-        padding: 0.75rem;
-        border-radius: 0.5rem;
-        border: 1px solid #1b2540;
-        background: #0c1326;
-      }}
-      .chat-message-header {{
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        margin-bottom: 0.35rem;
-        font-size: 0.85rem;
-        color: #9fb0d3;
-      }}
-      .chat-badge {{
-        padding: 0.15rem 0.5rem;
-        border-radius: 999px;
-        font-size: 0.7rem;
-        letter-spacing: 0.03em;
-        text-transform: uppercase;
-      }}
-      .badge-maestro {{
-        background: #bf67ff;
-        color: #0b0c15;
-      }}
-      .badge-user {{
-        background: #3a7bfd;
-        color: #0b0b1f;
-      }}
-      .chat-message-body {{
-        white-space: pre-wrap;
-        line-height: 1.35;
-      }}
-      .chat-meta {{
-        margin-top: 0.35rem;
-        font-size: 0.8rem;
-        color: #cbd4f9;
-      }}
-      .chat-meta ul {{
-        margin: 0.25rem 0 0;
-        padding-left: 1rem;
-      }}
-      .chat-meta.decision {{
-        color: #ffb703;
-      }}
-      .chat-form {{
-        background: #050b15;
-        border: 1px solid #394667;
-        border-radius: 0.5rem;
-        padding: 0.5rem;
-        display: flex;
-        flex-direction: column;
-        gap: 0.4rem;
-      }}
-      .chat-actions {{
-        display: flex;
-        justify-content: flex-end;
-      }}
-      #chat-input {{
-        resize: vertical;
-        min-height: 60px;
-        border-radius: 0.35rem;
-      }}
-      #chat-send-button {{
-        background: #05c97c;
-        border: none;
-        color: #0b1b0f;
-        padding: 0.5rem 1rem;
-        border-radius: 0.35rem;
-        font-weight: 600;
-      }}
-      .chat-status {{
-        min-height: 1.2rem;
-        font-size: 0.85rem;
-        color: #f6c5c5;
-      }}
-      .chat-empty {{
-        text-align: center;
-        color: #93a1c5;
-        font-size: 0.9rem;
-      }}
-      .srs-preview-card,
-      .srs-completeness-card,
-      .recent-updates-card {{
-        background: #050b15;
-        border: 1px solid #394667;
-        border-radius: 0.6rem;
-        padding: 0.75rem;
-      }}
-      .srs-preview-card pre {{
-        max-height: 240px;
-        overflow: auto;
-      }}
-      .completeness-item {{
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        padding: 0.25rem 0;
-        border-bottom: 1px solid #1b2540;
-        font-size: 0.85rem;
-      }}
-      .completeness-item:last-child {{
-        border-bottom: none;
-      }}
-      .completeness-title {{
-        font-size: 0.85rem;
-      }}
-      .completeness-locked .badge {{
-        background: #0fbc9c;
-        color: #0b1c10;
-      }}
-      .completeness-pending .badge {{
-        background: #3a7bfd;
-        color: #051225;
-      }}
-      .recent-updates-card ul {{
-        margin: 0;
-        padding-left: 1rem;
-        font-size: 0.85rem;
-        color: #cbd4f9;
-      }}
-      .readiness-card {{
-        background: #050b15;
-        border: 1px solid #394667;
-        border-radius: 0.6rem;
-        padding: 0.75rem;
-        display: flex;
-        flex-direction: column;
-        gap: 0.75rem;
-      }}
-      .readiness-card .readiness-score {{
-        display: flex;
-        justify-content: space-between;
-        align-items: baseline;
-        font-size: 1rem;
-      }}
-      .readiness-card .readiness-score-value {{
-        font-size: 1.8rem;
-        font-weight: 600;
-      }}
-      .readiness-progress {{
-        background: #1a1f33;
-        border-radius: 0.4rem;
-        height: 0.5rem;
-        overflow: hidden;
-      }}
-      .readiness-progress span {{
-        display: block;
-        height: 100%;
-        background: linear-gradient(90deg, #0fbc9c, #3a7bfd);
-      }}
-      .readiness-details {{
-        display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
-        gap: 0.75rem;
-      }}
-      .readiness-details h5 {{
-        margin: 0 0 0.25rem;
-        font-size: 0.85rem;
-        color: #c5d1f3;
-      }}
-      .readiness-details ul {{
-        margin: 0;
-        padding-left: 1rem;
-        font-size: 0.85rem;
-        color: #f7fbff;
-      }}
-      .override-gate {{
-        display: flex;
-        align-items: center;
-        gap: 0.4rem;
-        font-size: 0.85rem;
-        color: #cbd4f9;
-      }}
-      .override-gate input {{
-        transform: scale(1.1);
-      }}
-      .readiness-gate-message {{
-        height: 1.1rem;
-        font-size: 0.85rem;
-        color: #ffb703;
-        margin: 0;
-      }}
-      .maestro-actions, .apprentice-actions {{
-        display: flex;
-        gap: 0.5rem;
-        margin-bottom: 1rem;
-      }}
-      .stuck-banner {{
-        padding: 0.75rem 1rem;
-        background: #ffb703;
-        color: #1c0c00;
-        border-radius: 0.5rem;
-        margin-bottom: 0.75rem;
-        display: none;
-      }}
-      .apprentice-columns {{
-        display: grid;
-        grid-template-columns: 2fr 1fr;
-        gap: 1rem;
-      }}
-      .reports-panel {{
-        background: #0b0f1f;
-        border: 1px solid #394667;
-        padding: 0.5rem;
-      }}
-      .report-list {{
-        list-style: none;
-        padding: 0;
-        margin: 0;
-        max-height: 220px;
-        overflow-y: auto;
-      }}
-      .report-list li {{
-        margin-bottom: 0.25rem;
-      }}
-      .report-list button {{
-        width: 100%;
-        text-align: left;
-        background: #11172b;
-        border: 1px solid #21305a;
-        color: inherit;
-        padding: 0.4rem;
-        cursor: pointer;
-      }}
-      .report-viewer {{
-        min-height: 180px;
-        background: #050b15;
-        border: 1px solid #2d3b56;
-        padding: 0.5rem;
-        overflow: auto;
-      }}
-      .approval-modal {{
-        position: fixed;
-        inset: 0;
-        background: rgba(0, 0, 0, 0.65);
-        display: none;
-        align-items: center;
-        justify-content: center;
-        z-index: 100;
-      }}
-      .approval-modal .modal-content {{
-        background: #111a2d;
-        border: 1px solid #394667;
-        padding: 1rem;
-        width: min(420px, 90%);
-        display: flex;
-        flex-direction: column;
-        gap: 0.5rem;
-      }}
-      .approval-modal button {{
-        padding: 0.5rem 1rem;
-        border: none;
-        cursor: pointer;
-      }}
-      .event-feed {{
-        background: #050b15;
-        border: 1px solid #2d3b56;
-        min-height: 120px;
-        padding: 0.5rem;
-        font-family: monospace;
-      }}
-      .event-item {{
-        margin-bottom: 0.4rem;
-        border-bottom: 1px solid #14213d;
-        padding-bottom: 0.2rem;
-      }}
-    </style>
+<style>
+  body {
+    font-family: system-ui, sans-serif;
+    margin: 0;
+    padding: 0;
+    background: #111;
+    color: #f2f7ff;
+  }
+
+  .navbar {
+    background: #0b1935;
+    padding: 1rem;
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+  }
+
+  .tabs-card {
+    margin: 1rem;
+    border: 1px solid #394667;
+    border-radius: 0.9rem;
+    background: #050b15;
+    padding: 0.5rem 0.75rem 0.75rem;
+  }
+
+  .tabs-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    flex-wrap: wrap;
+  }
+
+  .tabs-head .ark-tabs {
+    flex: 1;
+    min-width: 0;
+  }
+
+  #run-id-label {
+    font-size: 0.85rem;
+    color: #93a1c5;
+    white-space: nowrap;
+  }
+
+  /* ===========================
+     ARK TABS (FINAL)
+     - folder-tab look
+     - disables glider/tabsShadow
+     - overrides any .tab / tab-primary / etc styling
+     =========================== */
+
+  .ark-tabs[role="tablist"] {
+    position: relative;
+    display: flex;
+    align-items: flex-end;
+    gap: 0.25rem;
+    padding: 0 0.25rem;
+    margin: 0;
+    border-bottom: 1px solid var(--ark-border, #394667);
+  }
+
+  /* kill the segmented-control artifacts */
+  .ark-tabs .glider,
+  .ark-tabs .tabsShadow {
+    display: none !important;
+  }
+
+  .ark-tab[role="tab"] {
+    position: relative;
+    appearance: none !important;
+
+    /* hard override “button” classes */
+    background: #11172b !important;
+    color: #cbd4f9 !important;
+    box-shadow: none !important;
+
+    border: 1px solid var(--ark-border, #394667) !important;
+    border-bottom: none !important;
+
+    border-radius: 12px 12px 0 0 !important;
+
+    padding: 0.55rem 0.9rem;
+    font: inherit;
+    line-height: 1;
+    cursor: pointer;
+
+    /* inactive tabs sit slightly “behind” */
+    transform: translateY(6px);
+    opacity: 0.9;
+    transition: opacity 0.2s ease, transform 0.2s ease;
+  }
+
+  .ark-tab[role="tab"]:hover {
+    opacity: 1;
+  }
+
+  .ark-tab[role="tab"]:focus-visible {
+    outline: 2px solid var(--ark-focus, #6ea8fe);
+    outline-offset: 2px;
+  }
+
+  .ark-tab[role="tab"][aria-selected="true"] {
+    background: #050b15 !important; /* match panel surface */
+    color: #ffffff !important;
+    transform: translateY(0);
+    opacity: 1;
+    z-index: 5;
+  }
+
+  /* hide seam between active tab + panel */
+  .ark-tab[role="tab"][aria-selected="true"]::after {
+    content: "";
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: -1px;
+    height: 2px;
+    background: #050b15;
+  }
+
+  /* (optional) subtle bottom line for inactive tabs */
+  .ark-tab[role="tab"]:not([aria-selected="true"])::after {
+    content: "";
+    position: absolute;
+    left: 0.45rem;
+    right: 0.45rem;
+    bottom: 0;
+    height: 1px;
+    background: rgba(255, 255, 255, 0.06);
+  }
+
+  /* ===========================
+     TAB PANELS (FINAL)
+     - frame + top seam removed so tabs look attached
+     =========================== */
+
+  .tab-panels {
+    padding: 0 1rem 1rem;
+  }
+
+  .tab-panel {
+    display: none;
+  }
+
+  .tab-panel.active {
+    display: block;
+  }
+
+  .tab-panel[role="tabpanel"] {
+    background: #050b15;
+    border: 1px solid var(--ark-border, #394667);
+    border-top: none;
+    border-radius: 0 0 12px 12px;
+    padding: 1rem;
+  }
+
+  /* ===========================
+     REST OF YOUR STYLES (UNCHANGED)
+     =========================== */
+
+  .trial-control {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.75rem;
+    margin-bottom: 1rem;
+  }
+
+  #trivial-trial-btn {
+    background: #0fbc9c;
+    border: none;
+    color: #0b1b0f;
+    padding: 0.5rem 1rem;
+    border-radius: 0.4rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: opacity 0.2s ease;
+  }
+
+  #trivial-trial-btn:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+  }
+
+  .trial-status {
+    font-size: 0.9rem;
+    color: #cbd4f9;
+  }
+
+  .chat-layout {
+    display: grid;
+    grid-template-columns: minmax(0, 1.8fr) minmax(0, 1fr);
+    gap: 1rem;
+  }
+
+  .chat-column,
+  .srs-column {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+  }
+
+  .chat-header h2 {
+    margin: 0;
+  }
+
+  .chat-subtitle {
+    margin: 0.25rem 0 0;
+    color: #93a1c5;
+  }
+
+  .chat-messages {
+    background: #050b15;
+    border: 1px solid #394667;
+    padding: 0.75rem;
+    border-radius: 0.6rem;
+    max-height: 420px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+  }
+
+  .chat-message {
+    padding: 0.75rem;
+    border-radius: 0.5rem;
+    border: 1px solid #1b2540;
+    background: #0c1326;
+  }
+
+  .chat-message-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 0.35rem;
+    font-size: 0.85rem;
+    color: #9fb0d3;
+  }
+
+  .chat-badge {
+    padding: 0.15rem 0.5rem;
+    border-radius: 999px;
+    font-size: 0.7rem;
+    letter-spacing: 0.03em;
+    text-transform: uppercase;
+  }
+
+  .badge-maestro {
+    background: #bf67ff;
+    color: #0b0c15;
+  }
+
+  .badge-user {
+    background: #3a7bfd;
+    color: #0b0b1f;
+  }
+
+  .chat-message-body {
+    white-space: pre-wrap;
+    line-height: 1.35;
+  }
+
+  .chat-meta {
+    margin-top: 0.35rem;
+    font-size: 0.8rem;
+    color: #cbd4f9;
+  }
+
+  .chat-meta ul {
+    margin: 0.25rem 0 0;
+    padding-left: 1rem;
+  }
+
+  .chat-meta.decision {
+    color: #ffb703;
+  }
+
+  .chat-form {
+    background: #050b15;
+    border: 1px solid #394667;
+    border-radius: 0.5rem;
+    padding: 0.5rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+  }
+
+  .chat-actions {
+    display: flex;
+    justify-content: flex-end;
+  }
+
+  #chat-input {
+    resize: vertical;
+    min-height: 60px;
+    border-radius: 0.35rem;
+  }
+
+  #chat-send-button {
+    background: #05c97c;
+    border: none;
+    color: #0b1b0f;
+    padding: 0.5rem 1rem;
+    border-radius: 0.35rem;
+    font-weight: 600;
+  }
+
+  .chat-status {
+    min-height: 1.2rem;
+    font-size: 0.85rem;
+    color: #f6c5c5;
+  }
+
+  .chat-empty {
+    text-align: center;
+    color: #93a1c5;
+    font-size: 0.9rem;
+  }
+
+  .srs-preview-card,
+  .srs-completeness-card,
+  .recent-updates-card {
+    background: #050b15;
+    border: 1px solid #394667;
+    border-radius: 0.6rem;
+    padding: 0.75rem;
+  }
+
+  .srs-preview-card pre {
+    max-height: 240px;
+    overflow: auto;
+  }
+
+  .completeness-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0.25rem 0;
+    border-bottom: 1px solid #1b2540;
+    font-size: 0.85rem;
+  }
+
+  .completeness-item:last-child {
+    border-bottom: none;
+  }
+
+  .completeness-title {
+    font-size: 0.85rem;
+  }
+
+  .completeness-locked .badge {
+    background: #0fbc9c;
+    color: #0b1c10;
+  }
+
+  .completeness-pending .badge {
+    background: #3a7bfd;
+    color: #051225;
+  }
+
+  .recent-updates-card ul {
+    margin: 0;
+    padding-left: 1rem;
+    font-size: 0.85rem;
+    color: #cbd4f9;
+  }
+
+  .readiness-card {
+    background: #050b15;
+    border: 1px solid #394667;
+    border-radius: 0.6rem;
+    padding: 0.75rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+  }
+
+  .readiness-card .readiness-score {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    font-size: 1rem;
+  }
+
+  .readiness-card .readiness-score-value {
+    font-size: 1.8rem;
+    font-weight: 600;
+  }
+
+  .readiness-progress {
+    background: #1a1f33;
+    border-radius: 0.4rem;
+    height: 0.5rem;
+    overflow: hidden;
+  }
+
+  .readiness-progress span {
+    display: block;
+    height: 100%;
+    background: linear-gradient(90deg, #0fbc9c, #3a7bfd);
+  }
+
+  .readiness-details {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+    gap: 0.75rem;
+  }
+
+  .readiness-details h5 {
+    margin: 0 0 0.25rem;
+    font-size: 0.85rem;
+    color: #c5d1f3;
+  }
+
+  .readiness-details ul {
+    margin: 0;
+    padding-left: 1rem;
+    font-size: 0.85rem;
+    color: #f7fbff;
+  }
+
+  .override-gate {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    font-size: 0.85rem;
+    color: #cbd4f9;
+  }
+
+  .override-gate input {
+    transform: scale(1.1);
+  }
+
+  .readiness-gate-message {
+    height: 1.1rem;
+    font-size: 0.85rem;
+    color: #ffb703;
+    margin: 0;
+  }
+
+  .maestro-actions,
+  .apprentice-actions {
+    display: flex;
+    gap: 0.5rem;
+    margin-bottom: 1rem;
+  }
+
+  .stuck-banner {
+    padding: 0.75rem 1rem;
+    background: #ffb703;
+    color: #1c0c00;
+    border-radius: 0.5rem;
+    margin-bottom: 0.75rem;
+    display: none;
+  }
+
+  .apprentice-columns {
+    display: grid;
+    grid-template-columns: 2fr 1fr;
+    gap: 1rem;
+  }
+
+  .reports-panel {
+    background: #0b0f1f;
+    border: 1px solid #394667;
+    padding: 0.5rem;
+  }
+
+  .report-list {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    max-height: 220px;
+    overflow-y: auto;
+  }
+
+  .report-list li {
+    margin-bottom: 0.25rem;
+  }
+
+  .report-list button {
+    width: 100%;
+    text-align: left;
+    background: #11172b;
+    border: 1px solid #21305a;
+    color: inherit;
+    padding: 0.4rem;
+    cursor: pointer;
+  }
+
+  .report-viewer {
+    min-height: 180px;
+    background: #050b15;
+    border: 1px solid #2d3b56;
+    padding: 0.5rem;
+    overflow: auto;
+  }
+
+  .verification-panel {
+    margin-top: 1rem;
+    border-top: 1px solid #394667;
+    padding-top: 1rem;
+  }
+
+  .verification-overview {
+    display: flex;
+    justify-content: space-between;
+    font-weight: 600;
+    margin-bottom: 0.5rem;
+  }
+
+  .verification-score {
+    color: #0fbc9c;
+  }
+
+  .verification-flags {
+    display: flex;
+    gap: 0.5rem;
+    margin-bottom: 0.25rem;
+  }
+
+  .verification-flag {
+    padding: 0.2rem 0.6rem;
+    border-radius: 999px;
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    border: 1px solid transparent;
+  }
+
+  .verification-flag.pass {
+    background: #123821;
+    border-color: #0fbc9c;
+  }
+
+  .verification-flag.fail {
+    background: #3b0e0e;
+    border-color: #ff3864;
+  }
+
+  .verification-flag.warn {
+    background: #4f370b;
+    border-color: #f9c74f;
+  }
+
+  .verification-findings {
+    margin: 0;
+    padding-left: 1rem;
+    color: #cbd4f9;
+    min-height: 2rem;
+  }
+
+  .verification-warnings {
+    margin: 0 0 0.5rem 1rem;
+    padding-left: 1rem;
+    color: #f9c74f;
+    min-height: 1.25rem;
+  }
+
+  .verification-warnings li {
+    margin-bottom: 0.2rem;
+  }
+
+  .verification-actions {
+    display: flex;
+    gap: 0.5rem;
+    margin: 0.5rem 0;
+  }
+
+  .verification-actions button {
+    flex: 1;
+    padding: 0.4rem;
+    background: #1c2a4a;
+    border: 1px solid #394667;
+    color: inherit;
+    cursor: pointer;
+  }
+
+  .verification-viewer {
+    background: #050b15;
+    border: 1px solid #2d3b56;
+    padding: 0.5rem;
+    min-height: 140px;
+    font-size: 0.85rem;
+    overflow: auto;
+  }
+
+  .approval-modal {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.65);
+    display: none;
+    align-items: center;
+    justify-content: center;
+    z-index: 100;
+  }
+
+  .approval-modal .modal-content {
+    background: #111a2d;
+    border: 1px solid #394667;
+    padding: 1rem;
+    width: min(420px, 90%);
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+  }
+
+  .approval-modal button {
+    padding: 0.5rem 1rem;
+    border: none;
+    cursor: pointer;
+  }
+
+  .event-feed {
+    background: #050b15;
+    border: 1px solid #2d3b56;
+    min-height: 120px;
+    padding: 0.5rem;
+    font-family: monospace;
+  }
+
+  .event-item {
+    margin-bottom: 0.4rem;
+    border-bottom: 1px solid #14213d;
+    padding-bottom: 0.2rem;
+  }
+</style>
   </head>
   <body>
     <div class="navbar">
       <span>Deprecated autop-run UI</span>
-      <div class="tabs">
-        <button class="tab-button active" data-tab="user">User</button>
-        <button class="tab-button" data-tab="maestro">Maestro</button>
-        <button class="tab-button" data-tab="apprentice">Apprentice</button>
-      </div>
-        <span>Run ID: __RUN_ID__</span>
     </div>
-    <div class="tab-panels">
-      <div id="tab-user" class="tab-panel active">
-        <div id="user-tab-content" hx-get="/ui/partials/user?run_id=__RUN_ID__" hx-trigger="load"></div>
+    <div class="tabs-card">
+      <div class="tabs-head">
+        <div class="ark-tabs" role="tablist" aria-label="ToolRunner Tabs">
+          <button
+            id="tab-label-user"
+            class="ark-tab active"
+            type="button"
+            role="tab"
+            aria-controls="tab-user"
+            aria-selected="true"
+            data-tab="user"
+            tabindex="0"
+          >
+            User
+          </button>
+
+          <button
+            id="tab-label-maestro"
+            class="ark-tab"
+            type="button"
+            role="tab"
+            aria-controls="tab-maestro"
+            aria-selected="false"
+            data-tab="maestro"
+            tabindex="-1"
+          >
+            Maestro
+          </button>
+
+          <button
+            id="tab-label-apprentice"
+            class="ark-tab"
+            type="button"
+            role="tab"
+            aria-controls="tab-apprentice"
+            aria-selected="false"
+            data-tab="apprentice"
+            tabindex="-1"
+          >
+            Apprentice
+          </button>
+
+          <div class="tabsShadow"></div>
+          <div class="glider"></div>
+        </div>
+        <span id="run-id-label">Run ID: __RUN_ID__</span>
       </div>
-      <div id="tab-maestro" class="tab-panel">
-        <div id="maestro-tab-content" hx-get="/ui/partials/maestro?run_id=__RUN_ID__" hx-trigger="load"></div>
-      </div>
-      <div id="tab-apprentice" class="tab-panel">
-        <div id="apprentice-tab-content" hx-get="/ui/partials/apprentice?run_id=__RUN_ID__" hx-trigger="load"></div>
+      <div class="tab-panels">
+        <div id="tab-user" class="tab-panel active" role="tabpanel" aria-labelledby="tab-label-user">
+          <div class="trial-control">
+            <button id="trivial-trial-btn">Trivial Trial (Seed + Plan + Run)</button>
+            <span id="trivial-trial-status" class="trial-status">Ready for a new trial.</span>
+          </div>
+          <div id="user-tab-content" hx-get="/ui/partials/user?run_id=__RUN_ID__" hx-trigger="load"></div>
+        </div>
+        <div id="tab-maestro" class="tab-panel" role="tabpanel" aria-labelledby="tab-label-maestro">
+          <div id="maestro-tab-content" hx-get="/ui/partials/maestro?run_id=__RUN_ID__" hx-trigger="load"></div>
+        </div>
+        <div id="tab-apprentice" class="tab-panel" role="tabpanel" aria-labelledby="tab-label-apprentice">
+          <div id="apprentice-tab-content" hx-get="/ui/partials/apprentice?run_id=__RUN_ID__" hx-trigger="load"></div>
+        </div>
       </div>
     </div>
     <script>
-      const runId = "__RUN_ID__";
-      document.querySelectorAll(".tab-button").forEach((button) => {
-        button.addEventListener("click", () => {
-          document.querySelectorAll(".tab-button").forEach((btn) => btn.classList.remove("active"));
-          document.querySelectorAll(".tab-panel").forEach((panel) => panel.classList.remove("active"));
-          button.classList.add("active");
-          const target = document.getElementById("tab-" + button.dataset.tab);
-          if (target) {
-            target.classList.add("active");
-          }
+      let runId = "__RUN_ID__";
+      const TAB_NAMES = ["user", "maestro", "apprentice"];
+
+      function updateGlider() {
+        const card = document.querySelector(".ark-tabs");
+        const glider = card?.querySelector(".glider");
+        const activeTab = card?.querySelector(".ark-tab.active");
+        if (!card || !glider || !activeTab) return;
+        const cardRect = card.getBoundingClientRect();
+        const tabRect = activeTab.getBoundingClientRect();
+        const leftPct = ((tabRect.left - cardRect.left) / cardRect.width) * 100;
+        const widthPct = (tabRect.width / cardRect.width) * 100;
+        card.style.setProperty("--glider-left", `${leftPct}%`);
+        card.style.setProperty("--glider-width", `${widthPct}%`);
+      }
+
+      function activateTab(name, { pushHash = true } = {}) {
+        if (!TAB_NAMES.includes(name)) {
+          name = "user";
+        }
+        const tabs = Array.from(document.querySelectorAll(".ark-tab[role='tab']"));
+        const panels = Array.from(document.querySelectorAll(".tab-panel[role='tabpanel']"));
+
+        tabs.forEach((tab) => {
+          const isActive = tab.dataset.tab === name;
+          tab.classList.toggle("active", isActive);
+          tab.setAttribute("aria-selected", isActive ? "true" : "false");
+          tab.tabIndex = isActive ? 0 : -1;
         });
+
+        panels.forEach((panel) => {
+          const isActive = panel.id === "tab-" + name;
+          panel.classList.toggle("active", isActive);
+          panel.hidden = !isActive;
+        });
+
+        updateGlider();
+
+        if (pushHash) {
+          history.replaceState(null, "", `#${name}`);
+        }
+      }
+
+      let resizeTimer;
+
+      window.addEventListener("resize", () => {
+        clearTimeout(resizeTimer);
+        resizeTimer = setTimeout(updateGlider, 150);
       });
 
-      let lastEventId = 0;
-      let pendingApproval: object | null = null;
+      function initTabs() {
+        document.querySelectorAll(".ark-tab[role='tab']").forEach((tab) => {
+          tab.addEventListener("click", () => activateTab(tab.dataset.tab));
+          tab.addEventListener("keydown", (evt) => {
+            if (evt.key !== "ArrowRight" && evt.key !== "ArrowLeft") {
+              return;
+            }
+            evt.preventDefault();
+            const tabs = Array.from(document.querySelectorAll(".ark-tab[role='tab']"));
+            const idx = tabs.indexOf(tab);
+            if (idx === -1) {
+              return;
+            }
+            const nextIndex = evt.key === "ArrowRight" ? (idx + 1) % tabs.length : (idx - 1 + tabs.length) % tabs.length;
+            const target = tabs[nextIndex];
+            target.focus();
+            activateTab(target.dataset.tab);
+          });
+        });
+        document.querySelectorAll(".tab-panel").forEach((panel) => {
+          panel.hidden = !panel.classList.contains("active");
+        });
+      }
 
+      let lastEventId = 0;
+      let pendingApproval = null; // {type, data, ...} or null
+     
       const approvalModal = document.getElementById("approval-modal");
       const approvalDescription = document.getElementById("approval-description");
       const approvalApprove = document.getElementById("approval-approve");
@@ -959,14 +1670,123 @@ def ui_dashboard():
         }
       }
 
-      function showStuckBanner(reason) {
+      function showStuckBanner(reason, remediation, excerpt) {
         const banner = document.getElementById("stuck-banner");
         if (!banner) return;
         if (reason) {
-          banner.textContent = `Run blocked: ${reason}`;
+          let html = `<p><strong>Run blocked:</strong> ${escapeHtml(reason)}</p>`;
+          if (remediation) {
+            html += `<p><strong>Remediation:</strong> ${escapeHtml(remediation)}</p>`;
+          }
+          if (excerpt) {
+            html += `<p><strong>Last failure:</strong> ${escapeHtml(excerpt)}</p>`;
+          }
+          banner.innerHTML = html;
           banner.style.display = "block";
         } else {
           banner.style.display = "none";
+        }
+      }
+
+      function updateRunIdLabel(value) {
+        const label = document.getElementById("run-id-label");
+        if (label) {
+          label.textContent = `Run ID: ${value}`;
+        }
+      }
+
+      function setNewRunId(newId) {
+        runId = newId;
+        lastEventId = 0;
+        pendingApproval = null;
+        const feed = document.getElementById("event-feed");
+        if (feed) {
+          feed.innerHTML = "";
+        }
+        const reports = document.getElementById("step-report-list");
+        if (reports) {
+          reports.innerHTML = "";
+        }
+        const statusNode = document.getElementById("run-control-status");
+        if (statusNode) {
+          statusNode.textContent = `Run ${newId} selected`;
+        }
+        updateRunIdLabel(newId);
+        pollEvents();
+        updateStepReports();
+        updateVerificationSummary();
+      }
+
+      function switchToApprenticeTab() {
+        const apprenticeTab = document.querySelector(".tab[data-tab='apprentice']");
+        if (apprenticeTab) {
+          apprenticeTab.click();
+        }
+      }
+
+      async function refreshUserPartialForRun(newId) {
+        if (typeof htmx === "undefined") {
+          return;
+        }
+        try {
+          await htmx.ajax("GET", `/ui/partials/user?run_id=${encodeURIComponent(newId)}`, {
+            target: "#user-tab-content",
+            swap: "innerHTML",
+          });
+        } catch (error) {
+          console.error("failed to refresh user tab for new run", error);
+        }
+      }
+
+      function initTrivialTrialControls() {
+        const button = document.getElementById("trivial-trial-btn");
+        if (!button) {
+          return;
+        }
+        button.addEventListener("click", (event) => {
+          event.preventDefault();
+          startTrivialTrial();
+        });
+      }
+
+      async function startTrivialTrial() {
+        const button = document.getElementById("trivial-trial-btn");
+        const statusNode = document.getElementById("trivial-trial-status");
+        if (!button || !statusNode) {
+          return;
+        }
+        button.disabled = true;
+        const stages = ["Seeding SRS\u2026", "Generating plan\u2026", "Starting run\u2026"];
+        let phaseIndex = 0;
+        statusNode.textContent = stages[phaseIndex];
+        const phaseInterval = setInterval(() => {
+          phaseIndex = Math.min(phaseIndex + 1, stages.length - 1);
+          statusNode.textContent = stages[phaseIndex];
+        }, 600);
+        try {
+          const resp = await fetch("/v1/trials/trivial", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({}),
+          });
+          const data = await resp.json();
+          if (!resp.ok) {
+            throw new Error(data.detail || "Trivial trial failed");
+          }
+          if (!data.ok) {
+            throw new Error("Trivial trial endpoint reported failure");
+          }
+          const finalMessage = data.run_started ? `Run started: ${data.run_id}` : `Plan ready: ${data.run_id}`;
+          statusNode.textContent = finalMessage;
+          setNewRunId(data.run_id);
+          await refreshUserPartialForRun(data.run_id);
+          switchToApprenticeTab();
+        } catch (error) {
+          statusNode.textContent = `Error: ${error.message || "Unable to start trial"}`;
+          console.error("Trivial trial failed", error);
+        } finally {
+          clearInterval(phaseInterval);
+          button.disabled = false;
         }
       }
 
@@ -1029,6 +1849,104 @@ def ui_dashboard():
         }
       }
 
+      async function updateVerificationSummary() {
+        const statusNode = document.getElementById("verification-status");
+        const scoreNode = document.getElementById("verification-score");
+        const findingsNode = document.getElementById("verification-findings");
+        const autonomyNode = document.getElementById("verification-autonomy");
+        const hygieneNode = document.getElementById("verification-hygiene");
+        const warningsNode = document.getElementById("verification-warnings");
+        if (
+          !statusNode ||
+          !scoreNode ||
+          !findingsNode ||
+          !autonomyNode ||
+          !hygieneNode ||
+          !warningsNode
+        ) {
+          return;
+        }
+        const resetSummary = () => {
+          statusNode.textContent = "Verification pending";
+          scoreNode.textContent = "";
+          findingsNode.innerHTML = "<li>No verification data yet.</li>";
+          warningsNode.innerHTML = "<li>No warnings.</li>";
+          autonomyNode.textContent = "Autonomy: pending";
+          autonomyNode.className = "verification-flag";
+          hygieneNode.textContent = "Hygiene: pending";
+          hygieneNode.className = "verification-flag";
+        };
+        try {
+          const resp = await fetch(`/v1/runs/${runId}/verify`);
+          const payload = await resp.json();
+          if (!resp.ok || payload.ok === false) {
+            resetSummary();
+            findingsNode.innerHTML = `<li>${escapeHtml(payload.detail || "No verification data.")}</li>`;
+            return;
+          }
+          const autonomyStatus = payload.autonomy_ok ? "PASS" : "FAIL";
+          const hygieneStatus = payload.hygiene_ok ? "PASS" : "WARN";
+          const applyFlag = (node, label, status) => {
+            node.textContent = `${label}: ${status}`;
+            node.classList.toggle("pass", status === "PASS");
+            node.classList.toggle("fail", status === "FAIL");
+            node.classList.toggle("warn", status === "WARN");
+          };
+          statusNode.textContent = payload.overall_ok ? "Verification PASS" : "Verification FAIL";
+          scoreNode.textContent = `Score ${payload.score_overall}/100`;
+          applyFlag(autonomyNode, "Autonomy", autonomyStatus);
+          applyFlag(hygieneNode, "Hygiene", hygieneStatus);
+
+          const findings = payload.fail_reasons || [];
+          findingsNode.innerHTML = findings.length
+            ? findings.map((item) => `<li>${escapeHtml(item)}</li>`).join("")
+            : "<li>No findings.</li>";
+
+          const warnings = [...(payload.warnings || [])];
+          if (payload.remediation && payload.remediation.length) {
+            payload.remediation.forEach((entry) => warnings.push(`Remediation: ${entry}`));
+          }
+          warningsNode.innerHTML = warnings.length
+            ? warnings.map((item) => `<li>${escapeHtml(item)}</li>`).join("")
+            : "<li>No warnings.</li>";
+        } catch (error) {
+          resetSummary();
+          findingsNode.innerHTML = "<li>Unable to load verification summary.</li>";
+        }
+      }
+
+      async function displayVerificationContent(kind) {
+        const viewer = document.getElementById("verification-viewer");
+        if (!viewer) return;
+        try {
+          const url = kind === "json" ? `/v1/runs/${runId}/verify` : `/v1/runs/${runId}/verify/md`;
+          const resp = await fetch(url);
+          const payload = await resp.json();
+          if (!resp.ok || (kind === "json" && payload.ok === false)) {
+            viewer.textContent = payload.detail || "Verification not available.";
+            return;
+          }
+          if (kind === "json") {
+            viewer.textContent = JSON.stringify(payload, null, 2);
+          } else {
+            viewer.textContent = payload.content || "No markdown content.";
+          }
+        } catch (error) {
+          viewer.textContent = "Failed to load verification content.";
+        }
+      }
+
+      function initVerificationButtons() {
+        const jsonBtn = document.getElementById("verification-json-btn");
+        const mdBtn = document.getElementById("verification-md-btn");
+        if (jsonBtn) {
+          jsonBtn.addEventListener("click", () => displayVerificationContent("json"));
+        }
+        if (mdBtn) {
+          mdBtn.addEventListener("click", () => displayVerificationContent("md"));
+        }
+      }
+
       function handleEvent(evt) {
         if (evt.type === "APPROVAL_REQUESTED") {
           showApprovalModal(evt);
@@ -1037,8 +1955,10 @@ def ui_dashboard():
           updateStepReports();
         }
         if (evt.type === "RUN_FINALIZED" && evt.data?.status === "blocked") {
-          const reason = evt.data?.reason || "blocked execution";
-          showStuckBanner(reason);
+          showStuckBanner(evt.data?.reason, evt.data?.remediation, evt.data?.failure_excerpt);
+        }
+        if (evt.type === "VERIFICATION_WRITTEN") {
+          updateVerificationSummary();
         }
       }
 
@@ -1077,6 +1997,8 @@ def ui_dashboard():
       setInterval(pollEvents, 1500);
       pollEvents();
       updateStepReports();
+      initVerificationButtons();
+      updateVerificationSummary();
       const chatModule = (() => {
         const state = {
           messages: [],
@@ -1328,10 +2250,20 @@ def ui_dashboard():
       document.body.addEventListener("htmx:afterSwap", (evt) => {
         if (evt.detail?.target?.id === "user-tab-content") {
           chatModule.init();
+          setupReadinessGate();
         }
       });
       document.addEventListener("DOMContentLoaded", () => {
         chatModule.init();
+        initTrivialTrialControls();
+        setupReadinessGate();
+        initTabs();
+        const hash = (location.hash || "").replace("#", "");
+        if (["user", "maestro", "apprentice"].includes(hash)) {
+          activateTab(hash, { pushHash: false });
+        } else {
+          activateTab("user", { pushHash: false });
+        }
       });
       function setupReadinessGate() {
         const threshold = 60;
@@ -1413,11 +2345,159 @@ def stop_run(run_id: str):
     return run_manager.stop_run(run_id)
 
 
+def _normalize_trial_slug(slug: str | None) -> str:
+    base = (slug or "trivial-trial").strip().lower()
+    base = base.replace(" ", "-")
+    if not base.startswith("trial-"):
+        base = f"trial-{base or 'trivial'}"
+    return base or "trial-trivial"
+
+
+def _bool_from_form_value(value: str | None) -> bool | None:
+    if value is None:
+        return None
+    lowered = value.strip().lower()
+    if not lowered:
+        return None
+    return lowered not in {"0", "false", "no", "off"}
+
+
+def _relative_to_root(path: Path) -> str:
+    try:
+        return str(path.relative_to(REPO_ROOT))
+    except ValueError:
+        return str(path)
+
+
+@app.post("/v1/trials/trivial")
+async def trivial_trial(request: Request, payload: TrivialTrialRequest | None = Body(None)):
+    data: dict[str, Any] = payload.dict(exclude_none=True) if payload else {}
+    if payload is None:
+        form = await request.form()
+        repo_dir_val = form.get("repo_dir")
+        if repo_dir_val:
+            data["repo_dir"] = repo_dir_val
+        slug_val = form.get("slug")
+        if slug_val:
+            data["slug"] = slug_val
+        template_val = form.get("template")
+        if template_val:
+            data["template"] = template_val
+        start_val = _bool_from_form_value(form.get("start"))
+        if start_val is not None:
+            data["start"] = start_val
+        override_val = _bool_from_form_value(form.get("override_readiness"))
+        if override_val is not None:
+            data["override_readiness"] = override_val
+    trial_request = TrivialTrialRequest(**data)
+    slug = _normalize_trial_slug(trial_request.slug)
+    repo_dir = trial_request.repo_dir or str(REPO_ROOT)
+    context = run_manager.create_run(slug, repo_dir)
+    context.event_logger.log(
+        "TRIAL_STARTED",
+        {"run_id": context.run_id, "slug": slug, "template": trial_request.template},
+    )
+    charter_data = json.loads(context.charter_path.read_text(encoding="utf-8"))
+    charter_data.setdefault("allowed_tools", {})
+    charter_data["allowed_tools"] = TRIVIAL_TRIAL_ALLOWED_TOOLS
+    context.charter_path.write_text(json.dumps(charter_data, indent=2), encoding="utf-8")
+    template_sections = TRIVIAL_TRIAL_TEMPLATES.get(trial_request.template)
+    if not template_sections:
+        raise HTTPException(status_code=400, detail=f"unknown trial template {trial_request.template}")
+    updates = [
+        {"section_id": section_id, "action": "lock", "content": content.strip()}
+        for section_id, content in template_sections
+    ]
+    applied = _apply_srs_updates(context, updates)
+    seeded_sections = [update["section_id"] for update in applied]
+    context.event_logger.log(
+        "TRIAL_SRS_SEEDED",
+        {"run_id": context.run_id, "template": trial_request.template, "seeded_sections": seeded_sections},
+    )
+    metadata_path = context.run_root / "run_metadata.json"
+    metadata_payload = {
+        "template": trial_request.template,
+        "slug": slug,
+        "created_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+    }
+    metadata_path.write_text(json.dumps(metadata_payload, indent=2), encoding="utf-8")
+    readiness = ensure_readiness(context)
+    if not trial_request.override_readiness and readiness.get("score", 0) < READINESS_SCORE_THRESHOLD:
+        raise HTTPException(
+            status_code=400,
+            detail=f"readiness score {readiness.get('score', 0)} is below the threshold ({READINESS_SCORE_THRESHOLD})",
+        )
+    try:
+        plan = compile_plan(context.run_id)
+    except (PlanCompilerError, SchemaValidationError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    context.event_logger.log("PLAN_GENERATED", {"run_id": context.run_id, "plan_id": plan.plan_id})
+    context.latest_plan_id = plan.plan_id
+    context.event_logger.log(
+        "TRIAL_PLAN_GENERATED",
+        {"run_id": context.run_id, "plan_id": plan.plan_id, "template": trial_request.template},
+    )
+    run_started = False
+    if trial_request.start:
+        run_response = run_manager.start_run(context.run_id)
+        run_started = run_response.get("status") == "running"
+        context.event_logger.log(
+            "TRIAL_RUN_STARTED",
+            {"run_id": context.run_id, "status": run_response.get("status")},
+        )
+    paths = {
+        "run_dir": _relative_to_root(context.run_root),
+        "srs_md": _relative_to_root(context.run_root / "srs" / "SRS.md"),
+        "plan_latest": _relative_to_root(context.run_root / "plans" / "latest.json"),
+    }
+    return {
+        "ok": True,
+        "run_id": context.run_id,
+        "paths": paths,
+        "seeded_sections": seeded_sections,
+        "plan_generated": True,
+        "run_started": run_started,
+    }
+
+
 @app.get("/v1/runs/{run_id}/events")
 def list_events(run_id: str, since: int = Query(0)):
     context = _get_run_context(run_id)
     events, next_since = context.event_logger.read_since(since)
     return {"events": events, "next_since": next_since}
+
+
+@app.get("/v1/runs/{run_id}/verify")
+def get_verification(run_id: str):
+    context = _get_run_context(run_id)
+    _, json_path, _ = _verification_paths(context)
+    if not json_path.exists():
+        return {"ok": False, "detail": "verification not found"}
+    return json.loads(json_path.read_text(encoding="utf-8"))
+
+
+@app.get("/v1/runs/{run_id}/verify/md")
+def get_verification_markdown(run_id: str):
+    context = _get_run_context(run_id)
+    _, _, md_path = _verification_paths(context)
+    if not md_path.exists():
+        return {"ok": False, "detail": "verification markdown not found"}
+    return {"content": md_path.read_text(encoding="utf-8")}
+
+
+@app.post("/v1/runs/{run_id}/verify/run")
+def run_verification(run_id: str):
+    context = _get_run_context(run_id)
+    metadata = read_run_metadata(context.run_root)
+    template = metadata.get("template")
+    result = run_post_run_verification(
+        context.run_id,
+        str(REPO_ROOT),
+        context.run_root,
+        template_slug=template,
+        event_logger=context.event_logger,
+    )
+    return result.model_dump()
 
 
 @app.post("/v1/runs/{run_id}/approve")
@@ -1467,10 +2547,10 @@ def section_prompt(run_id: str, section_id: str):
 
 @app.post("/v1/runs/{run_id}/srs/sections/{section_id}")
 async def save_section(
-    run_id: str,
-    section_id: str,
-    request: Request,
-    payload: SRSSectionUpdate | None = Body(None),
+        run_id: str,
+        section_id: str,
+        request: Request,
+        payload: SRSSectionUpdate | None = Body(None),
 ):
     context = _get_run_context(run_id)
     if payload is None:
@@ -1527,9 +2607,9 @@ def srs_readiness(run_id: str):
 
 @app.post("/v1/runs/{run_id}/chat")
 async def post_chat_message(
-    run_id: str,
-    request: Request,
-    payload: ChatRequest | None = Body(None),
+        run_id: str,
+        request: Request,
+        payload: ChatRequest | None = Body(None),
 ):
     data = payload.dict() if payload else {}
     if payload is None:
@@ -1617,3 +2697,8 @@ def get_plan(run_id: str):
     if not plan_path.exists():
         raise HTTPException(status_code=404, detail="plan file missing")
     return JSONResponse(content=json.loads(plan_path.read_text(encoding="utf-8")))
+
+
+@app.get("/ui/console", response_class=HTMLResponse)
+def ui_console():
+    return HTMLResponse(_CONSOLE_HTML)

@@ -21,7 +21,7 @@ def _make_run(name_suffix: str) -> AgentRun:
     agent = Agent.objects.create(
         workspace=ws,
         name=f"Ticker Agent {name_suffix}",
-        system_prompt="Ticker test agent.",
+        soul="Ticker test agent.",
         created_by=user,
     )
 

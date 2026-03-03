@@ -15,7 +15,7 @@ from runs.services.checkpoints import archive_completed_runs
 @pytest.mark.django_db
 def test_archive_completed_runs_creates_bundle(tmp_path):
     workspace = Workspace.objects.create(name="Archive WS")
-    agent = Agent.objects.create(workspace=workspace, name="Archive Agent", system_prompt="Plan")
+    agent = Agent.objects.create(workspace=workspace, name="Archive Agent", soul="Plan")
     run = AgentRun.objects.create(
         workspace=workspace,
         agent=agent,
@@ -24,7 +24,7 @@ def test_archive_completed_runs_creates_bundle(tmp_path):
     )
     RunEvent.objects.create(run=run, seq=1, event_type="state_changed", payload={"from": "PENDING", "to": "COMPLETED"})
 
-    with override_settings(AGENTMAESTRO_ARCHIVE_ROOT=str(tmp_path)):
+    with override_settings(ARCHIVE_ROOT=str(tmp_path)):
         results = archive_completed_runs(older_than_days=0, limit=1, compact=False, retention_days=1)
 
     assert len(results) == 1
@@ -39,7 +39,7 @@ def test_archive_completed_runs_creates_bundle(tmp_path):
 @pytest.mark.django_db
 def test_archive_runs_command_compacts_verbose_events(tmp_path, capsys):
     workspace = Workspace.objects.create(name="Command WS")
-    agent = Agent.objects.create(workspace=workspace, name="Command Agent", system_prompt="Plan")
+    agent = Agent.objects.create(workspace=workspace, name="Command Agent", soul="Plan")
     run = AgentRun.objects.create(
         workspace=workspace,
         agent=agent,
@@ -50,7 +50,7 @@ def test_archive_runs_command_compacts_verbose_events(tmp_path, capsys):
     RunEvent.objects.filter(id=token_event.id).update(created_at=timezone.now() - timedelta(days=60))
     RunEvent.objects.create(run=run, seq=2, event_type="state_changed", payload={"status": "COMPLETED"})
 
-    with override_settings(AGENTMAESTRO_ARCHIVE_ROOT=str(tmp_path)):
+    with override_settings(ARCHIVE_ROOT=str(tmp_path)):
         call_command(
             "archive_runs",
             older_than=0,

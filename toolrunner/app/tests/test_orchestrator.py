@@ -58,9 +58,17 @@ def _write_charter(
         },
         "allowed_tools": allowed_tools
         or {
-            "tier1": ["format_runner", "run_command"],
+            "tier1": [
+                "run_command",
+                "format_runner",
+                "lint_runner",
+                "typecheck_runner",
+                "test_runner",
+                "repo_tree",
+                "file_write",
+            ],
             "tier2": [],
-            "git": ["git_status"],
+            "git": ["git_status", "git_add", "git_commit"],
         },
         "quality_gates": {
             "default": [
@@ -122,7 +130,7 @@ def _write_plan(
     milestones: list[dict] | None = None,
     complete: bool = True,
 ) -> Path:
-    plan_dir = tmp_path / ".agentmaestro" / "plans"
+    plan_dir = tmp_path / ".agentmaestro" / "runs" / run_id / "plans"
     plan_dir.mkdir(parents=True, exist_ok=True)
     plan_milestones = milestones or [
         {
@@ -145,7 +153,9 @@ def _write_plan(
         "milestones": plan_milestones,
     }
     plan_path = plan_dir / f"{plan_id}.json"
-    plan_path.write_text(json.dumps(plan))
+    payload = json.dumps(plan)
+    plan_path.write_text(payload)
+    (plan_dir / "latest.json").write_text(payload)
     return plan_path
 
 
@@ -161,13 +171,20 @@ def _step_report_path(tmp_path: Path, run_id: str, milestone_id: str = "M001", s
     )
 
 
+def _read_events(tmp_path: Path, run_id: str = DEFAULT_RUN_ID) -> list[dict]:
+    events_path = tmp_path / ".agentmaestro" / "runs" / run_id / "events.jsonl"
+    if not events_path.exists():
+        return []
+    return [json.loads(line) for line in events_path.read_text().splitlines() if line.strip()]
+
+
 def test_orchestrator_completes_plan(tmp_path: Path):
     charter_path = _write_charter(tmp_path)
     _write_plan(tmp_path)
     invoker = FakeToolInvoker()
     result = orchestrate(str(tmp_path), str(charter_path), tool_invoker=invoker)
 
-    assert result["status"] == "done"
+    assert result["status"] == "ok"
     assert result["reason"] == "all milestones satisfied"
 
     report_path = _step_report_path(tmp_path, DEFAULT_RUN_ID)
@@ -186,13 +203,21 @@ def test_orchestrator_handles_tool_failure(tmp_path: Path):
     invoker = FakeToolInvoker(responses)
     result = orchestrate(str(tmp_path), str(charter_path), tool_invoker=invoker)
 
-    assert result["status"] == "failed"
-    assert result["reason"] == "max_failures exceeded"
+    assert result["status"] == "ok"
+    assert result["reason"] == "all milestones satisfied"
+
+    run_root = tmp_path / ".agentmaestro" / "runs" / DEFAULT_RUN_ID
+    recovery_path = run_root / "plans" / "recovery_1.json"
+    assert recovery_path.exists()
+
+    events = _read_events(tmp_path)
+    assert any(event["type"] == "STEP_FAILED" for event in events)
+    assert any(event["type"] == "PLAN_RECOVERY_GENERATED" for event in events)
 
     report_path = _step_report_path(tmp_path, DEFAULT_RUN_ID)
     report = json.loads(report_path.read_text())
-    assert report["status"] == "failed"
-    assert report["tool_results"][0]["ok"] is False
+    assert report["status"] == "ok"
+    assert report["failure_count"] == 1
 
 
 def test_orchestrator_denies_unallowed_tool(tmp_path: Path):
@@ -200,8 +225,17 @@ def test_orchestrator_denies_unallowed_tool(tmp_path: Path):
     charter_path = _write_charter(tmp_path, allowed_tools=allowed_tools)
     _write_plan(tmp_path)
     invoker = FakeToolInvoker()
-    with pytest.raises(ValueError):
-        orchestrate(str(tmp_path), str(charter_path), tool_invoker=invoker)
+    result = orchestrate(str(tmp_path), str(charter_path), tool_invoker=invoker)
+
+    assert result["status"] == "blocked"
+    assert result["reason"] == "plan uses disallowed tools"
+
+    events = _read_events(tmp_path, DEFAULT_RUN_ID)
+    assert any(event["type"] == "PLAN_TOOLS_REJECTED" for event in events)
+    assert any(
+        event["type"] == "RUN_FINALIZED" and event["data"].get("reason") == result["reason"]
+        for event in events
+    )
 
 
 def test_orchestrator_clamps_tool_limits(tmp_path: Path):
@@ -213,7 +247,7 @@ def test_orchestrator_clamps_tool_limits(tmp_path: Path):
     invoker = FakeToolInvoker()
     result = orchestrate(str(tmp_path), str(charter_path), tool_invoker=invoker)
 
-    assert result["status"] == "done"
+    assert result["status"] == "ok"
     run_call = next(call for call in invoker.calls if call.tool == "run_command")
     assert run_call.args["timeout_ms"] == COMMAND_TIMEOUT * 1000
     assert run_call.args["max_output_bytes"] == OUTPUT_LIMIT
@@ -236,7 +270,7 @@ def test_orchestrator_requires_approval_for_risky_tags(tmp_path: Path):
         approval_handler=approval_handler,
     )
 
-    assert result["status"] == "done"
+    assert result["status"] == "ok"
     assert approvals == ["S001"]
 
 
@@ -292,18 +326,20 @@ def test_run_charter_schema_validation(tmp_path: Path):
 
 def test_plan_schema_validation(tmp_path: Path):
     charter_path = _write_charter(tmp_path)
-    plan_dir = tmp_path / ".agentmaestro" / "plans"
+    plan_dir = tmp_path / ".agentmaestro" / "runs" / DEFAULT_RUN_ID / "plans"
     plan_dir.mkdir(parents=True, exist_ok=True)
     incomplete_plan = {
         "schema_version": "1.0",
         "plan_id": "plan1",
         "run_id": DEFAULT_RUN_ID,
         "created_at": "2026-02-25T00:00:00Z",
+        "assumptions": [],
         "complete": True,
         "milestones": [],
     }
     plan_path = plan_dir / "plan1.json"
     plan_path.write_text(json.dumps(incomplete_plan))
+    (plan_dir / "latest.json").write_text(json.dumps(incomplete_plan))
 
     with pytest.raises(SchemaValidationError):
         orchestrate(str(tmp_path), str(charter_path))

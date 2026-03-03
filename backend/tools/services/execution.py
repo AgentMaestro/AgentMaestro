@@ -39,15 +39,15 @@ def _build_toolrunner_payload(tool_call: ToolCall, definition: ToolDefinition) -
         },
     }
     limits = dict(args.get("limits") or {})
-    limits.setdefault("timeout_s", settings.AGENTMAESTRO_TOOLRUNNER_TIMEOUT)
-    limits.setdefault("max_output_bytes", settings.AGENTMAESTRO_TOOLRUNNER_OUTPUT_LIMIT)
+    limits.setdefault("timeout_s", settings.TOOLRUNNER_TIMEOUT)
+    limits.setdefault("max_output_bytes", settings.TOOLRUNNER_OUTPUT_LIMIT)
     payload["limits"] = limits
     body = json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
     return body, payload
 
 
 def _sign_payload(body: bytes, timestamp: str) -> str:
-    key = settings.AGENTMAESTRO_TOOLRUNNER_SECRET.encode("utf-8")
+    key = settings.TOOLRUNNER_SECRET.encode("utf-8")
     message = timestamp.encode("utf-8") + b"." + body
     return hmac.new(key, message, sha256).hexdigest()
 
@@ -80,7 +80,7 @@ def execute_tool_call(tool_call_id: str) -> ToolCall:
         .select_related("run__workspace")
         .get(id=tool_call_id)
     )
-    if tool_call.status not in {ToolCall.Status.APPROVED, ToolCall.Status.RUNNING}:
+    if tool_call.status not in {ToolCall.Status.QUEUED, ToolCall.Status.RUNNING}:
         raise RuntimeError(f"Cannot execute tool call in status {tool_call.status}")
 
     definition = (
@@ -120,10 +120,10 @@ def execute_tool_call(tool_call_id: str) -> ToolCall:
     succeeded = False
     result_payload: dict[str, object] = {}
     try:
-        with httpx.Client(timeout=settings.AGENTMAESTRO_TOOLRUNNER_HTTP_TIMEOUT) as client:
-            request = httpx.Request("POST", settings.AGENTMAESTRO_TOOLRUNNER_URL)
+        with httpx.Client(timeout=settings.TOOLRUNNER_HTTP_TIMEOUT) as client:
+            request = httpx.Request("POST", settings.TOOLRUNNER_URL)
             response = client.post(
-                settings.AGENTMAESTRO_TOOLRUNNER_URL,
+                settings.TOOLRUNNER_URL,
                 content=body,
                 headers=headers,
             )
@@ -143,7 +143,7 @@ def execute_tool_call(tool_call_id: str) -> ToolCall:
     finally:
         duration_ms = int(round((time.monotonic() - start) * 1000))
         now = timezone.now()
-        tool_call.status = ToolCall.Status.SUCCEEDED if succeeded else ToolCall.Status.FAILED
+        tool_call.status = ToolCall.Status.COMPLETED if succeeded else ToolCall.Status.FAILED
         tool_call.exit_code = exit_code
         tool_call.stdout = stdout
         tool_call.stderr = stderr

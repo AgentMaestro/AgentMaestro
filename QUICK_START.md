@@ -27,8 +27,8 @@ Get a local dev workspace running in about five minutes:
 4. **Run services**
    - **Django + ASGI (Daphne)**: `daphne -b 127.0.0.1 -p 8000 agentmaestro.asgi:application`
      (alternatively `uvicorn agentmaestro.asgi:application --host 127.0.0.1 --port 8000 --reload`)
-   - **Celery worker**: `python -m celery -A agentmaestro worker --loglevel=info --pool=solo`
-   - **Toolrunner**: `cd ../toolrunner && .venv/Scripts/uvicorn app.main:app --reload`
+   - **Celery worker**: `cd ../backend && python -m celery -A agentmaestro worker --loglevel=info --pool=solo`
+   - **Toolrunner**: `cd .. && ./toolrunner/venv/Scripts/uvicorn app.main:app --reload`
 
 5. **Start a run**
    - Visit `http://127.0.0.1:8000/ui/dev/start-run/` in your browser.

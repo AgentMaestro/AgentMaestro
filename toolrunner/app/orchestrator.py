@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -20,10 +21,45 @@ from .schemas import (
 from .event_logger import EventLogger
 from .failure_fingerprints import FailureFingerprintTracker
 from .progress_tracker import ProgressTracker
+from .maestro_adapter import propose_recovery_plan
 
 
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+ENVIRONMENT_BLOCKERS = [
+    {
+        "match": re.compile(r"winerror\s*5", re.IGNORECASE),
+        "reason": "environment_permission_denied",
+        "remediation": "File system permissions blocked access to the temp/artifacts folder; run as administrator or clean up the directory.",
+    },
+    {
+        "match": re.compile(r"access is denied", re.IGNORECASE),
+        "reason": "environment_permission_denied",
+        "remediation": "Access was denied (WinError 5). Check folder permissions and remove any read-only flags before rerunning.",
+    },
+]
+MISSING_TOOL_KEYWORDS = ["ruff", "pyright", "mypy"]
+
+
+def fingerprint_failure(tool_name: str, error: dict[str, Any] | None, stderr: str | None) -> str:
+    code = (error or {}).get("code") or "nolabel"
+    message = (error or {}).get("message") or ""
+    cleaned = " ".join(message.split())[:64]
+    stderr_excerpt = " ".join((stderr or "").split())[:64]
+    return f"{tool_name}:{code}:{cleaned}:{stderr_excerpt}"
+
+
+def failure_excerpt(error: dict[str, Any] | None, stderr: str | None) -> str:
+    parts: list[str] = []
+    message = (error or {}).get("message")
+    if message:
+        parts.append(message.strip())
+    if stderr:
+        parts.append(stderr.strip())
+    excerpt = " | ".join(parts)
+    return (excerpt[:200] + "...") if len(excerpt) > 200 else excerpt
 
 
 class AllowedTools(BaseModel):
@@ -212,12 +248,18 @@ class Orchestrator:
         self.run_plans_dir = self.run_root / "plans"
         self.step_reports_base = self.run_root / "step_reports"
         self.artifacts_dir = self.run_root / "artifacts"
+        self.state_dir = self.run_root / "state"
         self.branch_name = ""
         self.run_start_monotonic = 0.0
         self.event_logger: EventLogger | None = None
         self.failure_tracker: FailureFingerprintTracker | None = None
         self.progress_tracker: ProgressTracker | None = None
         self.stop_event = stop_event
+        self.last_verification: dict[str, Any] | None = None
+        self.last_repo_state: dict[str, Any] | None = None
+        self.pending_approval = False
+        self.recovery_plan_counter = 0
+        self.last_failure_excerpt: str = ""
 
     def orchestrate(self) -> Dict[str, str]:
         self.ensure_agent_workspace_dirs()
@@ -236,9 +278,31 @@ class Orchestrator:
             if self._stop_requested():
                 return self.finalize("blocked", "stopped by request")
 
-            plan = self.maestro_make_plan()
+            try:
+                plan = self.maestro_make_plan()
+            except FileNotFoundError as exc:
+                return self.finalize("blocked", str(exc))
             self.ensure_branch(plan)
             self.event_logger.log("PLAN_LOADED", {"plan_id": plan.plan_id, "milestones": len(plan.milestones)})
+            disallowed = self._plan_requires_disallowed_tools(plan)
+            if disallowed:
+                reason = "plan uses disallowed tools"
+                remediation = f"Add {', '.join(disallowed)} to the charter allowlist or regenerate the plan with only allowed tools."
+                self._log_event(
+                    "PLAN_TOOLS_REJECTED",
+                    {
+                        "run_id": self.charter.run_id,
+                        "plan_id": plan.plan_id,
+                        "disallowed_tools": disallowed,
+                    },
+                )
+                return self.finalize(
+                    "blocked",
+                    reason,
+                    remediation=remediation,
+                    failure_excerpt=f"Disallowed tools: {', '.join(disallowed)}",
+                )
+            restart_plan = False
 
             for milestone in plan.milestones:
                 milestone_failed = False
@@ -258,7 +322,11 @@ class Orchestrator:
                                 "risk_tags": step.risk_tags,
                             },
                         )
-                        decision = self.request_user_approval(step)
+                        self.pending_approval = True
+                        try:
+                            decision = self.request_user_approval(step)
+                        finally:
+                            self.pending_approval = False
                         self._log_event(
                             "APPROVAL_DECISION",
                             {
@@ -316,8 +384,19 @@ class Orchestrator:
                         )
 
                         if not result.get("ok"):
-                            self.event_logger.log("TOOL_FAILURE", {"call_id": clamped_call.call_id, "tool": clamped_call.tool, "error": result.get("error")})
+                            error = result.get("error") or {}
+                            stderr_text = self._extract_stderr(result)
+                            fingerprint = fingerprint_failure(clamped_call.tool, error, stderr_text)
+                            self.last_failure_excerpt = failure_excerpt(error, stderr_text)
+                            self.event_logger.log("TOOL_FAILURE", {"call_id": clamped_call.call_id, "tool": clamped_call.tool, "error": error})
                             failures += 1
+                            env_block = self._classify_environment_blocker(clamped_call.tool, error, stderr_text)
+                            if env_block:
+                                reason, remediation = env_block
+                                return self.finalize("blocked", reason, remediation=remediation, failure_excerpt=self.last_failure_excerpt)
+                            blocked_reason = self._check_failure_signature(fingerprint)
+                            if blocked_reason:
+                                return blocked_reason
                             self.maybe_rollback(step)
                             report = self.build_step_report(
                                 plan,
@@ -332,13 +411,24 @@ class Orchestrator:
                                 cycle_index=cycle,
                             )
                             self.persist_step_report(step, milestone, plan, report)
-                            env_block = self._check_environment_error(result)
-                            if env_block:
-                                return env_block
-                            blocked_reason = self._check_failure_signature(result)
-                            if blocked_reason:
-                                return blocked_reason
-                            if failures >= self.charter.stop_conditions.max_failures:
+                            failure_context = {
+                                "plan_id": plan.plan_id,
+                                "run_id": self.charter.run_id,
+                                "milestone_id": milestone.milestone_id,
+                                "step_id": step.step_id,
+                                "status": "tool_failure",
+                                "reason": error.get("message"),
+                                "tool_results": tool_results,
+                                "stderr": stderr_text,
+                            }
+                            allow_recovery = failures <= self.charter.stop_conditions.max_failures
+                            recovery_plan = self._handle_step_failure(plan, milestone, step, failure_context, allow_recovery=allow_recovery)
+                            if recovery_plan:
+                                plan = recovery_plan
+                                restart_plan = True
+                                step_failed = False
+                                break
+                            if not allow_recovery:
                                 return self.finalize("failed", "max_failures exceeded")
                             step_failed = True
                             break
@@ -348,14 +438,15 @@ class Orchestrator:
                         break
 
                     verification = self.run_quality_gates(step, milestone)
+                    self.last_verification = verification
                     self._log_event("GATES_RUN", {"step": step.step_id, "milestone": milestone.milestone_id, "verification": verification})
                     diff_summary = self.collect_diff_summary(step)
                     status = "ok" if verification["overall_pass"] else "failed"
                     if status != "ok":
                         failures += 1
-                        self.maybe_rollback(step)
 
                     repo_state = self.collect_repo_state(diff_summary.get("paths") if diff_summary else None)
+                    self.last_repo_state = repo_state
                     report = self.build_step_report(
                         plan,
                         milestone,
@@ -377,17 +468,59 @@ class Orchestrator:
                         return progress_block
 
                     if status != "ok":
-                        if failures >= self.charter.stop_conditions.max_failures:
+                        self.maybe_rollback(step)
+                        failed_gate = next((gate for gate in verification.get("gates", []) if not gate.get("ok")), None)
+                        gate_tool = failed_gate.get("tool") if failed_gate else "unknown"
+                        gate_raw = failed_gate.get("raw") if failed_gate else {}
+                        error = (gate_raw or {}).get("error") or {}
+                        stderr_text = self._extract_stderr(gate_raw or {})
+                        fingerprint = fingerprint_failure(gate_tool, error, stderr_text)
+                        self.last_failure_excerpt = failure_excerpt(error, stderr_text)
+                        env_block = self._classify_environment_blocker(gate_tool, error, stderr_text)
+                        if env_block:
+                            reason, remediation = env_block
+                            return self.finalize("blocked", reason, remediation=remediation, failure_excerpt=self.last_failure_excerpt)
+                        blocked_reason = self._check_failure_signature(fingerprint)
+                        if blocked_reason:
+                            return blocked_reason
+                        failure_context = {
+                            "plan_id": plan.plan_id,
+                            "run_id": self.charter.run_id,
+                            "milestone_id": milestone.milestone_id,
+                            "step_id": step.step_id,
+                            "status": "gate_failure",
+                            "reason": "gates did not pass",
+                            "tool_results": tool_results,
+                            "verification": verification,
+                            "stderr": stderr_text,
+                        }
+                        allow_recovery = failures <= self.charter.stop_conditions.max_failures
+                        recovery_plan = self._handle_step_failure(
+                            plan, milestone, step, failure_context, allow_recovery=allow_recovery
+                        )
+                        if recovery_plan:
+                            plan = recovery_plan
+                            restart_plan = True
+                            break
+                        if not allow_recovery:
                             return self.finalize("failed", "max_failures exceeded")
                         milestone_failed = True
                         break
 
+            if restart_plan:
+                continue
+
             if milestone_failed:
-                break
+                success, evidence_reason = self._evidence_for_success(plan)
+                reason = evidence_reason or "milestone failed"
+                return self.finalize("blocked", reason)
 
             final_state = self.maestro_review_progress(plan)
             if final_state == "done":
-                return self.finalize("done", "all milestones satisfied")
+                success, evidence_reason = self._evidence_for_success(plan)
+                if success:
+                    return self.finalize("ok", "all milestones satisfied")
+                return self.finalize("blocked", evidence_reason or "evidence requirements not met")
 
     def _stop_requested(self) -> bool:
         return self.stop_event is not None and self.stop_event.is_set()
@@ -399,6 +532,7 @@ class Orchestrator:
         self.run_plans_dir.mkdir(parents=True, exist_ok=True)
         self.step_reports_base.mkdir(parents=True, exist_ok=True)
         self.artifacts_dir.mkdir(parents=True, exist_ok=True)
+        self.state_dir.mkdir(parents=True, exist_ok=True)
         self.persist_run_charter()
 
     def _max_minutes_exceeded(self) -> bool:
@@ -427,7 +561,7 @@ class Orchestrator:
             pass
 
     def maestro_make_plan(self) -> Plan:
-        plan_path, data = self._load_plan_data()
+        _, data = self._load_latest_plan_data()
         validate_plan(data)
         plan = Plan.model_validate(data)
         self.ensure_plan_semantics(plan)
@@ -438,7 +572,6 @@ class Orchestrator:
         if plan.run_id != self.charter.run_id:
             raise ValueError("plan.run_id does not match charter run_id")
 
-        allowed_tools = self.charter.tool_allowlist()
         approval_tags = set(self.charter.policies.require_approval_for)
 
         milestone_ids: Set[str] = set()
@@ -463,8 +596,6 @@ class Orchestrator:
                     if call.call_id in call_ids:
                         raise ValueError(f"duplicate tool_call.call_id {call.call_id} in {step.step_id}")
                     call_ids.add(call.call_id)
-                    if allowed_tools and call.tool not in allowed_tools:
-                        raise ValueError(f"tool {call.tool} not allowed by charter")
                     ref = call.args.get("ref")
                     if isinstance(ref, str) and ref.startswith("-"):
                         raise ValueError("ref must not start with '-'")
@@ -482,20 +613,38 @@ class Orchestrator:
         with target.open("w", encoding="utf-8") as handle:
             json.dump(self.charter.model_dump(), handle, indent=2)
 
-    def _load_plan_data(self) -> tuple[Path, Dict[str, Any]]:
-        if not self.plans_dir.exists():
-            raise FileNotFoundError(f"{self.plans_dir} does not exist")
-        matches = []
-        for path in self.plans_dir.glob("*.json"):
-            with path.open("r", encoding="utf-8") as handle:
-                data = json.load(handle)
-            if data.get("run_id") == self.charter.run_id:
-                matches.append((path, data))
-        if not matches:
-            raise FileNotFoundError("no plan found for run")
-        if len(matches) > 1:
-            raise ValueError("multiple plan candidates found")
-        return matches[0]
+    def _load_latest_plan_data(self) -> tuple[Path, Dict[str, Any]]:
+        latest_path = self.run_plans_dir / "latest.json"
+        if not latest_path.exists():
+            raise FileNotFoundError(f"latest plan missing ({latest_path})")
+        with latest_path.open("r", encoding="utf-8") as handle:
+            data = json.load(handle)
+        return latest_path, data
+
+    def _plan_requires_disallowed_tools(self, plan: Plan) -> list[str]:
+        allowed = self.charter.tool_allowlist()
+        used: Set[str] = set()
+        for milestone in plan.milestones:
+            for step in milestone.steps:
+                for call in step.tool_calls:
+                    used.add(call.tool)
+                for gate in getattr(step, "acceptance_checks", []) or []:
+                    used.add(gate.tool)
+            for gate in milestone.quality_gates_override or []:
+                used.add(gate.tool)
+        for gate in self.charter.quality_gates.default:
+            used.add(gate.tool)
+        for gate in self.charter.quality_gates.on_merge_candidate:
+            used.add(gate.tool)
+        if not allowed:
+            return []
+        disallowed = sorted(tool for tool in used if tool not in allowed)
+        return disallowed
+
+    def _write_latest_plan_data(self, data: Dict[str, Any]) -> None:
+        latest_path = self.run_plans_dir / "latest.json"
+        with latest_path.open("w", encoding="utf-8") as handle:
+            json.dump(data, handle, indent=2)
 
     def step_requires_approval(self, step: Step) -> bool:
         if step.requires_approval:
@@ -686,48 +835,138 @@ class Orchestrator:
     def maestro_review_progress(self, plan: Plan) -> str:
         return "done" if plan.complete else "continue"
 
-    def finalize(self, status: str, reason: str) -> Dict[str, str]:
+    def _handle_step_failure(
+        self,
+        plan: Plan,
+        milestone: Milestone,
+        step: Step,
+        failure_context: Dict[str, Any],
+        allow_recovery: bool = True,
+    ) -> Plan | None:
+        self._log_event(
+            "STEP_FAILED",
+            {
+                "step": step.step_id,
+                "milestone": milestone.milestone_id,
+                "reason": failure_context.get("reason"),
+                "status": failure_context.get("status"),
+            },
+        )
+        if not allow_recovery:
+            return None
+        try:
+            recovery_candidate = propose_recovery_plan(self.charter.run_id, failure_context)
+        except Exception:
+            return None
+        if not recovery_candidate:
+            return None
+        if isinstance(recovery_candidate, Plan):
+            recovery_plan = recovery_candidate
+            plan_data = recovery_plan.model_dump(exclude_none=True)
+        else:
+            plan_data = dict(recovery_candidate)
+            recovery_plan = Plan.model_validate(plan_data)
+        self.recovery_plan_counter += 1
+        recovery_path = self.run_plans_dir / f"recovery_{self.recovery_plan_counter}.json"
+        with recovery_path.open("w", encoding="utf-8") as handle:
+            json.dump(plan_data, handle, indent=2)
+        self.persist_plan(recovery_plan)
+        self._write_latest_plan_data(plan_data)
+        self._log_event(
+            "PLAN_RECOVERY_GENERATED",
+            {"plan_id": recovery_plan.plan_id, "path": str(recovery_path)},
+        )
+        return recovery_plan
+
+    def _evidence_for_success(self, plan: Plan) -> tuple[bool, str | None]:
+        if not plan.complete:
+            return False, "plan marked incomplete"
+        verification = self.last_verification
+        if not verification:
+            return False, "no gates were recorded"
+        if not verification.get("overall_pass"):
+            return False, "gates did not pass"
+        repo_state = self.collect_repo_state()
+        self.last_repo_state = repo_state
+        changed = repo_state.get("changed_files") or []
+        if changed:
+            return False, "repository not clean"
+        if self.pending_approval:
+            return False, "approval decision pending"
+        return True, None
+
+    def finalize(
+        self,
+        status: str,
+        reason: str,
+        remediation: str | None = None,
+        failure_excerpt: str | None = None,
+    ) -> Dict[str, str]:
+        payload = {"status": status, "reason": reason}
+        if remediation:
+            payload["remediation"] = remediation
+        if failure_excerpt:
+            payload["failure_excerpt"] = failure_excerpt
         print("finalize called", status, reason)
-        self._log_event("RUN_FINALIZED", {"status": status, "reason": reason})
-        return {"status": status, "reason": reason}
+        self._log_event("RUN_FINALIZED", payload)
+        return payload
 
     def _init_helpers(self) -> None:
         if self.event_logger is None:
             self.event_logger = EventLogger(self.run_root)
         if self.failure_tracker is None:
-            self.failure_tracker = FailureFingerprintTracker(self.run_root)
+            self.failure_tracker = FailureFingerprintTracker(self.state_dir)
         if self.progress_tracker is None:
-            self.progress_tracker = ProgressTracker(self.run_root)
+            self.progress_tracker = ProgressTracker(self.state_dir)
 
     def _log_event(self, event_type: str, data: Mapping[str, Any] | None = None) -> None:
         if self.event_logger:
             self.event_logger.log(event_type, data or {})
 
-    def _check_failure_signature(self, result: Dict[str, Any]) -> Dict[str, str] | None:
+    def _extract_stderr(self, result: Dict[str, Any] | None) -> str:
+        if not result:
+            return ""
+        payload = result.get("result") or {}
+        stderr = payload.get("stderr") or result.get("stderr") or ""
+        return stderr
+
+    def _check_failure_signature(self, fingerprint: str) -> Dict[str, str] | None:
         if not self.failure_tracker:
             return None
-        fingerprint = self.failure_tracker.fingerprint(result)
         repeated, signature = self.failure_tracker.record(fingerprint)
         if repeated:
             self._log_event("STUCK_LOOP_DETECTED", {"signature": signature})
-            return self.finalize("blocked", "Stuck loop detected: same failure repeated 3x")
+            remediation = "Repeated identical failure detected; inspect the failing tool output and adjust the plan before continuing."
+            return self.finalize(
+                "blocked",
+                "stuck_loop_repeated_failure",
+                remediation=remediation,
+                failure_excerpt=self.last_failure_excerpt,
+            )
         return None
 
-    def _check_environment_error(self, result: Dict[str, Any]) -> Dict[str, str] | None:
-        error = result.get("error") or {}
-        message = (error.get("message") or "").lower()
-        keywords = [
-            "winerror 5",
-            "access is denied",
-            "permission denied",
-            "basetemp",
-            "cannot delete",
-        ]
-        for keyword in keywords:
-            if keyword in message:
-                msg = f"Environment error detected ({keyword}); manual cleanup may be required."
-                self._log_event("ENVIRONMENT_BLOCKED", {"message": msg, "keyword": keyword})
-                return self.finalize("blocked", msg)
+    def _classify_environment_blocker(
+        self,
+        tool_name: str,
+        error: dict[str, Any] | None,
+        stderr: str | None,
+    ) -> tuple[str, str] | None:
+        message = (error or {}).get("message") or ""
+        combined = " ".join(filter(None, [message, stderr or ""])).strip()
+        if not combined:
+            return None
+        normalized = combined.lower()
+        for rule in ENVIRONMENT_BLOCKERS:
+            if rule["match"].search(normalized):
+                self._log_event("ENVIRONMENT_BLOCKED", {"tool": tool_name, "reason": rule["reason"]})
+                return rule["reason"], rule["remediation"]
+        if "not found" in normalized or "not recognized" in normalized:
+            for token in MISSING_TOOL_KEYWORDS:
+                if token in normalized:
+                    reason = f"missing_tool_{token}"
+                    remediation = f"Install {token} or ensure it is available on PATH."
+                    self._log_event("ENVIRONMENT_BLOCKED", {"tool": tool_name, "reason": reason})
+                    return reason, remediation
         return None
 
     def _gates_hash(self, verification: Optional[Dict[str, Any]]) -> str:

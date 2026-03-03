@@ -1,0 +1,198 @@
+from .models import ToolRisk
+
+TOOL_REGISTRY = [
+    {
+        "name": "File Read Operations",
+        "description": "Inspect files and repository metadata without modifying content.",
+        "tools": [
+            {
+                "name": "file_read",
+                "description": "Read a local file path.",
+                "risk": ToolRisk.SAFE,
+                "args_schema": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]},
+                "requires_approval": False,
+                "released": True,
+            },
+        ],
+    },
+    {
+        "name": "File Write Operations",
+        "description": "Modify files in the workspace while keeping the safety reviewable.",
+        "tools": [
+            {
+                "name": "file_write",
+                "description": "Write text to a file.",
+                "risk": ToolRisk.ELEVATED,
+                "args_schema": {
+                    "type": "object",
+                    "properties": {"path": {"type": "string"}, "content": {"type": "string"}},
+                    "required": ["path", "content"],
+                },
+                "requires_approval": True,
+                "released": True,
+            },
+            {
+                "name": "file_patch",
+                "description": "Apply a unified diff patch to the repository.",
+                "risk": ToolRisk.ELEVATED,
+                "args_schema": {
+                    "type": "object",
+                    "properties": {"patch": {"type": "string"}, "apply_root": {"type": "string"}},
+                    "required": ["patch"],
+                },
+                "requires_approval": True,
+                "released": True,
+            },
+            {
+                "name": "file_delete",
+                "description": "Delete a file or directory.",
+                "risk": ToolRisk.DANGEROUS,
+                "args_schema": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]},
+                "requires_approval": True,
+                "released": False,
+            },
+        ],
+    },
+    {
+        "name": "Git",
+        "description": "Interact with git repositories hosted in the workspace.",
+        "tools": [
+            {
+                "name": "git_add",
+                "description": "Stage files for commit.",
+                "risk": ToolRisk.SAFE,
+                "args_schema": {"type": "object", "properties": {"paths": {"type": "array", "items": {"type": "string"}}}, "required": ["paths"]},
+                "requires_approval": False,
+                "released": True,
+            },
+            {
+                "name": "git_commit",
+                "description": "Create a new git commit.",
+                "risk": ToolRisk.ELEVATED,
+                "args_schema": {
+                    "type": "object",
+                    "properties": {"message": {"type": "string"}},
+                    "required": ["message"],
+                },
+                "requires_approval": True,
+                "released": False,
+            },
+        ],
+    },
+    {
+        "name": "Execution",
+        "description": "Run Python scripts or HTTP webhooks.",
+        "tools": [
+            {
+                "name": "python_exec",
+                "description": "Execute a Python script.",
+                "risk": ToolRisk.DANGEROUS,
+                "args_schema": {
+                    "type": "object",
+                    "properties": {"code": {"type": "string"}, "timeout": {"type": "number"}},
+                    "required": ["code"],
+                },
+                "requires_approval": True,
+                "released": True,
+            },
+            {
+                "name": "webhook",
+                "description": "Call an external webhook.",
+                "risk": ToolRisk.ELEVATED,
+                "args_schema": {
+                    "type": "object",
+                    "properties": {"url": {"type": "string"}, "payload": {"type": "object"}},
+                    "required": ["url"],
+                },
+                "requires_approval": False,
+                "released": True,
+            },
+            {
+                "name": "coverage_runner",
+                "description": "Run coverage collection on the repository.",
+                "risk": ToolRisk.ELEVATED,
+                "args_schema": {
+                    "type": "object",
+                    "properties": {"target": {"type": "string"}, "output": {"type": "string"}},
+                    "required": ["target"],
+                },
+                "requires_approval": True,
+                "released": True,
+            },
+            {
+                "name": "format_runner",
+                "description": "Format code according to project conventions.",
+                "risk": ToolRisk.SAFE,
+                "args_schema": {
+                    "type": "object",
+                    "properties": {"path": {"type": "string"}, "line_length": {"type": "integer"}},
+                    "required": ["path"],
+                },
+                "requires_approval": False,
+                "released": True,
+            },
+            {
+                "name": "lint_runner",
+                "description": "Run linting task against the codebase.",
+                "risk": ToolRisk.SAFE,
+                "args_schema": {
+                    "type": "object",
+                    "properties": {"target": {"type": "string"}},
+                    "required": ["target"],
+                },
+                "requires_approval": False,
+                "released": True,
+            },
+            {
+                "name": "repo_tree",
+                "description": "List repository tree contents.",
+                "risk": ToolRisk.SAFE,
+                "requires_approval": False,
+                "released": True,
+            },
+            {
+                "name": "run_command",
+                "description": "Run an arbitrary shell command.",
+                "risk": ToolRisk.ELEVATED,
+                "args_schema": {"type": "object", "properties": {"cmd": {"type": "string"}}, "required": ["cmd"]},
+                "requires_approval": True,
+                "released": True,
+            },
+            {
+                "name": "search_code",
+                "description": "Search codebase for text patterns/regex.",
+                "risk": ToolRisk.ELEVATED,
+                "args_schema": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]},
+                "requires_approval": True,
+                "released": True,
+            },
+            {
+                "name": "shell_exec",
+                "description": "Execute a shell command inside the workspace.",
+                "risk": ToolRisk.DANGEROUS,
+                "args_schema": {"type": "object", "properties": {"command": {"type": "string"}}, "required": ["command"]},
+                "requires_approval": True,
+                "released": True,
+            },
+            {
+                "name": "test_runner",
+                "description": "Run the suite of automated tests.",
+                "risk": ToolRisk.ELEVATED,
+                "args_schema": {
+                    "type": "object",
+                    "properties": {"suite": {"type": "string"}, "timeout": {"type": "integer"}},
+                    "required": ["suite"],
+                },
+                "requires_approval": True,
+                "released": True,
+            },
+            {
+                "name": "typecheck_runner",
+                "description": "Run static type checking tooling.",
+                "risk": ToolRisk.SAFE,
+                "requires_approval": False,
+                "released": True,
+            },
+        ],
+    },
+]

@@ -1,0 +1,39 @@
+{% extends "agents/wizard_base.html" %}
+
+{% block wizard_content %}
+  <form method="post" action="?step={{ current_step }}">
+    {% csrf_token %}
+    <div class="form-section">
+      {% if tool_sections %}
+        {% for section in tool_sections %}
+          <div class="tool-section">
+            <h3>{{ section.name }}</h3>
+            <div class="tool-grid">
+              {% for tool in section.tools %}
+                <div class="tool-card">
+                  <div class="tool-card__info">
+                    <strong>{{ tool.definition.tool.name }}</strong>
+                    <p>{{ tool.definition.description|default:tool.definition.tool.description }}</p>
+                    <span class="risk-tag {{ tool.definition.tool.risk|lower }}">
+                      {{ tool.definition.tool.risk|title }}
+                    </span>
+                  </div>
+                  <div class="tool-card__toggle">
+                    <label for="{{ tool.field.id_for_label }}">Enabled</label>
+                    {{ tool.field }}
+                  </div>
+                </div>
+              {% endfor %}
+            </div>
+          </div>
+        {% endfor %}
+      {% else %}
+        <p>No tools are enabled for the selected workspace yet.</p>
+      {% endif %}
+    </div>
+    <div style="margin-top: 24px; display:flex; gap:10px;">
+      <a href="?step={{ current_step|add:-1 }}" class="button-link secondary">Back</a>
+      <button type="submit" class="primary">Next step</button>
+    </div>
+  </form>
+{% endblock %}

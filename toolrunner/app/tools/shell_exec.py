@@ -15,7 +15,7 @@ def run_shell(
     timeout_s: int,
     max_output_bytes: int,
     env: dict[str, str] | None = None,
-) -> tuple[int | None, str, str]:
+) -> tuple[int | None, str, str, Path]:
     if not cmd:
         raise ValueError("cmd is required")
     validate_command(cmd[0])
@@ -38,10 +38,12 @@ def run_shell(
             completed.returncode,
             truncate_output(completed.stdout, max_output_bytes),
             truncate_output(completed.stderr, max_output_bytes),
+            working_dir,
         )
     except subprocess.TimeoutExpired as exc:
         return (
             None,
             truncate_output(exc.stdout or "", max_output_bytes),
             truncate_output(exc.stderr or "", max_output_bytes),
+            working_dir,
         )

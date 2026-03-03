@@ -201,9 +201,17 @@ def _write_charter(
             "apprentice": {"name": "apprentice"},
         },
         "allowed_tools": {
-            "tier1": ["run_command", "format_runner"],
+            "tier1": [
+                "run_command",
+                "format_runner",
+                "lint_runner",
+                "typecheck_runner",
+                "test_runner",
+                "repo_tree",
+                "file_write",
+            ],
             "tier2": [],
-            "git": ["git_status"],
+            "git": ["git_status", "git_add", "git_commit"],
         },
         "quality_gates": {
             "default": [
@@ -319,14 +327,14 @@ def test_loop_simulation_happy_path(tmp_path: Path):
 
     result = orchestrator.orchestrate()
 
-    assert result["status"] == "done"
+    assert result["status"] == "ok"
     assert result["reason"] == "all milestones satisfied"
 
     report = json.loads(_step_report_path(tmp_path).read_text())
     assert report["status"] == "ok"
     assert report["verification"]["overall_pass"] is True
     assert report["repo_state"]["is_clean"] is True
-    assert invoker.calls[-1]["tool"] == "format_runner"
+    assert any(call["tool"] == "format_runner" for call in invoker.calls)
 
 
 def test_loop_simulation_tool_failure(tmp_path: Path):
@@ -497,7 +505,7 @@ def test_loop_simulation_clamp_overrides(tmp_path: Path):
 
     result = orchestrator.orchestrate()
 
-    assert result["status"] == "done"
+    assert result["status"] == "ok"
     run_call = next(call for call in invoker.calls if call["tool"] == "run_command")
     assert run_call["args"]["timeout_ms"] == 2048
     assert run_call["args"]["max_output_bytes"] == 4096

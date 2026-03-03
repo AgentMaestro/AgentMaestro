@@ -1,17 +1,30 @@
 from __future__ import annotations
 
-import fnmatch
 import os
 from pathlib import Path
-from typing import Iterable, Sequence
+from typing import Sequence
 
 from fastapi.responses import JSONResponse
 
+from ..config import (
+    allowed_root_strings,
+    combine_exclude_patterns,
+    is_under_allowed_root,
+    normalize_search_root,
+    policy_metadata,
+)
 from ..models import RepoTreeArgs
 from ..sandbox import is_safe_path, safe_join
+from .path_filters import first_matching_pattern, glob_candidates, matches_patterns
 
 
-def _error(code: str, message: str, status_code: int = 400):
+def _error(
+    code: str,
+    message: str,
+    status_code: int = 400,
+    *,
+    extra_patterns: Sequence[str] | None = None,
+):
     return JSONResponse(
         status_code=status_code,
         content={
@@ -21,45 +34,9 @@ def _error(code: str, message: str, status_code: int = 400):
                 "message": message,
                 "details": {},
             },
+            "meta": {"policy": policy_metadata(extra_patterns)},
         },
     )
-
-
-def _glob_candidates(
-    entry_path: Path,
-    root_path: Path,
-    run_dir: Path,
-    is_dir: bool,
-) -> list[str]:
-    candidates: list[str] = []
-    try:
-        relative_to_root = entry_path.relative_to(root_path)
-    except ValueError:
-        return candidates
-
-    relative_root_str = relative_to_root.as_posix()
-    if relative_root_str and relative_root_str != ".":
-        candidates.append(relative_root_str)
-        if is_dir:
-            candidates.append(f"{relative_root_str}/")
-
-    try:
-        relative_to_run = entry_path.relative_to(run_dir).as_posix()
-    except ValueError:
-        return candidates
-    if relative_to_run:
-        candidates.append(relative_to_run)
-    if is_dir and relative_to_run:
-        candidates.append(f"{relative_to_run}/")
-    return candidates
-
-
-def _matches_patterns(candidates: Iterable[str], patterns: Sequence[str]) -> bool:
-    for pattern in patterns:
-        for candidate in candidates:
-            if fnmatch.fnmatchcase(candidate, pattern):
-                return True
-    return False
 
 
 def _collect_metadata(target: Path, follow_symlinks: bool) -> dict[str, int | None]:
@@ -74,19 +51,61 @@ def _collect_metadata(target: Path, follow_symlinks: bool) -> dict[str, int | No
     }
 
 
+def _allowed_root_strings() -> list[str]:
+    return list(allowed_root_strings())
+
+
+def _path_under_allowed_root(path: Path, extra_roots: tuple[Path, ...] | None = None) -> bool:
+    return is_under_allowed_root(path, extra_roots)
+
+
 def list_repo_tree(run_dir: Path, args: RepoTreeArgs):
-    try:
-        root_path = safe_join(run_dir, args.root)
-    except ValueError as exc:
-        return _error("PATH_OUTSIDE_WORKSPACE", str(exc))
+    if args.absolute_root:
+        root_path = Path(args.absolute_root).resolve()
+        if not _path_under_allowed_root(root_path):
+            return _error(
+                "PATH_NOT_ALLOWED",
+                "absolute_root not permitted",
+                extra_patterns=args.exclude_globs,
+            )
+        run_dir = root_path
+    else:
+        try:
+            root_path = safe_join(run_dir, args.root)
+        except ValueError as exc:
+            return _error(
+                "PATH_OUTSIDE_WORKSPACE",
+                str(exc),
+                extra_patterns=args.exclude_globs,
+            )
+        root_path = root_path.resolve()
+
+    allowed_context_roots = (normalize_search_root(run_dir),)
+    if not _path_under_allowed_root(root_path, allowed_context_roots):
+        return _error(
+            "PATH_NOT_ALLOWED",
+            "root path not permitted",
+            extra_patterns=args.exclude_globs,
+        )
 
     if not root_path.exists():
-        return _error("NOT_FOUND", "root path missing")
+        return _error(
+            "NOT_FOUND",
+            "root path missing",
+            extra_patterns=args.exclude_globs,
+        )
 
+    combined_patterns = combine_exclude_patterns(args.exclude_globs)
     entries: list[dict] = []
     files_count = 0
     dirs_count = 0
     truncated = False
+    excluded_count = 0
+    excluded_pattern_counts: dict[str, int] = {pattern: 0 for pattern in combined_patterns}
+
+    def _increment_excluded() -> None:
+        nonlocal excluded_count
+        excluded_count += 1
 
     def _append_entry(path: Path, entry_type: str, depth: int) -> bool:
         nonlocal truncated, files_count, dirs_count
@@ -112,16 +131,21 @@ def list_repo_tree(run_dir: Path, args: RepoTreeArgs):
         return True
 
     def _should_exclude(path: Path, is_dir: bool) -> bool:
-        if not args.exclude_globs:
+        if not combined_patterns:
             return False
-        candidates = _glob_candidates(path, root_path, run_dir, is_dir)
-        return bool(candidates) and _matches_patterns(candidates, args.exclude_globs)
+        candidates = glob_candidates(path, root_path, run_dir, is_dir)
+        pattern = first_matching_pattern(candidates, combined_patterns)
+        if not pattern:
+            return False
+        excluded_pattern_counts[pattern] += 1
+        _increment_excluded()
+        return True
 
     def _passes_include(path: Path, is_dir: bool) -> bool:
         if not args.include_globs:
             return True
-        candidates = _glob_candidates(path, root_path, run_dir, is_dir)
-        return bool(candidates) and _matches_patterns(candidates, args.include_globs)
+        candidates = glob_candidates(path, root_path, run_dir, is_dir)
+        return bool(candidates) and matches_patterns(candidates, args.include_globs)
 
     def _depth_for_entry(path: Path) -> int:
         try:
@@ -129,6 +153,17 @@ def list_repo_tree(run_dir: Path, args: RepoTreeArgs):
         except ValueError:
             return 0
         return len([part for part in relative_depth.parts if part != "."])
+
+    def _build_stats() -> dict[str, object]:
+        return {
+            "files": files_count,
+            "dirs": dirs_count,
+            "entries": files_count + dirs_count,
+            "excluded": excluded_count,
+            "excluded_patterns": list(combined_patterns),
+            "excluded_matches_by_pattern": dict(excluded_pattern_counts),
+            "allowed_roots": _allowed_root_strings(),
+        }
 
     if root_path.is_file():
         if args.include_files and not _should_exclude(root_path, False) and _passes_include(root_path, False):
@@ -139,11 +174,7 @@ def list_repo_tree(run_dir: Path, args: RepoTreeArgs):
             "max_depth": args.max_depth,
             "truncated": truncated,
             "entries": sorted(entries, key=lambda entry: entry["path"]),
-            "stats": {
-                "files": files_count,
-                "dirs": dirs_count,
-                "entries": files_count + dirs_count,
-            },
+            "stats": _build_stats(),
         }
         return JSONResponse(status_code=200, content={"ok": True, "result": result})
 
@@ -201,10 +232,10 @@ def list_repo_tree(run_dir: Path, args: RepoTreeArgs):
         "max_depth": args.max_depth,
         "truncated": truncated,
         "entries": sorted(entries, key=lambda entry: entry["path"]),
-        "stats": {
-            "files": files_count,
-            "dirs": dirs_count,
-            "entries": files_count + dirs_count,
-        },
+        "stats": _build_stats(),
     }
-    return JSONResponse(status_code=200, content={"ok": True, "result": result})
+    policy_meta = policy_metadata(args.exclude_globs)
+    return JSONResponse(
+        status_code=200,
+        content={"ok": True, "result": result, "meta": {"policy": policy_meta}},
+    )

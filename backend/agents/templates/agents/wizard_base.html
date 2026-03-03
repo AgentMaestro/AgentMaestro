@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <title>Agent Wizard</title>
+  <style>
+    body {
+      font-family: "Segoe UI", system-ui, sans-serif;
+      background: #f5f7fa;
+      margin: 0;
+      padding: 0;
+    }
+
+    .wizard-shell {
+      max-width: 900px;
+      margin: 0 auto;
+      padding: 32px 24px 48px;
+    }
+
+    .wizard-card {
+      background: #ffffff;
+      border-radius: 12px;
+      padding: 32px;
+      box-shadow: 0 10px 32px rgba(30, 38, 54, 0.12);
+    }
+
+    .wizard-stepper {
+      display: flex;
+      gap: 0.5rem;
+      margin-bottom: 24px;
+    }
+
+    .wizard-step {
+      flex: 1;
+      padding: 12px;
+      text-align: center;
+      border-radius: 8px;
+      background: #e9ecef;
+      font-weight: 600;
+      font-size: 0.95rem;
+      color: #4a4a4a;
+    }
+
+    .wizard-step.active {
+      background: linear-gradient(135deg, #0070f3, #00c4ff);
+      color: #ffffff;
+    }
+
+    .form-section {
+      display: grid;
+      gap: 16px;
+    }
+
+    label {
+      font-weight: 600;
+      display: block;
+      margin-bottom: 6px;
+    }
+
+    input[type="text"],
+    textarea,
+    select,
+    .steps-summary {
+      width: 100%;
+      border-radius: 8px;
+      border: 1px solid #d0d7de;
+      padding: 10px 12px;
+      font-size: 1rem;
+      font-family: inherit;
+    }
+
+    textarea {
+      resize: vertical;
+    }
+
+    .helper {
+      font-size: 0.85rem;
+      color: #6c737f;
+      margin-top: 4px;
+    }
+
+    button,
+    .button-link {
+      padding: 10px 16px;
+      border-radius: 8px;
+      border: none;
+      font-size: 0.95rem;
+      font-weight: 600;
+      cursor: pointer;
+    }
+
+    button.primary {
+      background: #0066ff;
+      color: #fff;
+    }
+
+    button.secondary {
+      background: transparent;
+      border: 1px solid #d0d7de;
+      color: #1d1d1d;
+    }
+
+    .tool-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 12px;
+      border-radius: 10px;
+      background: #f9fbff;
+      border: 1px solid #e4e9f2;
+    }
+
+    .tool-row + .tool-row {
+      margin-top: 12px;
+    }
+
+    .tool-row p {
+      margin: 0;
+      max-width: 70%;
+      color: #2c2d33;
+    }
+
+    .tool-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 16px;
+      margin-top: 12px;
+    }
+
+    @media (max-width: 1000px) {
+      .tool-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+    }
+
+    @media (max-width: 650px) {
+      .tool-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    .tool-card {
+      border: 1px solid #e4e9f2;
+      border-radius: 14px;
+      background: #f8f9ff;
+      padding: 18px;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      min-height: 160px;
+    }
+
+    .tool-card__info p {
+      margin: 8px 0;
+      color: #2c2d33;
+    }
+
+    .tool-card__toggle {
+      margin-top: 12px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-size: 0.9rem;
+      color: #2f2f2f;
+    }
+
+    .tool-card__toggle label {
+      font-weight: 600;
+    }
+
+    .tool-card__toggle input {
+      width: 22px;
+      height: 22px;
+    }
+
+    .risk-tag {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 2px 6px;
+      border-radius: 999px;
+      font-size: 0.75rem;
+      font-weight: 700;
+      color: #fff;
+      margin-top: 6px;
+    }
+
+    .risk-tag.safe {
+      background: #28a745;
+    }
+
+    .risk-tag.elevated {
+      background: #ffc107;
+    }
+
+    .risk-tag.dangerous {
+      background: #dc3545;
+    }
+
+    .toggle input {
+      width: 32px;
+      height: 18px;
+      position: relative;
+    }
+
+    .steps-summary {
+      white-space: pre-wrap;
+      font-family: "Segoe UI", system-ui, monospace;
+    }
+
+    .messages {
+      margin-bottom: 16px;
+      color: #0d6efd;
+    }
+  </style>
+</head>
+
+<body>
+  <div class="wizard-shell">
+    <div class="wizard-card">
+      <h1>Agent Creation Wizard</h1>
+      <div class="wizard-stepper">
+        {% for step in steps %}
+          <div class="wizard-step {% if step.number == current_step %}active{% endif %}">
+            {{ step.number }} · {{ step.name }}
+          </div>
+        {% endfor %}
+      </div>
+      {% if messages %}
+        <div class="messages">
+          {% for message in messages %}
+            <div>{{ message }}</div>
+          {% endfor %}
+        </div>
+      {% endif %}
+      {% block wizard_content %}{% endblock %}
+    </div>
+  </div>
+</body>
+
+</html>

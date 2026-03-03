@@ -39,7 +39,7 @@ def test_dev_start_run_post_creates_run(mock_delay, client):
 @pytest.mark.django_db
 def test_run_detail_page_displays_run(client):
     workspace = Workspace.objects.create(name="UI Test WS")
-    agent = Agent.objects.create(workspace=workspace, name="UI Agent", system_prompt="Prompt")
+    agent = Agent.objects.create(workspace=workspace, name="UI Agent", soul="Prompt")
     run = AgentRun.objects.create(
         workspace=workspace,
         agent=agent,
@@ -57,7 +57,7 @@ def test_run_detail_page_displays_run(client):
 @pytest.mark.django_db
 def test_run_snapshot_endpoint(client):
     workspace = Workspace.objects.create(name="Snapshot UI WS")
-    agent = Agent.objects.create(workspace=workspace, name="Snapshot Agent", system_prompt="Prompt")
+    agent = Agent.objects.create(workspace=workspace, name="Snapshot Agent", soul="Prompt")
     run = AgentRun.objects.create(
         workspace=workspace,
         agent=agent,

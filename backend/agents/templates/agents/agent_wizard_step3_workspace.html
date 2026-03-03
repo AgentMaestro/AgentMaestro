@@ -1,0 +1,29 @@
+{% extends "agents/wizard_base.html" %}
+
+{% block wizard_content %}
+  <form method="post" action="?step={{ current_step }}">
+    {% csrf_token %}
+    <div class="form-section">
+      <div>
+        {{ form.workspace.label_tag }}
+        {{ form.workspace }}
+        {% if form.workspace.help_text %}
+          <div class="helper">{{ form.workspace.help_text }}</div>
+        {% endif %}
+        {{ form.workspace.errors }}
+      </div>
+      <div>
+        {{ form.workspace_name.label_tag }}
+        {{ form.workspace_name }}
+        {% if form.workspace_name.help_text %}
+          <div class="helper">{{ form.workspace_name.help_text }}</div>
+        {% endif %}
+        {{ form.workspace_name.errors }}
+      </div>
+    </div>
+    <div style="margin-top: 24px; display:flex; gap:10px;">
+      <a href="?step={{ current_step|add:-1 }}" class="button-link secondary">Back</a>
+      <button type="submit" class="primary">Next step</button>
+    </div>
+  </form>
+{% endblock %}

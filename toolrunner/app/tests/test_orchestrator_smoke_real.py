@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel
 
+from toolrunner.app.config import SANDBOX_ROOT
 from toolrunner.app.models import (
     FileWriteArgs,
     GitAddArgs,
@@ -106,9 +107,8 @@ class RealToolInvoker(ToolInvoker):
 
 
 def _smoke_workspace_root() -> Path:
-    root = Path(__file__).resolve().parents[2]
-    workspace = root / ".agentmaestro_smoke_ws"
-    workspace.mkdir(exist_ok=True)
+    workspace = SANDBOX_ROOT / ".agentmaestro_smoke_ws"
+    workspace.mkdir(parents=True, exist_ok=True)
     return workspace
 
 
@@ -241,12 +241,13 @@ def _build_smoke_plan(run_id: str) -> Plan:
                                 },
                             }
                         ],
-                        "rollback": {"strategy": "none"},
                     }
                 ],
             }
         ],
     }
+    for milestone in payload["milestones"]:
+        milestone.setdefault("description", "Smoke milestone detail")
     return Plan.model_validate(payload)
 
 
@@ -272,7 +273,7 @@ def test_orchestrator_smoke_real():
 
         result = orchestrator.orchestrate()
 
-        assert result["status"] == "done"
+        assert result["status"] == "ok"
         report = json.loads(_step_report_path(workspace).read_text())
         assert report["status"] == "ok"
         assert report["verification"]["overall_pass"] is True
@@ -294,4 +295,6 @@ def test_orchestrator_smoke_real():
             capture_output=True,
             text=True,
         )
-      
+        assert git_status.stdout.strip() == ""
+    finally:
+        shutil.rmtree(workspace, ignore_errors=True)

@@ -1,0 +1,97 @@
+{% load static tz %}
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Control Chat</title>
+    <link rel="stylesheet" href="{% static 'control/chat.css' %}" />
+  </head>
+  <body>
+    <div class="chat-shell">
+      <aside class="chat-list">
+        <div class="chat-list-header">
+          <h1>Control Chat</h1>
+          <div class="chat-links">
+            <a class="chat-link" href="{% url 'ui:telegram_chat' %}">Telegram mirror</a>
+          </div>
+        </div>
+        <div class="chat-list-body">
+          {% if conversations %}
+            {% for convo in conversations %}
+              <a
+                class="chat-list-item {% if selected and selected.pk == convo.pk %}is-active{% endif %}"
+                href="{% url 'control:chat_detail' uuid=convo.uuid %}"
+              >
+                <span class="chat-list-title">{{ convo.title|default:convo.uuid }}</span>
+                <span class="chat-list-meta">
+                  {{ convo.kind|capfirst }} · {{ convo.updated_at|date:"M d, H:i" }}
+                </span>
+              </a>
+            {% endfor %}
+          {% else %}
+            <p class="chat-empty-state">No conversations yet.</p>
+          {% endif %}
+        </div>
+      </aside>
+      <section class="chat-stream">
+        {% if selected %}
+          <header class="chat-stream-header">
+            <div>
+              <h2>{{ selected.title|default:"Communication" }}</h2>
+              <p class="chat-stream-subtitle">
+                {% if selected.comms_conversation %}
+                  Mirror of {{ selected.comms_conversation.transport.display_name }}
+                {% else %}
+                  Internal thread
+                {% endif %}
+              </p>
+            </div>
+          </header>
+          <div
+            id="chatMessages"
+            class="chat-messages"
+            data-conversation-uuid="{{ selected.uuid }}"
+          >
+            {% for message in messages %}
+              <article
+                class="chat-message chat-message-{{ message.direction }} chat-message-author-{{ message.author_type }}"
+              >
+                <div class="chat-message-meta">
+                  <span class="chat-message-author">{{ message.author_label }}</span>
+                  <span class="chat-message-type">{{ message.author_type }}</span>
+                  <time>
+                    {% timezone "America/New_York" %}
+                      {{ message.created_at|date:"M d, H:i:s" }} EST
+                    {% endtimezone %}
+                  </time>
+                </div>
+                <p class="chat-message-text">{{ message.text }}</p>
+              </article>
+            {% empty %}
+              <p class="chat-empty-state">No messages yet.</p>
+            {% endfor %}
+          </div>
+          <form
+            id="chatForm"
+            class="chat-form"
+            method="post"
+            action="{% url 'control:chat_send' uuid=selected.uuid %}"
+          >
+            {% csrf_token %}
+            <textarea
+              name="message"
+              placeholder="Type a new message..."
+              rows="3"
+            ></textarea>
+            <button type="submit">Send</button>
+          </form>
+        {% else %}
+          <div class="chat-empty-panel">
+            <p>No conversation selected yet.</p>
+          </div>
+        {% endif %}
+      </section>
+    </div>
+    <script src="{% static 'control/chat.js' %}"></script>
+  </body>
+</html>

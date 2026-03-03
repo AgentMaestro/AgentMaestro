@@ -5,13 +5,23 @@ import shutil
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
+from typing import Any
 
 from fastapi.responses import JSONResponse
 
 import pypatch.patch as patch_parser
 
+from ..config import (
+    EXCLUDE_FROM_SEARCH_LIST,
+    is_under_allowed_root,
+    is_within_sandbox,
+    normalize_search_root,
+    policy_allows_write,
+    policy_metadata,
+)
 from ..models import FilePatchArgs
 from ..sandbox import safe_join
+from .path_filters import first_matching_pattern, glob_candidates
 
 BACKUP_DIR = ".toolrunner_backups"
 REJECT_DIR = ".toolrunner_rejects"
@@ -30,6 +40,9 @@ class PatchHunk:
     lines: list[str]
 
 
+FILE_PATCH_POLICY_META = policy_metadata()
+
+
 def _error(code: str, message: str, details: dict | None = None, status: int = 400):
     return JSONResponse(
         status_code=status,
@@ -40,6 +53,7 @@ def _error(code: str, message: str, details: dict | None = None, status: int = 4
                 "message": message,
                 "details": details or {},
             },
+            "meta": {"policy": FILE_PATCH_POLICY_META},
         },
     )
 
@@ -258,12 +272,31 @@ def _apply_hunk(lines: list[str], hunk: PatchHunk, offset: int) -> tuple[list[st
     return new_lines, delta
 
 
-def apply_patch(run_dir: Path, args: FilePatchArgs):
+def apply_patch(run_dir: Path, args: FilePatchArgs, policy: dict[str, Any] | None = None):
+    allowed_context_root = normalize_search_root(run_dir)
+    if not is_under_allowed_root(run_dir):
+        return _error(
+            "PATH_NOT_ALLOWED",
+            "Run directory not permitted",
+        )
     try:
         run_dir = run_dir.resolve()
         target = safe_join(run_dir, args.path)
     except ValueError as exc:
         return _error("PATH_OUTSIDE_WORKSPACE", str(exc))
+
+    if not is_under_allowed_root(target, (allowed_context_root,)):
+        return _error("PATH_NOT_ALLOWED", "Target path not permitted")
+
+    exclusion = _matching_exclusion(target, run_dir)
+    if exclusion:
+        return _error("PATH_EXCLUDED", "Path excluded by policy", {"pattern": exclusion})
+
+    if not is_within_sandbox(target) and not policy_allows_write(policy):
+        return _error(
+            "WRITE_NOT_PERMITTED",
+            "Writes outside the sandbox require allow_write policy",
+        )
 
     if not target.exists():
         if not args.create_if_missing:
@@ -351,5 +384,13 @@ def apply_patch(run_dir: Path, args: FilePatchArgs):
                 "backup_path": str(backup_path) if backup_path else None,
                 "rejects_path": str(rejects_path) if rejects_path else None,
             },
+            "meta": {"policy": FILE_PATCH_POLICY_META},
         },
     )
+
+
+def _matching_exclusion(target: Path, run_dir: Path) -> str | None:
+    if not EXCLUDE_FROM_SEARCH_LIST:
+        return None
+    candidates = glob_candidates(target, run_dir, run_dir, is_dir=target.is_dir())
+    return first_matching_pattern(candidates, EXCLUDE_FROM_SEARCH_LIST)

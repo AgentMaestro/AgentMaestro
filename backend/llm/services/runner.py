@@ -86,7 +86,9 @@ class LLMRunner:
         try:
             tools = tools if tools is not None else get_tool_schemas()
             client = get_client(provider)
-            transport = os.getenv("OPENAI_TRANSPORT", client.transport).lower()
+            transport = os.getenv(
+                "OPENAI_TRANSPORT", getattr(client, "transport", "http")
+            ).lower()
             if transport == "ws":
                 return await self._run_ws_transport(
                     client=client,
@@ -296,9 +298,7 @@ class LLMRunner:
         tool_call_count = 0
         tool_rounds = 0
         usage_totals = {"token_prompt": 0, "token_completion": 0, "token_total": 0}
-        def _call_id_value(call_payload: Dict[str, Any]) -> str:
-            return call_payload.get("id") or call_payload.get("call_id") or ""
-        await client.cleanup_ws_sessions()
+        await client.cleanup_ws_sessions()
         session = await client.get_ws_session(str(run.id), model_name)
         session_tools = client.format_tool_definitions_for_responses(tools)
         initial_input_items = self._build_ws_input_items(history)

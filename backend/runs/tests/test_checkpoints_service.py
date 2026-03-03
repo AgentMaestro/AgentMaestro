@@ -16,7 +16,7 @@ from runs.services.checkpoints import compact_events, create_checkpoint
 @pytest.mark.django_db
 def test_create_checkpoint_generates_bundle(tmp_path):
     workspace = Workspace.objects.create(name="Checkpoint WS")
-    agent = Agent.objects.create(workspace=workspace, name="Checkpoint Agent", system_prompt="Prompt")
+    agent = Agent.objects.create(workspace=workspace, name="Checkpoint Agent", soul="Prompt")
     run = AgentRun.objects.create(
         workspace=workspace,
         agent=agent,
@@ -26,7 +26,7 @@ def test_create_checkpoint_generates_bundle(tmp_path):
     AgentStep.objects.create(run=run, step_index=0, kind=AgentStep.Kind.PLAN, payload={"plan": "ok"})
     RunEvent.objects.create(run=run, seq=1, event_type="stream", payload={"foo": "bar"})
 
-    with override_settings(AGENTMAESTRO_ARCHIVE_ROOT=str(tmp_path)):
+    with override_settings(ARCHIVE_ROOT=str(tmp_path)):
         archive = create_checkpoint(str(run.id), compress=True)
 
     assert RunArchive.objects.filter(run=run).exists()
@@ -47,7 +47,7 @@ def test_create_checkpoint_generates_bundle(tmp_path):
 @pytest.mark.django_db
 def test_compact_events_prunes_old_verbose_events():
     workspace = Workspace.objects.create(name="Compact WS")
-    agent = Agent.objects.create(workspace=workspace, name="Compact Agent", system_prompt="Prompt")
+    agent = Agent.objects.create(workspace=workspace, name="Compact Agent", soul="Prompt")
     run = AgentRun.objects.create(workspace=workspace, agent=agent, status=AgentRun.Status.COMPLETED, ended_at=timezone.now())
     old = timezone.now() - timedelta(days=60)
     event = RunEvent.objects.create(

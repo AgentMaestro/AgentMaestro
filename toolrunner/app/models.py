@@ -5,7 +5,7 @@ from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field, ValidationInfo, field_validator, model_validator
 
-from .config import COMMAND_TIMEOUT, OUTPUT_LIMIT
+from .config import COMMAND_TIMEOUT, EXCLUDE_FROM_SEARCH_LIST, OUTPUT_LIMIT
 
 
 class ExecuteLimits(BaseModel):
@@ -17,7 +17,15 @@ class ExecuteRequest(BaseModel):
     request_id: str
     workspace_id: str
     run_id: str
-    tool_name: Literal["shell_exec", "python_exec"]
+    tool_name: Literal[
+        "shell_exec",
+        "python_exec",
+        "file_read",
+        "file_write",
+        "repo_tree",
+        "search_code",
+        "file_patch",
+    ]
     args: Dict[str, Any] = Field(default_factory=dict)
     policy: Dict[str, Any] | None = None
     limits: ExecuteLimits = Field(default_factory=ExecuteLimits)
@@ -71,17 +79,8 @@ class PythonArgs(BaseModel):
 
 
 MAX_REPO_TREE_ENTRIES = 5000
-DEFAULT_REPO_TREE_EXCLUDES = (
-    "**/.git/**",
-    "**/.venv/**",
-    "**/node_modules/**",
-    "**/__pycache__/**",
-)
-DEFAULT_SEARCH_EXCLUDES = (
-    "**/.git/**",
-    "**/.venv/**",
-    "**/node_modules/**",
-)
+DEFAULT_REPO_TREE_EXCLUDES = tuple(EXCLUDE_FROM_SEARCH_LIST)
+DEFAULT_SEARCH_EXCLUDES = tuple(EXCLUDE_FROM_SEARCH_LIST)
 
 
 class FileReadArgs(BaseModel):
@@ -91,12 +90,22 @@ class FileReadArgs(BaseModel):
     start_line: Optional[int] = None
     end_line: Optional[int] = None
     max_bytes: int = Field(default=262144, gt=0)
+    absolute_root: str | None = None
 
     @field_validator("path")
     def normalize_path(cls, value: str) -> str:
         if value.startswith("/"):
             raise ValueError("absolute paths not allowed")
         return value.replace("\\", "/")
+
+    @field_validator("absolute_root")
+    def normalize_absolute_root(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        candidate = Path(value)
+        if not candidate.is_absolute():
+            raise ValueError("absolute_root must be absolute")
+        return str(candidate)
 
     @field_validator("start_line", "end_line")
     def positive_line(cls, value: Optional[int]) -> Optional[int]:
@@ -166,6 +175,7 @@ class RepoTreeArgs(BaseModel):
     include_globs: List[str] | None = None
     max_entries: int = Field(default=MAX_REPO_TREE_ENTRIES, ge=1)
     include_metadata: bool = True
+    absolute_root: str | None = None
 
     @field_validator("root")
     def normalize_root(cls, value: str) -> str:
@@ -175,6 +185,15 @@ class RepoTreeArgs(BaseModel):
             raise ValueError("absolute paths not allowed")
         result = candidate.as_posix()
         return result or "."
+
+    @field_validator("absolute_root")
+    def normalize_absolute_root(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        candidate = Path(value)
+        if not candidate.is_absolute():
+            raise ValueError("absolute_root must be absolute")
+        return str(candidate)
 
     @field_validator("exclude_globs", "include_globs", mode="before")
     def normalize_globs(cls, value: List[str] | None) -> List[str] | None:
@@ -192,6 +211,7 @@ class SearchCodeArgs(BaseModel):
     is_regex: bool = False
     case_sensitive: bool = False
     root: str = "."
+    absolute_root: str | None = None
     include_globs: List[str] | None = None
     exclude_globs: List[str] = Field(default_factory=lambda: list(DEFAULT_SEARCH_EXCLUDES))
     max_results: int = Field(default=100, ge=1)
@@ -207,6 +227,15 @@ class SearchCodeArgs(BaseModel):
             raise ValueError("absolute paths not allowed")
         result = candidate.as_posix()
         return result or "."
+
+    @field_validator("absolute_root")
+    def normalize_absolute_root(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        candidate = Path(value)
+        if not candidate.is_absolute():
+            raise ValueError("absolute_root must be absolute")
+        return str(candidate)
 
     @field_validator("include_globs", "exclude_globs", mode="before")
     def normalize_globs(cls, value: List[str] | None) -> List[str] | None:

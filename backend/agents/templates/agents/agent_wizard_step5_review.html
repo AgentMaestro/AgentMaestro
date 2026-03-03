@@ -1,0 +1,82 @@
+{% extends "agents/wizard_base.html" %}
+
+{% block wizard_content %}
+  <form method="post" action="?step={{ current_step }}">
+    {% csrf_token %}
+    <h2>Review &amp; Deploy</h2>
+    <div class="form-section">
+      <div>
+        <strong>Basics</strong>
+        <div class="steps-summary">
+          <p>Name: {{ review.basics.name }}</p>
+          {% if review.basics.name_conflict %}
+            <div class="helper warning">
+              Renamed to {{ review.basics.unique_name }} due to duplicate.
+            </div>
+          {% endif %}
+          {% if review.basics.description %}
+            <p>Description: {{ review.basics.description|linebreaksbr }}</p>
+          {% endif %}
+          {% if review.basics.soul %}
+            <p>Soul: {{ review.basics.soul|linebreaksbr }}</p>
+          {% endif %}
+        </div>
+      </div>
+      <div>
+        <strong>LLM Settings</strong>
+        <div class="steps-summary">
+          <p>Model: {{ review.llm.default_model }}</p>
+          {% if review.llm.temperature %}
+            <p>Temperature: {{ review.llm.temperature }}</p>
+          {% endif %}
+          {% if review.llm.policy_name %}
+            <p>Policy: {{ review.llm.policy_name }}</p>
+          {% endif %}
+          <p>Plan enabled: {{ review.llm.plan_enabled|yesno:"Yes,No" }}</p>
+        </div>
+      </div>
+      <div>
+        <strong>Tool Controls</strong>
+        {% if review.tools %}
+          <div class="form-section">
+            {% for definition in review.tools %}
+              <div class="tool-row">
+                <div>
+                  <strong>{{ definition.tool.tool_group.name }}</strong>
+                  <p>{{ definition.tool.name }} — {{ definition.description|default:definition.tool.description }}</p>
+                  <span class="risk-tag {{ definition.tool.risk|lower }}">{{ definition.tool.risk|title }}</span>
+                </div>
+              </div>
+            {% endfor %}
+          </div>
+        {% else %}
+          <div class="helper">No tools have been granted yet.</div>
+        {% endif %}
+      </div>
+      <div>
+        <strong>Workspace</strong>
+        <div class="steps-summary">
+          {% if review.workspace.workspace_id %}
+            Workspace ID: {{ review.workspace.workspace_id }}
+          {% endif %}
+          {% if review.workspace.workspace_name %}
+            {% if review.workspace.workspace_id %}<br>{% endif %}
+            Workspace Name: {{ review.workspace.workspace_name }}
+          {% endif %}
+        </div>
+      </div>
+      {% if owner_form %}
+        <div>
+          <strong>Owner</strong>
+          {{ owner_form.owner }}
+          {{ owner_form.owner.help_text }}
+          {{ owner_form.owner.errors }}
+        </div>
+      {% endif %}
+    </div>
+    <div style="margin-top: 24px; display:flex; gap:10px;">
+      <a href="?step={{ current_step|add:-1 }}" class="button-link secondary">Back</a>
+      <button type="submit" class="primary">Create Agent</button>
+    </div>
+  </form>
+{% endblock %}

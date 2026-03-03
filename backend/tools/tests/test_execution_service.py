@@ -24,7 +24,7 @@ def _build_test_run(suffix: str):
     agent = Agent.objects.create(
         workspace=workspace,
         name=f"Exec Agent {suffix}",
-        system_prompt="Execute tests",
+        soul="Execute tests",
         created_by=user,
     )
     run = AgentRun.objects.create(
@@ -42,7 +42,7 @@ def _build_test_run(suffix: str):
         tool_name="shell_exec",
         args={"cmd": ["ls"], "cwd": "."},
         requires_approval=False,
-        status=ToolCall.Status.APPROVED,
+        status=ToolCall.Status.QUEUED,
         correlation_id=step.correlation_id,
     )
     return tool_call
@@ -63,11 +63,11 @@ class DummyClient:
 
 
 @override_settings(
-    AGENTMAESTRO_TOOLRUNNER_URL="http://example/v1/execute",
-    AGENTMAESTRO_TOOLRUNNER_SECRET="test-secret",
-    AGENTMAESTRO_TOOLRUNNER_TIMEOUT=5,
-    AGENTMAESTRO_TOOLRUNNER_OUTPUT_LIMIT=128,
-    AGENTMAESTRO_TOOLRUNNER_HTTP_TIMEOUT=10,
+    TOOLRUNNER_URL="http://example/v1/execute",
+    TOOLRUNNER_SECRET="test-secret",
+    TOOLRUNNER_TIMEOUT=5,
+    TOOLRUNNER_OUTPUT_LIMIT=128,
+    TOOLRUNNER_HTTP_TIMEOUT=10,
 )
 def test_execute_tool_call_success(monkeypatch):
     tool_call = _build_test_run("success")
@@ -87,7 +87,7 @@ def test_execute_tool_call_success(monkeypatch):
 
     execute_tool_call(str(tool_call.id))
     tool_call.refresh_from_db()
-    assert tool_call.status == ToolCall.Status.SUCCEEDED
+    assert tool_call.status == ToolCall.Status.COMPLETED
     assert tool_call.stdout == "done"
     assert tool_call.result == {"foo": "bar"}
 
@@ -95,11 +95,11 @@ def test_execute_tool_call_success(monkeypatch):
 
 
 @override_settings(
-    AGENTMAESTRO_TOOLRUNNER_URL="http://example/v1/execute",
-    AGENTMAESTRO_TOOLRUNNER_SECRET="test-secret",
-    AGENTMAESTRO_TOOLRUNNER_TIMEOUT=5,
-    AGENTMAESTRO_TOOLRUNNER_OUTPUT_LIMIT=128,
-    AGENTMAESTRO_TOOLRUNNER_HTTP_TIMEOUT=10,
+    TOOLRUNNER_URL="http://example/v1/execute",
+    TOOLRUNNER_SECRET="test-secret",
+    TOOLRUNNER_TIMEOUT=5,
+    TOOLRUNNER_OUTPUT_LIMIT=128,
+    TOOLRUNNER_HTTP_TIMEOUT=10,
 )
 def test_execute_tool_call_failure(monkeypatch):
     tool_call = _build_test_run("failure")
@@ -117,11 +117,11 @@ def test_execute_tool_call_failure(monkeypatch):
 
 
 @override_settings(
-    AGENTMAESTRO_TOOLRUNNER_URL="http://example/v1/execute",
-    AGENTMAESTRO_TOOLRUNNER_SECRET="test-secret",
-    AGENTMAESTRO_TOOLRUNNER_TIMEOUT=5,
-    AGENTMAESTRO_TOOLRUNNER_OUTPUT_LIMIT=128,
-    AGENTMAESTRO_TOOLRUNNER_HTTP_TIMEOUT=10,
+    TOOLRUNNER_URL="http://example/v1/execute",
+    TOOLRUNNER_SECRET="test-secret",
+    TOOLRUNNER_TIMEOUT=5,
+    TOOLRUNNER_OUTPUT_LIMIT=128,
+    TOOLRUNNER_HTTP_TIMEOUT=10,
 )
 def test_execute_tool_call_respects_quota(monkeypatch):
     tool_call = _build_test_run("quota")

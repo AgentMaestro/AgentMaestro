@@ -6,9 +6,10 @@ from typing import Any
 
 
 class FailureFingerprintTracker:
-    def __init__(self, run_root: Path, window: int = 5, threshold: int = 3):
-        self.run_root = run_root
-        self.storage = self.run_root / "failure_fingerprints.json"
+    def __init__(self, state_dir: Path, window: int = 5, threshold: int = 3):
+        self.state_dir = state_dir
+        self.storage = self.state_dir / "failures.json"
+        self.state_dir.mkdir(parents=True, exist_ok=True)
         self.window = window
         self.threshold = threshold
         self._history = self._load_history()

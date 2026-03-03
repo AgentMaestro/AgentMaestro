@@ -52,9 +52,17 @@ def _charter_payload(
         },
         "allowed_tools": allowed_tools
         or {
-            "tier1": ["format_runner", "run_command"],
+            "tier1": [
+                "run_command",
+                "format_runner",
+                "lint_runner",
+                "typecheck_runner",
+                "test_runner",
+                "repo_tree",
+                "file_write",
+            ],
             "tier2": [],
-            "git": ["git_status"],
+            "git": ["git_status", "git_add", "git_commit"],
         },
         "quality_gates": {
             "default": [
@@ -167,7 +175,7 @@ def _write_plan(
     plan_id: str = "plan-contract",
     complete: bool = True,
 ) -> Path:
-    plan_dir = tmp_path / ".agentmaestro" / "plans"
+    plan_dir = tmp_path / ".agentmaestro" / "runs" / run_id / "plans"
     plan_dir.mkdir(parents=True, exist_ok=True)
     payload = _plan_payload(
         run_id=run_id,
@@ -177,8 +185,17 @@ def _write_plan(
         complete=complete,
     )
     plan_path = plan_dir / f"{plan_id}.json"
-    plan_path.write_text(json.dumps(payload))
+    serialized = json.dumps(payload)
+    plan_path.write_text(serialized)
+    (plan_dir / "latest.json").write_text(serialized)
     return plan_path
+
+
+def _read_events(tmp_path: Path) -> list[dict]:
+    events_path = tmp_path / ".agentmaestro" / "runs" / DEFAULT_RUN_ID / "events.jsonl"
+    if not events_path.exists():
+        return []
+    return [json.loads(line) for line in events_path.read_text().splitlines() if line.strip()]
 
 
 def test_charter_schema_validates(tmp_path: Path):
@@ -194,11 +211,12 @@ def test_charter_schema_validates(tmp_path: Path):
 
 def test_plan_schema_validates(tmp_path: Path):
     charter_path = _write_charter(tmp_path)
-    plan_dir = tmp_path / ".agentmaestro" / "plans"
+    plan_dir = tmp_path / ".agentmaestro" / "runs" / DEFAULT_RUN_ID / "plans"
     plan_dir.mkdir(parents=True, exist_ok=True)
     payload = _plan_payload()
     payload.pop("goal")
     (plan_dir / "plan-contract.json").write_text(json.dumps(payload))
+    (plan_dir / "latest.json").write_text(json.dumps(payload))
 
     with pytest.raises(SchemaValidationError):
         orchestrate(str(tmp_path), str(charter_path))
@@ -226,8 +244,17 @@ def test_plan_semantics_blocks_disallowed_tool(tmp_path: Path):
     )
     _write_plan(tmp_path, steps=[_make_step(tool="git_status")])
 
-    with pytest.raises(ValueError):
-        orchestrate(str(tmp_path), str(charter_path))
+    result = orchestrate(str(tmp_path), str(charter_path))
+
+    assert result["status"] == "blocked"
+    assert result["reason"] == "plan uses disallowed tools"
+
+    events = _read_events(tmp_path)
+    assert any(event["type"] == "PLAN_TOOLS_REJECTED" for event in events)
+    assert any(
+        event["type"] == "RUN_FINALIZED" and event["data"].get("reason") == result["reason"]
+        for event in events
+    )
 
 
 def test_tool_ref_cannot_start_with_dash(tmp_path: Path):

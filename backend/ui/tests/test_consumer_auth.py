@@ -34,7 +34,7 @@ def _create_run_with_membership(name, username, role):
     workspace = Workspace.objects.create(name=name)
     user = get_user_model().objects.create_user(username=username, password="x")
     WorkspaceMembership.objects.create(workspace=workspace, user=user, role=role)
-    agent = Agent.objects.create(workspace=workspace, name=f"RunAgent-{name}", system_prompt="x", created_by=user)
+    agent = Agent.objects.create(workspace=workspace, name=f"RunAgent-{name}", soul="x", created_by=user)
     run = AgentRun.objects.create(workspace=workspace, agent=agent, status=AgentRun.Status.PENDING, input_text="run", started_by=user)
     return workspace, user, run
 
@@ -42,7 +42,7 @@ def _create_run_with_membership(name, username, role):
 def _create_run_without_membership(name, username):
     workspace = Workspace.objects.create(name=name)
     user = get_user_model().objects.create_user(username=username, password="x")
-    agent = Agent.objects.create(workspace=workspace, name=f"RunAgent-{name}", system_prompt="x", created_by=user)
+    agent = Agent.objects.create(workspace=workspace, name=f"RunAgent-{name}", soul="x", created_by=user)
     run = AgentRun.objects.create(workspace=workspace, agent=agent, status=AgentRun.Status.PENDING, input_text="run", started_by=user)
     return workspace, user, run
 
@@ -108,12 +108,12 @@ async def test_run_consumer_denies_viewer_approvals():
         run=run, step_index=1, kind=AgentStep.Kind.TOOL_CALL, payload={}
     )
     tool_call = await sync_to_async(ToolCall.objects.create)(
-        run=run,
-        step=step,
-        tool_name="demo",
-        requires_approval=True,
-        status=ToolCall.Status.PENDING,
-    )
+            run=run,
+            step=step,
+            tool_name="demo",
+            requires_approval=True,
+            status=ToolCall.Status.PENDING_APPROVAL,
+        )
 
     sessionid = await sync_to_async(_session_cookie_for_user)(user)
     communicator = WebsocketCommunicator(

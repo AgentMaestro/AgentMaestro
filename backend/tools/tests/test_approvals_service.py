@@ -31,7 +31,7 @@ def _setup_run(user_suffix: str):
     agent = Agent.objects.create(
         workspace=workspace,
         name=f"Approval Agent {user_suffix}",
-        system_prompt="Approval test agent.",
+        soul="Approval test agent.",
         created_by=user,
     )
 
@@ -79,7 +79,7 @@ async def test_request_tool_call_broadcasts_approval_event():
     assert msg["topic"] == "approvals.event"
     assert msg["event"] == "tool_call_requested"
     assert msg["data"]["run_id"] == str(run.id)
-    assert msg["data"]["status"] == ToolCall.Status.PENDING
+    assert msg["data"]["status"] == ToolCall.Status.PENDING_APPROVAL
 
     await communicator.disconnect()
 
@@ -100,7 +100,7 @@ async def test_approve_tool_call_transitions_run_and_notifies():
 
     await sync_to_async(run.refresh_from_db, thread_sensitive=True)()
     assert run.status == AgentRun.Status.WAITING_FOR_APPROVAL
-    assert tool_call.status == ToolCall.Status.PENDING
+    assert tool_call.status == ToolCall.Status.PENDING_APPROVAL
 
     sessionid = await sync_to_async(_session_cookie_for_user)(user)
     communicator = WebsocketCommunicator(
@@ -121,7 +121,7 @@ async def test_approve_tool_call_transitions_run_and_notifies():
 
     await sync_to_async(run.refresh_from_db, thread_sensitive=True)()
     assert run.status == AgentRun.Status.RUNNING
-    assert approved.status == ToolCall.Status.APPROVED
+    assert approved.status == ToolCall.Status.QUEUED
 
     events = await sync_to_async(
         lambda: list(
@@ -134,6 +134,6 @@ async def test_approve_tool_call_transitions_run_and_notifies():
 
     msg = await communicator.receive_json_from()
     assert msg["event"] == "tool_call_approved"
-    assert msg["data"]["status"] == ToolCall.Status.APPROVED
+    assert msg["data"]["status"] == ToolCall.Status.QUEUED
 
     await communicator.disconnect()

@@ -6,11 +6,24 @@ from hashlib import sha256
 import os
 import tempfile
 from pathlib import Path
+from typing import Any
 
 from fastapi.responses import JSONResponse
 
+from ..config import (
+    EXCLUDE_FROM_SEARCH_LIST,
+    is_under_allowed_root,
+    is_within_sandbox,
+    normalize_search_root,
+    policy_allows_write,
+    policy_metadata,
+)
 from ..models import FileWriteArgs
 from ..sandbox import safe_join
+from .path_filters import first_matching_pattern, glob_candidates
+
+
+FILE_WRITE_POLICY_META = policy_metadata()
 
 
 def _error_response(code: str, message: str, details: dict | None = None, status_code: int = 400):
@@ -19,6 +32,7 @@ def _error_response(code: str, message: str, details: dict | None = None, status
         content={
             "ok": False,
             "error": {"code": f"tool_runner.{code}", "message": message, "details": details or {}},
+            "meta": {"policy": FILE_WRITE_POLICY_META},
         },
     )
 
@@ -37,11 +51,27 @@ def _read_existing_sha(path: Path) -> str:
     return hasher.hexdigest()
 
 
-def write_file(run_dir: Path, args: FileWriteArgs):
+def write_file(run_dir: Path, args: FileWriteArgs, policy: dict[str, Any] | None = None):
+    allowed_context_root = normalize_search_root(run_dir)
+    if not is_under_allowed_root(run_dir):
+        return _error_response("PATH_NOT_ALLOWED", "Run directory not permitted")
     try:
         target = safe_join(run_dir, args.path)
     except ValueError as exc:
         return _error_response("PATH_OUTSIDE_WORKSPACE", str(exc))
+
+    if not is_under_allowed_root(target, (allowed_context_root,)):
+        return _error_response("PATH_NOT_ALLOWED", "Path not permitted")
+
+    exclusion = _matching_exclusion(target, run_dir)
+    if exclusion:
+        return _error_response("PATH_EXCLUDED", "Path excluded by policy", {"pattern": exclusion})
+
+    if not is_within_sandbox(target) and not policy_allows_write(policy):
+        return _error_response(
+            "WRITE_NOT_PERMITTED",
+            "Writes outside the sandbox require allow_write policy",
+        )
 
     parent = target.parent
     if args.make_dirs:
@@ -95,6 +125,9 @@ def write_file(run_dir: Path, args: FileWriteArgs):
 
     bytes_written = len(content_bytes)
     sha = _sha256_bytes(content_bytes)
+    resolved_path = str(target.resolve())
+    workspace_dir = str(run_dir.resolve())
+    sandbox_root = str(run_dir.parent.parent.resolve())
 
     return JSONResponse(
         status_code=200,
@@ -104,8 +137,24 @@ def write_file(run_dir: Path, args: FileWriteArgs):
                 "path": args.path,
                 "bytes_written": bytes_written,
                 "sha256": sha,
+                "resolved_path": resolved_path,
                 "created": not existed,
                 "overwritten": existed,
             },
+            "meta": {
+                "policy": FILE_WRITE_POLICY_META,
+                "sandbox": {
+                    "workspace_dir": workspace_dir,
+                    "sandbox_root": sandbox_root,
+                    "resolved_path": resolved_path,
+                },
+            },
         },
     )
+
+
+def _matching_exclusion(target: Path, run_dir: Path) -> str | None:
+    if not EXCLUDE_FROM_SEARCH_LIST:
+        return None
+    candidates = glob_candidates(target, run_dir, run_dir, is_dir=target.is_dir())
+    return first_matching_pattern(candidates, EXCLUDE_FROM_SEARCH_LIST)

@@ -17,7 +17,7 @@ def _make_run(name_suffix: str) -> AgentRun:
     agent = Agent.objects.create(
         workspace=ws,
         name=f"State Agent {name_suffix}",
-        system_prompt="State test agent.",
+        soul="State test agent.",
         created_by=user,
     )
 

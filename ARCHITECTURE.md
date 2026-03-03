@@ -113,12 +113,12 @@ Constraints:
 
 ## Persistence, Checkpoints & Retention
 
-- `runs.services.checkpoints.create_checkpoint` materializes `run`, `steps`, `events_since_seq`, and child summaries into a JSON/ZIP bundle stored under `AGENTMAESTRO_ARCHIVE_ROOT`. Once a bundle is captured, a `run_archived` event is emitted so the run log can surface “export run as bundle” diagnostics.
+- `runs.services.checkpoints.create_checkpoint` materializes `run`, `steps`, `events_since_seq`, and child summaries into a JSON/ZIP bundle stored under `ARCHIVE_ROOT`. Once a bundle is captured, a `run_archived` event is emitted so the run log can surface “export run as bundle” diagnostics.
 - `RunArchive` records keep summary stats (`steps`, `events`, `notes`) and point back to the bundle, and `ui.views.run_detail` renders the available `run.archives` with download links (you can also download via `/ui/run/<run_id>/archive/<archive_id>/download`).
-- The periodic Celery beat job `runs.tasks.archive_completed_runs` (driven by `AGENTMAESTRO_ARCHIVE_INTERVAL_HOURS`, `AGENTMAESTRO_ARCHIVE_LIMIT`, and `AGENTMAESTRO_ARCHIVE_COMPACT_EVENTS`) calls `archive_completed_runs` so runs older than `AGENTMAESTRO_ARCHIVE_RETENTION_DAYS` automatically snapshot and compact their verbose events.
+- The periodic Celery beat job `runs.tasks.archive_completed_runs` (driven by `ARCHIVE_INTERVAL_HOURS`, `ARCHIVE_LIMIT`, and `ARCHIVE_COMPACT_EVENTS`) calls `archive_completed_runs` so runs older than `ARCHIVE_RETENTION_DAYS` automatically snapshot and compact their verbose events.
 - The `python manage.py archive_runs` command exposes the same code path with flags for `--older-than`, `--limit`, `--compact`, and `--verbose-events`, giving operators a manual retention trigger.
-- `runs.services.checkpoints.compact_events` keeps PostgreSQL lean by pruning `AGENTMAESTRO_VERBOSE_EVENT_TYPES` older than `AGENTMAESTRO_EVENT_RETENTION_DAYS`, while `runs.services.checkpoints.purge_old_archives` deletes aged bundles after download/export.
-- Documentation lives in `docs/checkpoints.md`, which covers the config knobs (`AGENTMAESTRO_ARCHIVE_*`, `AGENTMAESTRO_EVENT_RETENTION_DAYS`, `AGENTMAESTRO_VERBOSE_EVENT_TYPES`), the Celery job, CLI, and UI integration.
+- `runs.services.checkpoints.compact_events` keeps PostgreSQL lean by pruning `VERBOSE_EVENT_TYPES` older than `EVENT_RETENTION_DAYS`, while `runs.services.checkpoints.purge_old_archives` deletes aged bundles after download/export.
+- Documentation lives in `docs/checkpoints.md`, which covers the config knobs (`ARCHIVE_*`, `EVENT_RETENTION_DAYS`, `VERBOSE_EVENT_TYPES`), the Celery job, CLI, and UI integration.
 
 ------------------------------------------------------------------------
 

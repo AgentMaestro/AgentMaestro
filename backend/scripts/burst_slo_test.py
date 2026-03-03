@@ -92,7 +92,7 @@ def ensure_dev_workspace_and_agent():
     agent, _ = Agent.objects.get_or_create(
         workspace=workspace,
         name=DEFAULT_DEV_AGENT,
-        defaults={"system_prompt": DEV_SYSTEM_PROMPT},
+        defaults={"soul": DEV_SYSTEM_PROMPT},
     )
     return user, workspace, agent
 

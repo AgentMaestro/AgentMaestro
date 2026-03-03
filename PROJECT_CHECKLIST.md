@@ -87,6 +87,15 @@
 
 ---
 
+## Stage 2 (WebSocket Responses tool loop)
+
+- [x] OpenAI Responses WebSocket client + session pool
+- [x] Tool loop + incremental continuation with `function_call_output`
+- [x] Telegram control/comms ingestion + control mirror UI /ui/chat/
+- [x] WS smoke tests for responses + tools
+- [x] Admin/docs updates + README guidance
+
+
 ## 5. MVP Run Engine (Next Major Milestone)
 
 ### Deterministic Tick Loop

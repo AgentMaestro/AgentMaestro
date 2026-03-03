@@ -17,9 +17,9 @@ from runs.services.state import transition_run
 from runs.services.subruns import FINAL_RUN_STATUSES
 from runs.services.toolrunner import signal_toolrunner_cancel
 
-LOCK_LEASE_SECONDS = int(os.getenv("AGENTMAESTRO_LOCK_LEASE_SECONDS", "20"))
-RETRY_BACKOFF_SECONDS = int(os.getenv("AGENTMAESTRO_RETRY_BACKOFF_SECONDS", "5"))
-WORKER_ID = os.getenv("AGENTMAESTRO_TICKER_ID") or f"{socket.gethostname()}:{os.getpid()}"
+LOCK_LEASE_SECONDS = int(os.getenv("LOCK_LEASE_SECONDS", "20"))
+RETRY_BACKOFF_SECONDS = int(os.getenv("RETRY_BACKOFF_SECONDS", "5"))
+WORKER_ID = os.getenv("TICKER_ID") or f"{socket.gethostname()}:{os.getpid()}"
 
 logger = logging.getLogger(__name__)
 

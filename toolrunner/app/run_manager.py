@@ -12,6 +12,7 @@ from .chat import ChatTranscript, MaestroChatEngine
 from .event_logger import EventLogger
 from .orchestrator import Orchestrator
 from .srs_builder import SRSBuilder
+from .verify import read_run_metadata, run_post_run_verification
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -157,6 +158,18 @@ class RunManager:
             context.orchestrator_instance = orchestrator
             result = orchestrator.orchestrate()
             context.update_status(result["status"], result.get("reason"))
+            metadata = read_run_metadata(context.run_root)
+            template = metadata.get("template")
+            try:
+                run_post_run_verification(
+                    context.run_id,
+                    str(REPO_ROOT),
+                    context.run_root,
+                    template_slug=template,
+                    event_logger=context.event_logger,
+                )
+            except Exception as exc:  # pragma: no cover - best-effort verification
+                context.event_logger.log("VERIFICATION_FAILED", {"run_id": context.run_id, "error": str(exc)})
 
         thread = threading.Thread(target=runner, daemon=True)
         context.orchestrator_thread = thread

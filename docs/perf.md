@@ -88,7 +88,7 @@ Workspaces that exceed these quotas receive a `429` with `error: "Workspace quot
 
 Concurrency caps guard against fan-out storms:
 
-- **Parents per workspace**: 5 live parent runs (tracked via `AGENTMAESTRO_QUOTA_NAMESPACE:concurrent` sets).
+- **Parents per workspace**: 5 live parent runs (tracked via `QUOTA_NAMESPACE:concurrent` sets).
 - **Total runs per workspace**: 12 parents + children combined, preventing unlimited breadth.
 - **Pending subruns per parent**: 4 children may be in-flight before the parent must wait for completions.
 - **Pending tool calls**: max 6 workspace-wide and 1 per individual run (applies only to tool calls requiring approval).
@@ -98,7 +98,7 @@ The enforcement lives inside `core.services.limits.QUOTA_MANAGER` and the websoc
 
 ## Checkpoints & Archiving
 
-Run snapshots can be materialized via `runs.services.checkpoints.create_checkpoint`, which bundles the latest run/steps/events into `run_archives/<run_id>/run_snapshot_<timestamp>.json.zip` while recording a lightweight `RunArchive` row. Use `compact_events` to drop noisy payloads once they are older than `AGENTMAESTRO_EVENT_RETENTION_DAYS` (default 30d).
+Run snapshots can be materialized via `runs.services.checkpoints.create_checkpoint`, which bundles the latest run/steps/events into `run_archives/<run_id>/run_snapshot_<timestamp>.json.zip` while recording a lightweight `RunArchive` row. Use `compact_events` to drop noisy payloads once they are older than `EVENT_RETENTION_DAYS` (default 30d).
 
 The management command `python manage.py archive_runs --older-than 30 --compact` wraps the checkpoint + compaction workflow, marks `archived_at`, and prints each archive path that can be shipped off for offline replay. Add `--verbose-events` to target custom event types, or `--limit` to stage the archive in batches.
 

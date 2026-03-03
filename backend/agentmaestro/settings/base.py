@@ -38,6 +38,7 @@ INSTALLED_APPS = [
     'django.contrib.contenttypes',
     'django.contrib.sessions',
     'django.contrib.messages',
+    'daphne',  # daphne must be listed before django.contrib.staticfiles
     'django.contrib.staticfiles',
 
     # Third-party
@@ -50,8 +51,10 @@ INSTALLED_APPS = [
     'runs',
     'tools',
     'ui',
-    'integrations',
     'api',
+    'llm',
+    'control',
+    'comms',
 ]
 
 MIDDLEWARE = [
@@ -153,30 +156,62 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 CELERY_BROKER_URL = os.getenv("CELERY_BROKER_URL", "redis://127.0.0.1:6379/0")
 BROKER_URL = CELERY_BROKER_URL
 
-AGENTMAESTRO_ARCHIVE_RETENTION_DAYS = int(os.getenv("AGENTMAESTRO_ARCHIVE_RETENTION_DAYS", "30"))
-AGENTMAESTRO_ARCHIVE_INTERVAL_HOURS = int(os.getenv("AGENTMAESTRO_ARCHIVE_INTERVAL_HOURS", "6"))
-AGENTMAESTRO_ARCHIVE_LIMIT = int(os.getenv("AGENTMAESTRO_ARCHIVE_LIMIT", "25"))
-AGENTMAESTRO_ARCHIVE_COMPACT_EVENTS = os.getenv("AGENTMAESTRO_ARCHIVE_COMPACT_EVENTS", "true").lower() in {
+ARCHIVE_RETENTION_DAYS = int(os.getenv("ARCHIVE_RETENTION_DAYS", "30"))
+ARCHIVE_INTERVAL_HOURS = int(os.getenv("ARCHIVE_INTERVAL_HOURS", "6"))
+ARCHIVE_LIMIT = int(os.getenv("ARCHIVE_LIMIT", "25"))
+ARCHIVE_COMPACT_EVENTS = os.getenv("ARCHIVE_COMPACT_EVENTS", "true").lower() in {
     "1",
     "true",
     "yes",
 }
 
-AGENTMAESTRO_RECONCILE_INTERVAL = int(os.getenv("AGENTMAESTRO_RECONCILE_INTERVAL", "30"))
+RECONCILE_INTERVAL = int(os.getenv("RECONCILE_INTERVAL", "30"))
+
+TELEGRAM_POLL_INTERVAL_SECONDS = int(os.getenv("TELEGRAM_POLL_INTERVAL_SECONDS", "5"))
+TELEGRAM_POLL_TIMEOUT_SECONDS = int(os.getenv("TELEGRAM_POLL_TIMEOUT_SECONDS", "25"))
+TELEGRAM_POLL_LOCK_TIMEOUT_SECONDS = int(os.getenv("TELEGRAM_POLL_LOCK_TIMEOUT_SECONDS", "30"))
+TELEGRAM_POLL_LOCK_REDIS_URL = (
+    os.getenv("TELEGRAM_POLL_LOCK_REDIS_URL")
+    or os.getenv("CHANNEL_LAYER_REDIS_URL")
+    or os.getenv("CELERY_BROKER_URL")
+)
+
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 
 CELERY_BEAT_SCHEDULE = {
     "runs.reconcile_waiting_subruns": {
         "task": "runs.tasks.reconcile_waiting_subruns",
-        "schedule": timedelta(seconds=AGENTMAESTRO_RECONCILE_INTERVAL),
+        "schedule": timedelta(seconds=RECONCILE_INTERVAL),
     },
     "runs.archive_completed_runs": {
         "task": "runs.tasks.archive_completed_runs",
-        "schedule": timedelta(hours=AGENTMAESTRO_ARCHIVE_INTERVAL_HOURS),
+        "schedule": timedelta(hours=ARCHIVE_INTERVAL_HOURS),
+    },
+    "comms.telegram_poll_scheduler": {
+        "task": "comms.tasks.telegram_poll_scheduler",
+        "schedule": timedelta(seconds=TELEGRAM_POLL_INTERVAL_SECONDS),
     },
 }
 
-AGENTMAESTRO_TOOLRUNNER_URL = os.getenv("AGENTMAESTRO_TOOLRUNNER_URL", "http://127.0.0.1:8001/v1/execute")
-AGENTMAESTRO_TOOLRUNNER_SECRET = os.getenv("AGENTMAESTRO_TOOLRUNNER_SECRET", "insecure-toolrunner")
-AGENTMAESTRO_TOOLRUNNER_TIMEOUT = int(os.getenv("AGENTMAESTRO_TOOLRUNNER_TIMEOUT", "30"))
-AGENTMAESTRO_TOOLRUNNER_OUTPUT_LIMIT = int(os.getenv("AGENTMAESTRO_TOOLRUNNER_OUTPUT_LIMIT", "4096"))
-AGENTMAESTRO_TOOLRUNNER_HTTP_TIMEOUT = int(os.getenv("AGENTMAESTRO_TOOLRUNNER_HTTP_TIMEOUT", "45"))
+# ToolRunner settings (new preferred names)
+TOOLRUNNER_BASE_URL = os.getenv("TOOLRUNNER_BASE_URL")
+if TOOLRUNNER_BASE_URL:
+    TOOLRUNNER_URL = f"{TOOLRUNNER_BASE_URL.rstrip('/')}/v1/run/tool"
+else:
+    TOOLRUNNER_URL = os.getenv("TOOLRUNNER_URL") or "http://127.0.0.1:8001/v1/run/tool"
+
+TOOLRUNNER_SECRET = os.getenv("TOOLRUNNER_SECRET") or "insecure-secret"
+TOOLRUNNER_TIMEOUT = int(os.getenv("TOOLRUNNER_TIMEOUT", "30"))
+TOOLRUNNER_OUTPUT_LIMIT = int(os.getenv("TOOLRUNNER_OUTPUT_LIMIT", "4096"))
+TOOLRUNNER_HTTP_TIMEOUT = int(os.getenv("TOOLRUNNER_HTTP_TIMEOUT", "45"))
+
+# LLM defaults
+LLM_PROVIDER = os.getenv("LLM_PROVIDER", "openai")
+LLM_DEFAULT_PROFILE_PLANNER = os.getenv("LLM_DEFAULT_PROFILE_PLANNER", "Maestro")
+LLM_DEFAULT_PROFILE_CODER = os.getenv("LLM_DEFAULT_PROFILE_CODER", "Apprentice")
+LLM_TIMEOUT_SECONDS = int(os.getenv("LLM_TIMEOUT_SECONDS", "60"))
+LLM_MAX_RETRIES = int(os.getenv("LLM_MAX_RETRIES", "3"))
+
+# OPENAI KEY
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
