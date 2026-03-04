@@ -120,7 +120,6 @@ class AgentWizardViewTests(TestCase):
             "default_model": "gpt-5.1",
             "temperature": "0.75",
             "policy_name": "react",
-            "plan_enabled": "on",
         }
         self.client.post(f"{url}?step=2", data=llm)
         workspace, tool = self._seed_workspace_with_tool()
@@ -132,7 +131,6 @@ class AgentWizardViewTests(TestCase):
         self.assertIsNotNone(agent)
         self.assertEqual(agent.owner, self.user)
         self.assertEqual(agent.workspace.name, "Wizard Workspace")
-        self.assertTrue(agent.plan_enabled)
         self.assertEqual(agent.tool_policy_json["selected_tools"], ["wizard_tool"])
         self.assertNotIn("agent_wizard", self.client.session)
         self.assertTrue(

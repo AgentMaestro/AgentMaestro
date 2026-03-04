@@ -11,6 +11,9 @@
   const connectionActionBtn = shell.querySelector("[data-connection-action]");
   const toolPanel = shell.querySelector("[data-tool-requests]");
   const wsUrl = shell.dataset.wsUrl;
+  const agentName = shell.dataset.agentName || "Maestro";
+  const userName = shell.dataset.userName || "You";
+  const agentSlug = shell.dataset.agentSlug || "";
   const toolPlaceholder = toolPanel?.querySelector(".tool-request-empty");
   const toolCards = new Map();
 
@@ -61,6 +64,62 @@
     }
   };
 
+  const AGENT_TAB_STORAGE_PREFIX = "agent-chat-tab:";
+  const FOCUS_CHANNEL_NAME = "agent-chat-focus";
+  const tabId =
+    typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+      ? crypto.randomUUID()
+      : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  const storageAvailable = (() => {
+    try {
+      if (typeof window === "undefined" || typeof window.localStorage === "undefined") {
+        return false;
+      }
+      const testKey = "__agent_chat_storage_test__";
+      window.localStorage.setItem(testKey, "1");
+      window.localStorage.removeItem(testKey);
+      return true;
+    } catch (error) {
+      return false;
+    }
+  })();
+  const storageRef = storageAvailable ? window.localStorage : null;
+  let agentTabStorageKey = null;
+  if (storageRef && agentSlug) {
+    agentTabStorageKey = `${AGENT_TAB_STORAGE_PREFIX}${agentSlug}:${tabId}`;
+    storageRef.setItem(
+      agentTabStorageKey,
+      JSON.stringify({ slug: agentSlug, tabId, openedAt: Date.now() })
+    );
+  }
+  if (agentSlug) {
+    const agentWindowName = `agent-chat-${agentSlug}`;
+    if (window.name !== agentWindowName) {
+      window.name = agentWindowName;
+    }
+  }
+  const focusChannel =
+    typeof BroadcastChannel === "function" ? new BroadcastChannel(FOCUS_CHANNEL_NAME) : null;
+  focusChannel?.addEventListener("message", (event) => {
+    const payload = event.data;
+    if (!payload || payload.origin === tabId || payload.slug !== agentSlug) {
+      return;
+    }
+    appendSystemMessage(`${agentName} received focus request from another tab.`);
+    if (typeof window.focus === "function") {
+      window.focus();
+    }
+  });
+  const cleanupAgentTabEntry = () => {
+    if (storageRef && agentTabStorageKey) {
+      storageRef.removeItem(agentTabStorageKey);
+      agentTabStorageKey = null;
+    }
+    focusChannel?.close();
+  };
+  window.addEventListener("beforeunload", cleanupAgentTabEntry);
+  window.addEventListener("pagehide", cleanupAgentTabEntry);
+
   const formatTimestamp = (value) => {
     const emitted = value ? new Date(value) : new Date();
     return emitted.toLocaleTimeString("en-US", {
@@ -73,22 +132,31 @@
   };
 
   const createMessageElement = (payload) => {
-    const author = payload.role || "agent";
-    const direction = payload.direction || (author === "operator" ? "out" : "in");
+    const roleName = payload.role || "agent";
+    const direction = payload.direction || (roleName === "operator" ? "out" : "in");
     const article = document.createElement("article");
-    article.className = `chat-message chat-message-${direction} chat-message-author-${author}`;
+    article.className = `chat-message chat-message-${direction} chat-message-author-${roleName}`;
 
     const meta = document.createElement("div");
     meta.className = "chat-message-meta";
     const authorLabel = document.createElement("span");
     authorLabel.className = "chat-message-author";
-    authorLabel.textContent = payload.author || author;
-    const kind = document.createElement("span");
-    kind.className = "chat-message-type";
-    kind.textContent = author;
+    const defaultAuthor = roleName === "assistant" ? agentName.toLowerCase() : roleName;
+    const authorLabelText = payload.author || defaultAuthor;
+    authorLabel.textContent = authorLabelText;
     const timestamp = document.createElement("time");
     timestamp.textContent = formatTimestamp(payload.timestamp);
-    meta.append(authorLabel, kind, timestamp);
+    const kindLabelText = payload.kind || payload.role || roleName;
+    const showType =
+      roleName === "system" && kindLabelText && kindLabelText !== authorLabelText;
+    if (showType) {
+      const kind = document.createElement("span");
+      kind.className = "chat-message-type";
+      kind.textContent = kindLabelText;
+      meta.append(authorLabel, kind, timestamp);
+    } else {
+      meta.append(authorLabel, timestamp);
+    }
 
     const body = document.createElement("p");
     body.className = "chat-message-text";
@@ -98,7 +166,52 @@
     return article;
   };
 
-  const appendMessage = (payload) => {
+  let thinkingPlaceholder = null;
+  let thinkingPhase = null;
+
+  const thinkingLabel = (phase) => `${agentName} is ${phase}…`;
+
+  const removeThinkingPlaceholder = () => {
+    if (thinkingPlaceholder) {
+      thinkingPlaceholder.remove();
+      thinkingPlaceholder = null;
+      thinkingPhase = null;
+    }
+  };
+
+  const renderThinkingPlaceholder = (phase) => {
+    removeThinkingPlaceholder();
+    console.log("renderThinkingPlaceholder", phase);
+    thinkingPhase = phase;
+    thinkingPlaceholder = createMessageElement({
+      role: "system",
+      direction: "system",
+      author: "system",
+      text: thinkingLabel(phase),
+      timestamp: new Date().toISOString(),
+    });
+    if (messagesEl) {
+      messagesEl.appendChild(thinkingPlaceholder);
+      scrollToBottom();
+    }
+  };
+
+  const setThinkingPhase = (phase) => {
+    console.log("setThinkingPhase", phase);
+    if (!thinkingPlaceholder || thinkingPhase === phase) {
+      return;
+    }
+    thinkingPhase = phase;
+    const textEl = thinkingPlaceholder.querySelector(".chat-message-text");
+    if (textEl) {
+      textEl.textContent = thinkingLabel(phase);
+    }
+  };
+
+  const appendMessage = (payload, options = {}) => {
+    if (!options.keepThinking) {
+      removeThinkingPlaceholder();
+    }
     if (!messagesEl) {
       return;
     }
@@ -248,6 +361,14 @@
       console.warn("Unable to parse agent chat payload", error);
       return;
     }
+    const isTransportLog =
+      payload.type === "system" &&
+      typeof payload.text === "string" &&
+      (payload.text.includes("[WS") || payload.text.includes("[HTTP"));
+    if (isTransportLog && payload.text.includes("[WS Rcv]")) {
+      setThinkingPhase("typing");
+    }
+
     switch (payload.type) {
       case "connected":
         setStatus("Connected");
@@ -288,19 +409,99 @@
         setStatus("Error");
         return;
       case "system":
-        appendMessage({
-          role: "system",
-          direction: "in",
-          text: payload.text || "",
-          timestamp: payload.timestamp,
-        });
-        return;
-      default:
-        return;
+        appendMessage(
+          {
+            role: "system",
+            direction: "in",
+            text: payload.text || "",
+            timestamp: payload.timestamp,
+          },
+          { keepThinking: isTransportLog }
+        );
+      return;
+    default:
+      return;
     }
   };
 
   let socket = null;
+
+  const hasOpenAgentTab = (slug) => {
+    if (!storageRef || !slug) {
+      return false;
+    }
+    const prefix = `${AGENT_TAB_STORAGE_PREFIX}${slug}:`;
+    for (let index = 0; index < storageRef.length; index += 1) {
+      const key = storageRef.key(index);
+      if (key && key.startsWith(prefix)) {
+        return true;
+      }
+    }
+    return false;
+  };
+
+  const broadcastFocusRequest = (slug) => {
+    focusChannel?.postMessage({ type: "focus", slug, origin: tabId, requestedBy: agentSlug });
+  };
+
+  const focusExistingAgentTab = (slug) => {
+    broadcastFocusRequest(slug);
+  };
+
+  const openNewAgentTab = (url, label) => {
+    const newTab = window.open(url, "_blank");
+    if (newTab) {
+      newTab.focus();
+    }
+    if (label) {
+      appendSystemMessage(`Opening ${label} in a new tab.`);
+    }
+  };
+
+  const resetAgentSwitcherSelection = (select) => {
+    if (!select) {
+      return;
+    }
+    const current = Array.from(select.options).find(
+      (option) => option.dataset?.agentSlug === agentSlug
+    );
+    if (current) {
+      current.selected = true;
+      select.value = current.value;
+    }
+  };
+
+  const handleAgentSwitcherChange = (event) => {
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    const select = event.currentTarget;
+    const option = select.selectedOptions?.[0];
+    const targetSlug = option?.dataset?.agentSlug;
+    const targetUrl = option?.value;
+    const label = option?.textContent?.trim() || targetSlug;
+    if (!targetSlug || !targetUrl) {
+      resetAgentSwitcherSelection(select);
+      return;
+    }
+    if (targetSlug === agentSlug) {
+      resetAgentSwitcherSelection(select);
+      return;
+    }
+    if (hasOpenAgentTab(targetSlug)) {
+      appendSystemMessage(`${label} is already open in another tab. Click on that tab.`);
+      focusExistingAgentTab(targetSlug);
+    } else {
+      openNewAgentTab(targetUrl, label);
+    }
+    resetAgentSwitcherSelection(select);
+  };
+
+  const agentSwitcher = shell.querySelector("[data-agent-switcher]");
+  if (agentSwitcher) {
+    agentSwitcher.removeAttribute("onchange");
+    agentSwitcher.addEventListener("change", handleAgentSwitcherChange);
+    resetAgentSwitcherSelection(agentSwitcher);
+  }
 
   const connect = () => {
     if (socket && socket.readyState === WebSocket.OPEN) {
@@ -344,11 +545,13 @@
     appendMessage({
       role: "operator",
       direction: "out",
+      kind: userName,
       text,
       timestamp: new Date().toISOString(),
-      author: "You",
+      author: userName,
     });
     socket.send(JSON.stringify({ type: "chat.message", text }));
+    renderThinkingPlaceholder("thinking");
     if (textarea) {
       textarea.value = "";
     }

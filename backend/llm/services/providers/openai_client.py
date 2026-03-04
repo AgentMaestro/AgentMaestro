@@ -115,6 +115,12 @@ class OpenAIClient(BaseLLMClient):
         if extra:
             payload.update(extra)
 
+        logger.info(
+            "[HTTP SEND] chat_completions model=%s messages=%d tools=%d",
+            model,
+            len(payload["messages"]),
+            len(normalized_tools),
+        )
         response = await self.client.chat.completions.create(**payload)
         choice = response.choices[0]
         message = choice.message
@@ -135,11 +141,20 @@ class OpenAIClient(BaseLLMClient):
             "completion_tokens": getattr(usage, "completion_tokens", None),
             "total_tokens": getattr(usage, "total_tokens", None),
         }
+        text = message.content or ""
+        raw = response.model_dump()
+        logger.info(
+            "[HTTP RCV] chat_completions model=%s response_id=%s text_len=%d tool_calls=%d",
+            model,
+            raw.get("id"),
+            len(text),
+            len(tool_calls),
+        )
         return {
-            "text": message.content or "",
+            "text": text,
             "tool_calls": tool_calls,
             "usage": usage_data,
-            "raw": response.model_dump(),
+            "raw": raw,
         }
 
     async def _complete_http_responses(
@@ -172,15 +187,32 @@ class OpenAIClient(BaseLLMClient):
             payload.update(extra)
 
         # openai-python exposes `client.responses.create(...)`.
+        log_tools_count = len(responses_tools) if responses_tools else 0
+        logger.info(
+            "[HTTP SEND] responses model=%s inputs=%d tools=%d",
+            model,
+            len(input_items),
+            log_tools_count,
+        )
         response = await self.client.responses.create(**payload)
         raw = response.model_dump()
+        text = self._collect_responses_text(raw)
+        tool_calls = self._collect_responses_tool_calls(raw)
         usage_data = self._responses_usage_to_chat_usage(raw.get("usage") or {})
+        response_id = raw.get("id")
+        logger.info(
+            "[HTTP RCV] responses model=%s response_id=%s text_len=%d tool_calls=%d",
+            model,
+            response_id,
+            len(text),
+            len(tool_calls),
+        )
         return {
-            "text": self._collect_responses_text(raw),
-            "tool_calls": self._collect_responses_tool_calls(raw),
+            "text": text,
+            "tool_calls": tool_calls,
             "usage": usage_data,
             "raw": raw,
-            "response_id": raw.get("id"),
+            "response_id": response_id,
         }
 
     async def _complete_ws(
@@ -228,11 +260,15 @@ class OpenAIClient(BaseLLMClient):
             content = (msg.get("content") or "").strip()
             if not content:
                 continue
+            if role == "assistant":
+                content_item = {"type": "output_text", "text": content}
+            else:
+                content_item = {"type": "input_text", "text": content}
             items.append(
                 {
                     "type": "message",
                     "role": role,
-                    "content": [{"type": "input_text", "text": content}],
+                    "content": [content_item],
                 }
             )
         return items
@@ -380,11 +416,11 @@ class OpenAIClient(BaseLLMClient):
             )
         return formatted
 
-    async def get_ws_session(self, run_id: str, model: str):
-        return await self.ws_session_pool.get(run_id, model)
+    async def get_ws_session(self, run_id: str, model: str, *, agent_id: str | None = None):
+        return await self.ws_session_pool.get(run_id, model, agent_id=agent_id)
 
-    async def close_ws_session(self, run_id: str) -> None:
-        await self.ws_session_pool.close(run_id)
+    async def close_ws_session(self, run_id: str, *, model: str | None = None) -> None:
+        await self.ws_session_pool.close(run_id, model=model)
 
     async def cleanup_ws_sessions(self) -> None:
         await self.ws_session_pool.cleanup()

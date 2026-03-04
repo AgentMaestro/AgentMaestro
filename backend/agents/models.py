@@ -12,6 +12,25 @@ from core.models import Workspace, TimeStampedModel
 
 class Agent(TimeStampedModel):
     SLUG_MAX_LENGTH = 140
+    ROLE_ORDER = ("coding", "writing", "researching", "planning", "assisting")
+    ROLE_CHOICES = tuple((role, role.capitalize()) for role in ROLE_ORDER)
+    DEFAULT_ROLE = "assisting"
+    VALID_ROLES = set(ROLE_ORDER)
+
+    DEFAULT_MODEL_ORDER = (
+        "gpt-5",
+        "gpt-5-mini",
+        "gpt-5-nano",
+        "gpt-5-reasoning",
+        "gpt-5-reasoning-mini",
+        "gpt-5-code",
+        "gpt-4.1",
+        "gpt-4.1-mini",
+        "gpt-4.1-nano",
+    )
+    DEFAULT_MODEL_CHOICES = tuple((model, model) for model in DEFAULT_MODEL_ORDER)
+    DEFAULT_MODEL = "gpt-5"
+    VALID_DEFAULT_MODELS = set(DEFAULT_MODEL_ORDER)
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     workspace = models.ForeignKey(
@@ -27,11 +46,15 @@ class Agent(TimeStampedModel):
     name = models.CharField(max_length=120, unique=True)
     slug = models.SlugField(max_length=SLUG_MAX_LENGTH, blank=True)
     description = models.TextField(blank=True, default="")
-    default_model = models.CharField(max_length=80, default="gpt-5")
+    default_model = models.CharField(
+        max_length=32, choices=DEFAULT_MODEL_CHOICES, default=DEFAULT_MODEL
+    )
     temperature = models.DecimalField(max_digits=4, decimal_places=2, default=0.70)
     soul = models.TextField(blank=True, default="")
     policy_name = models.CharField(max_length=32, default="react")
-    plan_enabled = models.BooleanField(default=False)
+    role = models.CharField(
+        max_length=32, choices=ROLE_CHOICES, default=DEFAULT_ROLE
+    )
     tool_policy_json = models.JSONField(default=dict, blank=True)
     sandbox_paths = models.JSONField(default=list, blank=True)
     created_by = models.ForeignKey(
@@ -109,6 +132,8 @@ class Agent(TimeStampedModel):
             suffix += 1
 
     def save(self, *args, **kwargs):
+        self.role = self._normalize_role(self.role)
+        self.default_model = self._normalize_default_model(self.default_model)
         self._ensure_owner()
         self._ensure_unique_name()
         if self._should_generate_slug():
@@ -161,3 +186,13 @@ class Agent(TimeStampedModel):
             trim_length = self.SLUG_MAX_LENGTH - len(suffix_value)
             slug = f"{base[:trim_length]}{suffix_value}"
             suffix += 1
+
+    @classmethod
+    def _normalize_role(cls, value: object | None) -> str:
+        candidate = (str(value or "")).strip().lower()
+        return candidate if candidate in cls.VALID_ROLES else cls.DEFAULT_ROLE
+
+    @classmethod
+    def _normalize_default_model(cls, value: object | None) -> str:
+        candidate = (str(value or "")).strip().lower()
+        return candidate if candidate in cls.VALID_DEFAULT_MODELS else cls.DEFAULT_MODEL

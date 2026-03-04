@@ -39,10 +39,12 @@
           {% if review.llm.temperature %}
             <div class="review_step">Temperature: {{ review.llm.temperature }}</div>
           {% endif %}
+          {% if review.llm.role %}
+            <div class="review_step">Role: {{ review.llm.role }}</div>
+          {% endif %}
           {% if review.llm.policy_name %}
             <div class="review_step">Policy: {{ review.llm.policy_name }}</div>
           {% endif %}
-          <div class="review_step">Plan enabled: {{ review.llm.plan_enabled|yesno:"Yes,No" }}</div>
         </div>
       </div>
       <div class="review-card">

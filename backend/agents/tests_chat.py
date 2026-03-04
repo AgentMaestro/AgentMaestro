@@ -34,10 +34,10 @@ class DummyClient:
     async def cleanup_ws_sessions(self):
         pass
 
-    async def get_ws_session(self, run_id, model):
+    async def get_ws_session(self, run_id, model, *, agent_id=None):
         return self.session
 
-    async def close_ws_session(self, run_id):
+    async def close_ws_session(self, run_id, *, model=None):
         pass
 
     def format_tool_definitions_for_responses(self, tools):

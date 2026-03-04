@@ -29,12 +29,12 @@
         {{ form.policy_name.errors }}
       </div>
       <div>
-        {{ form.plan_enabled }}
-        {{ form.plan_enabled.label_tag }}
-        {% if form.plan_enabled.help_text %}
-          <div class="helper">{{ form.plan_enabled.help_text }}</div>
+        {{ form.role.label_tag }}
+        {{ form.role }}
+        {% if form.role.help_text %}
+          <div class="helper">{{ form.role.help_text }}</div>
         {% endif %}
-        {{ form.plan_enabled.errors }}
+        {{ form.role.errors }}
       </div>
     </div>
     <div style="margin-top: 24px; display:flex; gap:10px;">

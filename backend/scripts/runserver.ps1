@@ -1,6 +1,6 @@
 param(
     [int]$Port = 8000,
-    [string]$Debug = $(if ($env:OPENAI_WS_DEBUG) { $env:OPENAI_WS_DEBUG } else { "1" }),
+    [string]$Debug = $(if ($env:OPENAI_WS_DEBUG) { $env:OPENAI_WS_DEBUG } else { "0" }),
     [string]$Transport = $(if ($env:OPENAI_TRANSPORT) { $env:OPENAI_TRANSPORT } else { "http" }),
     [string]$Mode = $(if ($env:OPENAI_HTTP_MODE) { $env:OPENAI_HTTP_MODE } else { "responses" })
 )
@@ -9,7 +9,6 @@ param(
 $env:DJANGO_SETTINGS_MODULE = "agentmaestro.settings.dev"
 $env:OPENAI_WS_DEBUG = $Debug
 $env:PYTHONUNBUFFERED = "1"
-$env:OPENAI_API_KEY =
 $env:OPENAI_TRANSPORT = $Transport
 $env:OPENAI_HTTP_MODE = $Mode
 

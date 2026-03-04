@@ -215,8 +215,8 @@ LLM_MAX_RETRIES = int(os.getenv("LLM_MAX_RETRIES", "3"))
 
 # OPENAI KEY
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
-OPENAI_WS_DEBUG = os.getenv("OPENAI_WS_DEBUG", "1")
-OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL", "wss://api.openai.com/v1/responses")
+OPENAI_WS_DEBUG = os.getenv("OPENAI_WS_DEBUG", "0")
+OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL", "https://api.openai.com")
 OPENAI_TRANSPORT = os.getenv("OPENAI_TRANSPORT", "http")
 OPENAI_WS_TIMEOUT_SECONDS = os.getenv("OPENAI_WS_TIMEOUT_SECONDS", "120")
 OPENAI_WS_IDLE_TIMEOUT_SECONDS = os.getenv("OPENAI_WS_IDLE_TIMEOUT_SECONDS", "1200")

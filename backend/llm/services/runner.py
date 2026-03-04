@@ -321,7 +321,7 @@ class LLMRunner:
                 send_tools = bool(session_tools)
                 continue
             except OpenAIResponsesWSException as exc:
-                await client.close_ws_session(str(run.id))
+                await client.close_ws_session(str(run.id), model=model_name)
                 await self._finalize_run(
                     run,
                     RunStatus.FAILED,
@@ -433,7 +433,7 @@ class LLMRunner:
                     )
                 tool_rounds += 1
                 if tool_rounds > max_tool_rounds:
-                    await client.close_ws_session(str(run.id))
+                    await client.close_ws_session(str(run.id), model=model_name)
                     await self._finalize_run(
                         run,
                         RunStatus.FAILED,
@@ -451,7 +451,7 @@ class LLMRunner:
                 input_items = function_call_outputs + continuation_instructions
                 continue
 
-            await client.close_ws_session(str(run.id))
+            await client.close_ws_session(str(run.id), model=model_name)
             await self._finalize_run(run, RunStatus.COMPLETED, usage=usage_totals)
             return {
                 "run_id": str(run.id),

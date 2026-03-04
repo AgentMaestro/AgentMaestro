@@ -324,7 +324,7 @@ def _complete_wizard(request, session_data: dict[str, object], owner_form: forms
             default_model=llm.get("default_model", "gpt-5"),
             temperature=llm.get("temperature", "0.70"),
             policy_name=llm.get("policy_name", "react"),
-            plan_enabled=llm.get("plan_enabled", False),
+            role=llm.get("role", "assisting"),
             tool_policy_json={"selected_tools": [definition.tool.name for definition in tools]},
             sandbox_paths=basics.get("sandbox_paths", []),
             owner=owner or request.user,
@@ -373,6 +373,7 @@ def agent_detail(request, slug: str):
         "websocket_url": f"/ws/agents/{agent.slug}/chat/",
         "sandbox_paths": agent.sandbox_paths or [],
         "telegram_status": None,
+        "user_name": (request.user.get_full_name() or request.user.username or "You").strip() or "You",
     }
     telegram_endpoint = find_agent_telegram_endpoint(agent)
     if telegram_endpoint:

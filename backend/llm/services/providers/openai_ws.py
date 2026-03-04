@@ -1,7 +1,9 @@
 import asyncio
 import json
 import os
+import random
 import time
+import uuid
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
@@ -12,6 +14,45 @@ from logging_utils import get_app_logger
 
 logger = get_app_logger(__name__)
 logger.info("websockets version=%s", getattr(websockets, "__version__", "unknown"))
+OPENAI_WS_MAX_RETRIES = int(os.getenv("OPENAI_WS_MAX_RETRIES", "3"))
+OPENAI_WS_MAX_RETRY_JITTER_MS = int(os.getenv("OPENAI_WS_MAX_RETRY_JITTER_MS", "250"))
+
+VALIDATION_ERROR_CODES = {
+    "oneofparam",
+    "invalid_enum_value",
+    "invalid_value",
+    "missing_required_parameter",
+    "invalid_format",
+    "invalid_parameter",
+}
+RATE_LIMIT_ERROR_CODES = {
+    "rate_limit_exceeded",
+    "requests_per_minute_limit",
+    "too_many_requests",
+}
+RATE_LIMIT_STATUS_CODES = {429, 502, 503, 504}
+
+
+def _backoff_delay(attempt: int) -> float:
+    base = 1 << min(attempt, 2)
+    jitter = random.uniform(0, OPENAI_WS_MAX_RETRY_JITTER_MS) / 1000
+    return base + jitter
+
+
+def _classify_error(code: Optional[str], message: Optional[str], status: Optional[int]) -> str:
+    code = (code or "").lower()
+    message = (message or "").lower()
+    if code in VALIDATION_ERROR_CODES or "invalid" in message:
+        return "validation_error"
+    if code in RATE_LIMIT_ERROR_CODES or status in RATE_LIMIT_STATUS_CODES or "rate limit" in message:
+        return "ratelimit"
+    return "unknown"
+
+
+def _extract_request_id(event: Dict[str, Any]) -> Optional[str]:
+    response = event.get("response") or {}
+    metadata = response.get("metadata") or event.get("metadata") or {}
+    return metadata.get("request_id")
 
 
 PING_INTERVAL_SECONDS = 25
@@ -135,19 +176,40 @@ def _normalize_response(response: Dict[str, Any]) -> Dict[str, Any]:
         "text": _collect_text(response),
         "tool_calls": _collect_tool_calls(response),
         "raw": response,
+        "model": response.get("model"),
+        "request_id": (response.get("metadata") or {}).get("request_id"),
     }
 
 
 class OpenAIResponsesWSException(RuntimeError):
-    pass
+    classification = "unknown"
+
+    def __init__(self, message, *, code=None, param=None, status=None, request_id=None):
+        super().__init__(message)
+        self.code = code
+        self.param = param
+        self.status = status
+        self.request_id = request_id
+
+
+class OpenAIResponsesWSValidationError(OpenAIResponsesWSException):
+    classification = "validation_error"
+
+
+class OpenAIResponsesWSRateLimitError(OpenAIResponsesWSException):
+    classification = "ratelimit"
+
+
+class OpenAIResponsesWSNetworkError(OpenAIResponsesWSException):
+    classification = "network_error"
 
 
 class OpenAIResponsesWSPreviousResponseNotFound(OpenAIResponsesWSException):
-    pass
+    classification = "prev_not_found"
 
 
 class OpenAIResponsesWSConnectionLimitReached(OpenAIResponsesWSException):
-    pass
+    classification = "connection_limit"
 
 
 class OpenAIResponsesWSClient:
@@ -216,6 +278,7 @@ class OpenAIResponsesWebSocketSession:
         model: str,
         *,
         run_id: str | None = None,
+        agent_id: str | None = None,
         idle_timeout_seconds: float = 60.0,
         timeout_seconds: float = 120.0,
     ):
@@ -224,6 +287,7 @@ class OpenAIResponsesWebSocketSession:
         self._api_key = api_key
         self._model = model
         self._run_id = run_id or "unknown"
+        self._agent_id = agent_id or "unknown"
         self._timeout_seconds = timeout_seconds
         self.previous_response_id: Optional[str] = None
         self._last_active = time.monotonic()
@@ -333,6 +397,65 @@ class OpenAIResponsesWebSocketSession:
             previous_ref,
         )
 
+    def _log_send_event(self, request_id: str, attempt: int, payload: Dict[str, Any]) -> None:
+        tool_count = len(payload.get("tools") or [])
+        input_count = len(payload.get("input") or [])
+        logger.info(
+            "OpenAI WS send run=%s agent=%s model=%s request_id=%s previous_response_id=%s attempt=%d inputs=%d tools=%d",
+            self._run_id,
+            self._agent_id,
+            self._model,
+            request_id,
+            payload.get("previous_response_id"),
+            attempt,
+            input_count,
+            tool_count,
+        )
+
+    def _log_receive_event(
+        self,
+        response: Dict[str, Any],
+        request_id: str,
+        latency: float,
+        classification: str,
+    ) -> None:
+        response_id = (
+            response.get("id")
+            or response.get("response_id")
+            or response.get("metadata", {}).get("response_id")
+            or ""
+        )
+        model_returned = response.get("model") or self._model
+        logger.info(
+            "OpenAI WS recv run=%s agent=%s model=%s request_id=%s response_id=%s model_returned=%s latency=%.3f classification=%s",
+            self._run_id,
+            self._agent_id,
+            self._model,
+            request_id,
+            response_id,
+            model_returned,
+            latency,
+            classification,
+        )
+
+    def _log_failure_event(
+        self,
+        classification: str,
+        request_id: str,
+        attempt: int,
+        error: OpenAIResponsesWSException,
+    ) -> None:
+        logger.warning(
+            "OpenAI WS failure run=%s agent=%s model=%s request_id=%s classification=%s attempt=%d error=%s param=%s",
+            self._run_id,
+            self._agent_id,
+            self._model,
+            error.request_id or request_id,
+            classification,
+            attempt,
+            str(error),
+            error.param,
+        )
     def _reconnect_needed(self) -> bool:
         return self._connection_closed()
 
@@ -358,48 +481,80 @@ class OpenAIResponsesWebSocketSession:
             payload["tools"] = tools
         if self.previous_response_id:
             payload["previous_response_id"] = self.previous_response_id
-        retries = 0
+        payload.setdefault("metadata", {})
+        request_id = payload["metadata"].get("request_id") or str(uuid.uuid4())
+        payload["metadata"]["request_id"] = request_id
+        attempt = 0
+        max_attempts = max(1, OPENAI_WS_MAX_RETRIES)
         while True:
-            await self._ensure_connection()
-            async with self._io_lock:
-                try:
-                    payload_json = json.dumps(payload, ensure_ascii=False)
-                    logger.debug("OpenAI WS send payload %s", payload_json)
-                    if self.previous_response_id:
-                        logger.debug(
-                            "OpenAI WS previous_response_id=%s run=%s",
-                            self.previous_response_id,
-                            self._run_id,
-                        )
-                    await self._ws.send(payload_json)
-                    response = await self._receive_until_complete()
-                except OpenAIResponsesWSConnectionLimitReached:
-                    retries += 1
-                    await self.close()
-                    if retries > 1:
-                        raise
-                    continue
-                except asyncio.TimeoutError as exc:
-                    retries += 1
-                    await self.close()
-                    if retries <= 1:
-                        continue
-                    raise OpenAIResponsesWSException("OpenAI WS timeout") from exc
-                except websockets.WebSocketException as exc:
-                    await self.close()
-                    logger.error(
-                        "OpenAI WS connection failed during send run=%s model=%s: %s",
-                        self._run_id,
-                        self._model,
-                        exc,
-                    )
-                    raise OpenAIResponsesWSException("OpenAI WS connection failed") from exc
+            try:
+                response, latency = await self._send_request(payload, request_id, attempt + 1)
+            except OpenAIResponsesWSPreviousResponseNotFound as exc:
+                self.previous_response_id = None
+                self._log_failure_event(exc.classification, request_id, attempt + 1, exc)
+                await self.close()
+                await asyncio.sleep(_backoff_delay(attempt))
+                if attempt >= max_attempts - 1:
+                    raise
+                attempt += 1
+                continue
+            except OpenAIResponsesWSValidationError as exc:
+                self._log_failure_event(exc.classification, request_id, attempt + 1, exc)
+                raise
+            except OpenAIResponsesWSRateLimitError as exc:
+                self._log_failure_event(exc.classification, request_id, attempt + 1, exc)
+                attempt += 1
+                if attempt >= max_attempts:
+                    raise
+                await asyncio.sleep(_backoff_delay(attempt - 1))
+                continue
+            except OpenAIResponsesWSNetworkError as exc:
+                self._log_failure_event(exc.classification, request_id, attempt + 1, exc)
+                attempt += 1
+                await self.close()
+                if attempt >= max_attempts:
+                    raise
+                await asyncio.sleep(_backoff_delay(attempt - 1))
+                continue
+            except OpenAIResponsesWSException as exc:
+                self._log_failure_event(exc.classification, request_id, attempt + 1, exc)
+                attempt += 1
+                await self.close()
+                if attempt >= max_attempts:
+                    raise
+                await asyncio.sleep(_backoff_delay(attempt - 1))
+                continue
             normalized = _normalize_response(response)
             resp_id = normalized.get("response_id")
             if isinstance(resp_id, str) and resp_id:
                 self.previous_response_id = resp_id
             self._mark_active()
+            self._log_receive_event(response, request_id, latency, classification="success")
             return normalized
+
+    async def _send_request(
+        self, payload: Dict[str, Any], request_id: str, attempt: int
+    ) -> tuple[Dict[str, Any], float]:
+        await self._ensure_connection()
+        async with self._io_lock:
+            payload["previous_response_id"] = self.previous_response_id
+            payload_json = json.dumps(payload, ensure_ascii=False)
+            self._log_send_event(request_id, attempt, payload)
+            start = time.monotonic()
+            logger.debug("OpenAI WS send payload run=%s model=%s", self._run_id, self._model)
+            try:
+                await self._ws.send(payload_json)
+                response = await self._receive_until_complete()
+            except asyncio.TimeoutError as exc:
+                raise OpenAIResponsesWSNetworkError(
+                    "OpenAI WS timeout", status=None, request_id=request_id
+                ) from exc
+            except websockets.WebSocketException as exc:
+                raise OpenAIResponsesWSNetworkError(
+                    "OpenAI WS connection failed during send", status=None, request_id=request_id
+                ) from exc
+            latency = time.monotonic() - start
+            return response, latency
 
     async def _receive_until_complete(self) -> Dict[str, Any]:
         assert self._ws
@@ -409,15 +564,17 @@ class OpenAIResponsesWebSocketSession:
                 raw = await asyncio.wait_for(self._ws.recv(), timeout=self._timeout_seconds)
             except websockets.exceptions.ConnectionClosed as exc:
                 logger.warning(
-                    "OpenAI WS closed run=%s model=%s code=%s reason=%r was_clean=%s",
+                    "OpenAI WS closed run=%s agent=%s model=%s code=%s reason=%r was_clean=%s",
                     self._run_id,
+                    self._agent_id,
                     self._model,
                     getattr(exc, "code", None),
                     getattr(exc, "reason", None),
                     isinstance(exc, websockets.exceptions.ConnectionClosedOK),
                 )
-                raise OpenAIResponsesWSException(
-                    "OpenAI WS connection closed without a completed response"
+                raise OpenAIResponsesWSNetworkError(
+                    "OpenAI WS connection closed without a completed response",
+                    status=getattr(exc, "code", None),
                 ) from exc
             self._mark_active()
             logger.debug(
@@ -472,40 +629,22 @@ class OpenAIResponsesWebSocketSession:
                     tool_call_count,
                 )
                 return response
-            if event_type == "response.error":
-                error = event.get("error") or {}
-                code = error.get("code")
-                message = error.get("message") or "response.error from OpenAI WS"
+            if event_type == "response.error" or event_type == "error":
+                err = event.get("error") or {}
+                code = err.get("code")
+                message = err.get("message") or "OpenAI WS error"
+                status = event.get("status")
+                param = err.get("param")
+                request_id = _extract_request_id(event)
                 logger.error(
-                    "OpenAI WS response.error run=%s model=%s code=%s message=%s",
+                    "OpenAI WS error run=%s agent=%s model=%s code=%s status=%s param=%s message=%s",
                     self._run_id,
+                    self._agent_id,
                     self._model,
                     code,
+                    status,
+                    param,
                     message,
-                )
-                logger.debug(
-                    "OpenAI WS response.error payload run=%s model=%s payload=%s",
-                    self._run_id,
-                    self._model,
-                    json.dumps(event, ensure_ascii=False)[:2000],
-                )
-                if code == "previous_response_not_found":
-                    self.previous_response_id = None
-                    raise OpenAIResponsesWSPreviousResponseNotFound(message)
-                if code == "websocket_connection_limit_reached":
-                    raise OpenAIResponsesWSConnectionLimitReached(message)
-                raise OpenAIResponsesWSException(message)
-            if event_type == "error":
-                err = event.get("error") or {}
-                logger.error(
-                    "OpenAI WS error run=%s model=%s status=%s code=%s message=%s param=%s type=%s",
-                    self._run_id,
-                    self._model,
-                    event.get("status"),
-                    err.get("code"),
-                    err.get("message"),
-                    err.get("param"),
-                    err.get("type"),
                 )
                 logger.debug(
                     "OpenAI WS error payload run=%s model=%s payload=%s",
@@ -513,13 +652,29 @@ class OpenAIResponsesWebSocketSession:
                     self._model,
                     json.dumps(event, ensure_ascii=False)[:2000],
                 )
-                code = err.get("code")
-                message = err.get("message") or "OpenAI WS error"
                 if code == "previous_response_not_found":
-                    raise OpenAIResponsesWSPreviousResponseNotFound(message)
+                    raise OpenAIResponsesWSPreviousResponseNotFound(
+                        message,
+                        code=code,
+                        param=param,
+                        status=status,
+                        request_id=request_id,
+                    )
                 if code == "websocket_connection_limit_reached":
-                    raise OpenAIResponsesWSConnectionLimitReached(message)
-                raise OpenAIResponsesWSException(message)
+                    raise OpenAIResponsesWSConnectionLimitReached(
+                        message,
+                        code=code,
+                        param=param,
+                        status=status,
+                        request_id=request_id,
+                    )
+                classification = _classify_error(code, message, status)
+                exc_kwargs = dict(code=code, param=param, status=status, request_id=request_id)
+                if classification == "validation_error":
+                    raise OpenAIResponsesWSValidationError(message, **exc_kwargs)
+                if classification == "ratelimit":
+                    raise OpenAIResponsesWSRateLimitError(message, **exc_kwargs)
+                raise OpenAIResponsesWSException(message, **exc_kwargs)
 
 
 class OpenAIResponsesWSSessionPool:
@@ -535,12 +690,15 @@ class OpenAIResponsesWSSessionPool:
         self._base_url = base_url
         self._idle_timeout_seconds = idle_timeout_seconds
         self._timeout_seconds = timeout_seconds
-        self._sessions: Dict[str, OpenAIResponsesWebSocketSession] = {}
+        self._sessions: Dict[tuple[str, str], OpenAIResponsesWebSocketSession] = {}
         self._lock = asyncio.Lock()
 
-    async def get(self, run_id: str, model: str) -> OpenAIResponsesWebSocketSession:
+    async def get(
+        self, run_id: str, model: str, *, agent_id: str | None = None
+    ) -> OpenAIResponsesWebSocketSession:
         async with self._lock:
-            session = self._sessions.get(run_id)
+            key = (run_id, model)
+            session = self._sessions.get(key)
             if session and session.model != model:
                 await session.close()
                 session = None
@@ -550,26 +708,32 @@ class OpenAIResponsesWSSessionPool:
                     base_url=self._base_url,
                     model=model,
                     run_id=run_id,
+                    agent_id=agent_id,
                     idle_timeout_seconds=self._idle_timeout_seconds,
                     timeout_seconds=self._timeout_seconds,
                 )
-                self._sessions[run_id] = session
+                self._sessions[key] = session
         return session
 
-    async def close(self, run_id: str) -> None:
+    async def close(self, run_id: str, *, model: str | None = None) -> None:
         async with self._lock:
-            session = self._sessions.pop(run_id, None)
-        if session:
-            await session.close()
+            if model is None:
+                keys = [key for key in self._sessions if key[0] == run_id]
+            else:
+                keys = [(run_id, model)]
+            sessions = [self._sessions.pop(key, None) for key in keys]
+        for session in sessions:
+            if session:
+                await session.close()
 
     async def cleanup(self) -> None:
         now = time.monotonic()
         sessions_to_close: List[OpenAIResponsesWebSocketSession] = []
         async with self._lock:
-            for run_id, session in list(self._sessions.items()):
+            for key, session in list(self._sessions.items()):
                 if now - session.last_activity > self._idle_timeout_seconds:
                     sessions_to_close.append(session)
-                    del self._sessions[run_id]
+                    del self._sessions[key]
         for session in sessions_to_close:
             await session.close()
 

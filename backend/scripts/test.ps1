@@ -13,8 +13,6 @@ New-Item -ItemType Directory -Force $tempRoot | Out-Null
 if (Test-Path $baseTemp) { Remove-Item -Recurse -Force $baseTemp -ErrorAction SilentlyContinue }
 New-Item -ItemType Directory -Force $baseTemp | Out-Null
 
-
-
 # ------------------------------------------------------------------------------------------------------
 
 # Pre-delete workspace test path if it exists

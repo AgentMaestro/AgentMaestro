@@ -8,7 +8,8 @@ Required for OpenAI provider:
 
 - `OPENAI_API_KEY`
 - `OPENAI_BASE_URL` (optional)
-- `OPENAI_TRANSPORT` (`http` or `ws`, default `http`. `ws` now targets the OpenAI Responses API with incremental tool-calling and session reuse.)
+- `OPENAI_TRANSPORT` (`http` or `ws`, default `http`). HTTP mode uses the Responses API and is the production default; enable websocket mode only for the Stage 2 smoke tests described later.
+- `OPENAI_HTTP_MODE` (`responses` or `chat_completions`, default `responses`). Keep this on `responses` so the HTTP and WS transports normalize tool calls the same way.
 - `OPENAI_WS_TIMEOUT_SECONDS` (default `60`): per-request receive timeout for Responses WebSocket calls.
 - `OPENAI_WS_IDLE_TIMEOUT_SECONDS` (default `60`): how long a WS session can idle before the pool closes it.
 - `OPENAI_WS_DEBUG` (default `0`): set to `1` or `true` to log payload summaries/events during the WS workflow.
@@ -21,14 +22,48 @@ App defaults (can be added to settings or `.env`):
 - `LLM_TIMEOUT_SECONDS` (default: `60`)
 - `LLM_MAX_RETRIES` (default: `3`)
 
+## System context
+
+The UI and runner assemble a system prompt via `llm.system_context.build_system_context`. The builder always starts from the same kernel (base operating rules) and layers in a role overlay, runtime facts, and any trimmed `agent.soul` text so the model stays grounded.
+
+- **Role overlay**: The agent's gerund role (`planning`, `coding`, `assisting`, or `researching`) inserts a short directive set (e.g., planning focuses on structured checkpoints while assisting emphasizes concise answers). The overlay nudges reasoning style and tool usage before runtime details.
+- **Runtime facts**: A dedicated section reports the model, transport (`http` or `ws`), and up to 12 tool names (with "+N more" when there are additional tools). These lines are presented as mandatory context rather than optional notes.
+- **Policy=react**: If `policy_name.lower()` equals `react`, the builder inserts the full ReAct guidance (reason step-by-step, call tools if needed, wait for results, and only reply once the task is complete). Other policy names do not add policy text.
+- **Agent soul**: Any text stored in `agent.soul` is truncated to roughly 450 characters and appended as "Agent-specific instructions," keeping the custom prompt short.
+
+Example output delivered to the model:
+
+```
+You are Maestro, an AI agent operating inside the AgentMaestro orchestration platform.
+...
+Role: coding
+- Produce correct, runnable code with minimal surprises.
+...
+Runtime:
+- Model: gpt-5-mini
+- Transport: ws
+- Tools available: toolrunner.execute, files.read, web.search
+```
+
+## Policies
+
+`policy_name` is metadata you store with each agent that points at an `LLMModelProfile`. The UI shows `Policy: react` by default; when that policy is selected, the system context builder injects the full ReAct policy text described above. Other policy names still influence the model, temperature, and extras defined in their profile but do not append policy text. Policy definitions live in `backend/llm/policy.MD` (ReAct, Planner, Coder, etc.), and the system context explicitly tells the model where to find the file when a run starts.
+
+Common policies are simply the names of the profiles you seed in Django admin:
+
+- `react` (captures the ReAct guidance: think step-by-step, call tools when needed, wait for responses, and only reply once the task is complete).
+- `planner`, `coder`, `maestro`, `apprentice`, etc. - each points at a different `LLMModelProfile` (model, temperature, extras) and may represent a different reasoning or tool usage style. Create profiles for the behavior you need and reference them via `policy_name`.
+
+You can add new policies by creating `LLMModelProfile` rows with the desired name and settings; updating the agent's `policy_name` will cause the new instructions and model to be used on the next run.
+
 ## Models
+
+- Default agents can only select Responses API-compatible models: `gpt-5`, `gpt-5-mini`, `gpt-5-nano`, `gpt-5-reasoning`, `gpt-5-reasoning-mini`, `gpt-5-code`, `gpt-4.1`, `gpt-4.1-mini`, or `gpt-4.1-nano`.
 
 - `LLMModelProfile`: DB-configurable model/provider settings per agent (e.g., Maestro/Apprentice).
 - `LLMRun`: tracks each LLM execution, provider/model, status, usage.
 - `LLMMessage`: ordered message history.
 - `LLMToolCall`: captured tool invocations/results.
-
-Register profiles via Django admin (create “Maestro” and “Apprentice” with provider `openai` and the desired model name).
 
 ## Runner usage
 
@@ -85,14 +120,14 @@ python manage.py migrate llm
 
 ## Stage 2 WebSocket tool smoke
 
-Use these commands to exercise the Stage 2 WS tool loop end to end:
+The LLM app now runs against the HTTP/Responses transport by default, but these commands allow you to exercise the older websocket-based Stage 2 smoke path when you need to verify incremental tool-calling or session reuse.
 
 1. `powershell -Command "$env:OPENAI_TRANSPORT='ws'"` (or set the equivalent env variable for your shell).
 2. *(Optional)* `powershell -Command "$env:OPENAI_WS_DEBUG='1'"` to enable verbose WS payload/event logging.
 3. `python manage.py llm_responses_ws_smoke`
 4. `python manage.py llm_responses_ws_tool_smoke`
 
-The tool smoke command forces `OPENAI_TRANSPORT=ws`, calls `file_write` then the JSON-producing `shell_exec`, and asserts the run completed with at least two tool calls, final JSON list output, and a recorded `openai_response_id`. Afterward you can drop back to HTTP mode via `powershell -Command "$env:OPENAI_TRANSPORT='http'"` and rerun `python manage.py llm_toolloop_real_smoke` to confirm that transport still works.
+The tool smoke command forces `OPENAI_TRANSPORT=ws`, calls `file_write` then the JSON-producing `shell_exec`, and asserts the run completed with at least two tool calls, final JSON list output, and a recorded `openai_response_id`. Afterward reset the defaults (`OPENAI_TRANSPORT='http'` and `OPENAI_HTTP_MODE='responses'`) and rerun `python manage.py llm_toolloop_real_smoke` to confirm the HTTP mode still behaves as expected.
 
 ## Console stream
 

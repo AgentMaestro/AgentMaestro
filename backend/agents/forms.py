@@ -10,6 +10,7 @@ from django.db.models.query import QuerySet
 from core.models import Workspace
 
 from tools.models import ToolDefinition
+from .models import Agent
 
 
 class AgentBasicForm(forms.Form):
@@ -37,11 +38,20 @@ class AgentBasicForm(forms.Form):
 
 
 class AgentLLMForm(forms.Form):
-    default_model = forms.CharField(
-        max_length=80,
+    role = forms.ChoiceField(
+        choices=Agent.ROLE_CHOICES,
+        initial=Agent.DEFAULT_ROLE,
+        label="Role",
+        help_text="Choose the agent's primary role (used in system context).",
+    )
+    default_model = forms.ChoiceField(
+        choices=Agent.DEFAULT_MODEL_CHOICES,
+        initial=Agent.DEFAULT_MODEL,
         label="Default Model",
-        initial="gpt-5",
-        help_text="Specify the model name (e.g. gpt-5.1-mini).",
+        help_text=(
+            "Select the default model for this agent. "
+            f"Available: {', '.join(model for model, _ in Agent.DEFAULT_MODEL_CHOICES)}."
+        ),
     )
     temperature = forms.DecimalField(
         max_digits=4,
@@ -57,12 +67,6 @@ class AgentLLMForm(forms.Form):
         label="Policy Name",
         help_text="Policy name determines reasoning behavior (e.g. react, planner).",
     )
-    plan_enabled = forms.BooleanField(
-        required=False,
-        label="Enable planning",
-        help_text="Allow the agent to plan multi-step actions before executing.",
-    )
-
 
 class AgentToolsForm(forms.Form):
     def __init__(self, *args: Any, definitions: list[ToolDefinition], initial_tool_ids: list[str] | None = None, **kwargs: Any):

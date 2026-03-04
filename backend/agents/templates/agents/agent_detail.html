@@ -147,6 +147,9 @@
     .chat-messages article {
       margin-bottom: 0.75rem;
     }
+    .chat-message-out {
+      max-width: 85%;
+    }
 
     .chat-stream-subtitle {
       margin: 0;
@@ -323,7 +326,7 @@
       </div>
     </aside>
 
-    <section class="chat-stream" data-agent-chat data-agent-slug="{{ agent.slug }}" data-ws-url="{{ websocket_url }}">
+    <section class="chat-stream" data-agent-chat data-agent-slug="{{ agent.slug }}" data-agent-url="{{ request.path }}" data-agent-name="{{ agent.name }}" data-user-name="{{ user_name }}" data-ws-url="{{ websocket_url }}">
       <header class="chat-stream-header">
         <div>
           <h1>{{ agent.name }} Chat</h1>
@@ -334,9 +337,9 @@
         {% if owner_agents %}
           <div class="agent-switch">
             <label for="agent-switcher">Switch agent</label>
-            <select id="agent-switcher" onchange="if(this.value) window.location.href=this.value">
+            <select id="agent-switcher" data-agent-switcher onchange="if(this.value) window.location.href=this.value">
               {% for item in owner_agents %}
-                <option value="/agents/{{ item.slug }}/" {% if item.slug == agent.slug %}selected{% endif %}>
+                <option value="/agents/{{ item.slug }}/" data-agent-slug="{{ item.slug }}" {% if item.slug == agent.slug %}selected{% endif %}>
                   {{ item.name }}
                 </option>
               {% endfor %}

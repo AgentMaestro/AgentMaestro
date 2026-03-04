@@ -1,7 +1,7 @@
 import asyncio
 import json
 import logging
-from textwrap import shorten
+import os
 
 from asgiref.sync import sync_to_async
 from channels.db import database_sync_to_async
@@ -18,6 +18,7 @@ from llm.services.providers.openai_ws import (
     OpenAIResponsesWSPreviousResponseNotFound,
 )
 from llm.services.registry import get_client
+from llm.system_context import build_system_context
 from runs.models import AgentRun, AgentStep
 from runs.services.events import append_event
 from runs.services.steps import append_step
@@ -69,12 +70,12 @@ def _get_profile(policy_name: str | None) -> LLMModelProfile | None:
 
 @database_sync_to_async
 def _record_denied_tool_call(
-    *,
-    run_id: str,
-    tool_name: str,
-    args: dict[str, object],
-    provider_call_id: str,
-    reason: str,
+        *,
+        run_id: str,
+        tool_name: str,
+        args: dict[str, object],
+        provider_call_id: str,
+        reason: str,
 ) -> str:
     run = (
         AgentRun.objects.select_related("workspace")
@@ -151,15 +152,19 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
     session = None
     client = None
     run_id: str | None = None
+    model_name: str = ""
+    transport: str = "http"
+    use_ws: bool = False
     history: list[dict[str, str]] = []
     session_tools: list[dict[str, object]] = []
+    tool_definitions: list[dict[str, object]] = []
     run: AgentRun | None = None
     workspace_group: str | None = None
     approvals_group: str | None = None
     _tool_call_waiters: dict[str, asyncio.Future] = {}
+    _include_system_context = True
 
-    _include_system_context = False
-    async def _log_ws_traffic(self, label: str, data: object | None):
+    async def _log_transport_traffic(self, label: str, data: object | None):
         if not data:
             return
         try:
@@ -201,27 +206,46 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
         provider = profile.provider if profile else getattr(settings, "LLM_PROVIDER", "openai")
         model_name = profile.model if profile else agent.default_model
         self.client = get_client(provider)
+        self.model_name = model_name
+        self.transport = os.getenv(
+            "OPENAI_TRANSPORT", getattr(self.client, "transport", "http")
+        ).lower()
+        self.use_ws = self.transport == "ws"
         logger.info(
-            "Opening OpenAI WS session for agent=%s run=%s model=%s provider=%s",
+            "Opening OpenAI %s session for agent=%s run=%s model=%s provider=%s transport=%s",
+            "WS" if self.use_ws else "HTTP",
             agent.slug,
             self.run_id,
             model_name,
             provider,
+            self.transport,
         )
-        await self.client.cleanup_ws_sessions()
-        try:
-            self.session = await self.client.get_ws_session(self.run_id, model_name)
-        except Exception as exc:
-            logger.error("OpenAI WS session error for agent %s: %s", agent.slug, exc, exc_info=True)
-            await self.close(code=1011)
-            return
-        self.session_tools = []
-        logger.info(
-            "OpenAI WS session established for agent=%s run=%s model=%s",
-            agent.slug,
-            self.run_id,
-            model_name,
-        )
+        self.session = None
+        if self.use_ws:
+            await self.client.cleanup_ws_sessions()
+            try:
+                self.session = await self.client.get_ws_session(
+                    self.run_id, model_name, agent_id=str(agent.id)
+                )
+            except Exception as exc:
+                logger.error(
+                    "OpenAI WS session error for agent %s: %s", agent.slug, exc, exc_info=True
+                )
+                await self.close(code=1011)
+                return
+            logger.info(
+                "OpenAI WS session established for agent=%s run=%s model=%s",
+                agent.slug,
+                self.run_id,
+                model_name,
+            )
+        else:
+            logger.info(
+                "OpenAI HTTP transport ready for agent=%s run=%s model=%s",
+                agent.slug,
+                self.run_id,
+                model_name,
+            )
 
         effective_tools = await _get_effective_tools(agent, user)
         self.tools_meta = [
@@ -244,11 +268,22 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
                 }
             )
 
-        if tool_payloads:
+        self.tool_definitions = tool_payloads
+        if tool_payloads and self.use_ws:
             self.session_tools = self.client.format_tool_definitions_for_responses(tool_payloads)
+        else:
+            self.session_tools = []
 
+        tool_names = [
+            entry.get("name") for entry in self.tool_definitions if entry.get("name")
+        ]
         self.history = []
-        self.system_context = self._build_system_context(agent)
+        self.system_context = build_system_context(
+            agent,
+            model_name=model_name,
+            transport=self.transport,
+            tool_names=tool_names,
+        )
         if self.system_context:
             self.history.append({"role": "system", "content": self.system_context})
 
@@ -273,7 +308,8 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
                 "model": model_name,
             }
         )
-        system_detail = f"OpenAI WS connected ({model_name})"
+        transport_detail = "WS" if self.use_ws else "HTTP"
+        system_detail = f"OpenAI {transport_detail} connected ({model_name})"
         await self.send_json(
             {
                 "type": "system",
@@ -283,10 +319,10 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
         )
 
     async def disconnect(self, code):
-        if self.client and self.run_id:
+        if self.use_ws and self.client and self.run_id:
             agent_slug = self.agent.slug if self.agent else "unknown"
             try:
-                await self.client.close_ws_session(self.run_id)
+                await self.client.close_ws_session(self.run_id, model=self.model_name)
                 logger.info(
                     "Closed OpenAI WS session for agent=%s run=%s", agent_slug, self.run_id
                 )
@@ -317,7 +353,7 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
         if message_type == "tool_disconnect":
             user = self.scope.get("user")
             user_label = getattr(user, "username", "unknown")
-            await self._log_ws_traffic(
+            await self._log_transport_traffic(
                 "tool_disconnect",
                 {"user": user_label, "run_id": self.run_id, "agent": self.agent.slug if self.agent else "unknown"},
             )
@@ -349,76 +385,130 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
             return
 
     async def _dispatch_to_provider(self):
+        async with self._send_lock:
+            if self.use_ws:
+                await self._dispatch_to_provider_ws()
+            else:
+                await self._dispatch_to_provider_http()
+
+    async def _dispatch_to_provider_ws(self):
         if not self.session:
             return
-        async with self._send_lock:
-            tools = self.session_tools if self.session_tools else None
-            reconnect_attempts = 0
-            max_reconnects = 1
-            while True:
-                input_items = self._build_input_items()
-                response_payload = {
-                    "model": self.session.model if self.session else "unknown",
-                    "input": input_items,
-                }
-                if tools:
-                    response_payload["tools"] = tools
-                payload_snapshot: dict[str, object] = {
-                    "type": "response.create",
-                    "model": response_payload["model"],
-                    "store": False,
-                    "input": response_payload["input"],
-                }
-                if tools:
-                    payload_snapshot["tools"] = tools
-                previous_id = getattr(self.session, "previous_response_id", None)
-                if previous_id:
-                    payload_snapshot["previous_response_id"] = previous_id
-                await self._log_ws_traffic("WS Send", payload_snapshot)
-                try:
-                    response = await self.session.create_or_continue(
-                        input_items=input_items,
-                        tools=tools,
-                    )
-                    await self._log_ws_traffic(
-                        "WS Rcv",
-                        response.get("raw") if isinstance(response, dict) else response,
-                    )
-                except OpenAIResponsesWSPreviousResponseNotFound as exc:
-                    if self.session:
-                        self.session.previous_response_id = None
-                    await self._handle_ws_failure(exc, input_items, summary=True)
-                    if reconnect_attempts >= max_reconnects:
-                        await self._send_error_and_abort(exc)
-                        return
-                    reconnect_attempts += 1
-                    continue
-                except OpenAIResponsesWSException as exc:
-                    await self._handle_ws_failure(exc, input_items, summary=True)
-                    if reconnect_attempts >= max_reconnects:
-                        await self._send_error_and_abort(exc)
-                        return
-                    reconnect_attempts += 1
-                    continue
-
-                tool_calls = response.get("tool_calls") or []
-                if tool_calls:
-                    for call in tool_calls:
-                        await self._handle_tool_call(call)
-                    continue
-
-                assistant_text = response.get("text") or ""
-                if assistant_text:
-                    self.history.append({"role": "assistant", "content": assistant_text})
-                    await self.send_json(
-                        {
-                            "type": "message",
-                            "role": "assistant",
-                            "text": assistant_text,
-                            "timestamp": timezone.now().isoformat(),
-                        }
-                    )
+        tools = self.session_tools if self.session_tools else None
+        reconnect_attempts = 0
+        max_reconnects = 1
+        while True:
+            input_items = self._build_ws_input_items()
+            response_payload = {
+                "model": self.session.model if self.session else "unknown",
+                "input": input_items,
+            }
+            if tools:
+                response_payload["tools"] = tools
+            payload_snapshot: dict[str, object] = {
+                "type": "response.create",
+                "model": response_payload["model"],
+                "store": False,
+                "input": response_payload["input"],
+            }
+            if tools:
+                payload_snapshot["tools"] = tools
+            previous_id = getattr(self.session, "previous_response_id", None)
+            if previous_id:
+                payload_snapshot["previous_response_id"] = previous_id
+            await self._log_transport_traffic("WS Send", payload_snapshot)
+            try:
+                response = await self.session.create_or_continue(
+                    input_items=input_items,
+                    tools=tools,
+                )
+                await self._log_transport_traffic(
+                    "WS Rcv",
+                    response.get("raw") if isinstance(response, dict) else response,
+                )
+            except OpenAIResponsesWSPreviousResponseNotFound as exc:
+                if self.session:
+                    self.session.previous_response_id = None
+                await self._handle_ws_failure(exc, input_items, summary=True)
+                if reconnect_attempts >= max_reconnects:
+                    await self._send_error_and_abort(exc)
                     return
+                reconnect_attempts += 1
+                continue
+            except OpenAIResponsesWSException as exc:
+                await self._handle_ws_failure(exc, input_items, summary=True)
+                if reconnect_attempts >= max_reconnects:
+                    await self._send_error_and_abort(exc)
+                    return
+                reconnect_attempts += 1
+                continue
+
+            tool_calls = response.get("tool_calls") or []
+            if tool_calls:
+                for call in tool_calls:
+                    await self._handle_tool_call(call)
+                continue
+
+            assistant_text = response.get("text") or ""
+            if assistant_text:
+                self.history.append({"role": "assistant", "content": assistant_text})
+                await self.send_json(
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "text": assistant_text,
+                        "timestamp": timezone.now().isoformat(),
+                    }
+                )
+                return
+
+    async def _dispatch_to_provider_http(self):
+        tools = self.tool_definitions if self.tool_definitions else None
+        model = self.model_name or "unknown"
+        while True:
+            snapshot_messages = [
+                {"role": entry.get("role"), "content": (entry.get("content") or "")[:160]}
+                for entry in self.history[-4:]
+            ]
+            payload_snapshot: dict[str, object] = {"model": model, "messages": snapshot_messages}
+            if tools:
+                payload_snapshot["tools"] = [entry.get("name") for entry in tools if entry.get("name")]
+            await self._log_transport_traffic("HTTP SEND", payload_snapshot)
+            try:
+                response = await self.client.complete(
+                    self.history,
+                    model=model,
+                    tools=tools,
+                )
+            except Exception as exc:
+                await self._send_http_error(exc)
+                return
+            await self._log_transport_traffic(
+                "HTTP RCV",
+                {
+                    "model": model,
+                    "response_id": response.get("response_id"),
+                    "text": (response.get("text") or "")[:400],
+                },
+            )
+            tool_calls = response.get("tool_calls") or []
+            if tool_calls:
+                for call in tool_calls:
+                    await self._handle_tool_call(call)
+                continue
+
+            assistant_text = response.get("text") or ""
+            if assistant_text:
+                self.history.append({"role": "assistant", "content": assistant_text})
+                await self.send_json(
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "text": assistant_text,
+                        "timestamp": timezone.now().isoformat(),
+                    }
+                )
+                return
 
     async def _handle_tool_call(self, call: dict[str, object]):
         tool_name = (call.get("name") or "").strip()
@@ -478,7 +568,10 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
         result = await future
         tool_output = result.get("result") or {}
         tool_text = json.dumps(tool_output, ensure_ascii=False)
-        self.history.append({"role": "tool", "content": tool_text})
+        tool_entry: dict[str, object] = {"role": "tool", "content": tool_text}
+        if call_id:
+            tool_entry["tool_call_id"] = call_id
+        self.history.append(tool_entry)
         await self.send_json(
             {
                 "type": "tool_result",
@@ -552,14 +645,40 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
                 continue
             if role == "system" and not self._include_system_context:
                 continue
+            content_item = {"type": "output_text", "text": content} if role == "assistant" else {"type": "input_text",
+                                                                                                 "text": content}
             items.append(
                 {
                     "type": "message",
                     "role": role,
-                    "content": [{"type": "input_text", "text": content}],
+                    "content": [content_item],
                 }
             )
         return items
+
+    def _build_ws_input_items(self) -> list[dict[str, object]]:
+        previous_id = getattr(self.session, "previous_response_id", None)
+        if not previous_id:
+            return self._build_input_items()
+        last_user = self._last_user_message()
+        if last_user:
+            return [
+                {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": last_user}],
+                }
+            ]
+        return self._build_input_items()
+
+    def _last_user_message(self) -> str | None:
+        for entry in reversed(self.history):
+            if entry.get("role") != "user":
+                continue
+            content = (entry.get("content") or "").strip()
+            if content:
+                return content
+        return None
 
     def _summarize_input_items(self, input_items: list[dict[str, object]]) -> str:
         snippets: list[str] = []
@@ -580,11 +699,11 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
         return " | ".join(snippets) if snippets else "no input captured"
 
     async def _handle_ws_failure(
-        self,
-        exc: Exception,
-        input_items: list[dict[str, object]],
-        *,
-        summary: bool = False,
+            self,
+            exc: Exception,
+            input_items: list[dict[str, object]],
+            *,
+            summary: bool = False,
     ) -> None:
         summary_text = self._summarize_input_items(input_items) if summary else ""
         logger.warning(
@@ -619,18 +738,14 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
                 "timestamp": timezone.now().isoformat(),
             }
         )
-    SYSTEM_CONTEXT_LIMIT = 450
 
-    def _build_system_context(self, agent: Agent) -> str:
-        fragments = []
-        if agent.soul:
-            fragments.append(
-                shorten(
-                    " ".join(agent.soul.splitlines()),
-                    width=self.SYSTEM_CONTEXT_LIMIT,
-                    placeholder="…",
-                )
-            )
-        if agent.policy_name:
-            fragments.append(f"Policy: {agent.policy_name}.")
-        return " ".join(fragments).strip()
+    async def _send_http_error(self, exc: Exception) -> None:
+        logger.error("OpenAI HTTP call failed for run=%s agent=%s: %s", self.run_id,
+                     self.agent.slug if self.agent else "unknown", exc)
+        await self.send_json(
+            {
+                "type": "error",
+                "message": str(exc),
+                "timestamp": timezone.now().isoformat(),
+            }
+        )
