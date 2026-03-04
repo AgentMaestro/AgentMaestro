@@ -4,44 +4,54 @@
   <form method="post" action="?step={{ current_step }}">
     {% csrf_token %}
     <h2>Review &amp; Deploy</h2>
-    <div class="form-section">
-      <div>
+    <div class="review-grid">
+      <div class="review-card">
         <strong>Basics</strong>
-        <div class="steps-summary">
-          <p>Name: {{ review.basics.name }}</p>
-          {% if review.basics.name_conflict %}
-            <div class="helper warning">
-              Renamed to {{ review.basics.unique_name }} due to duplicate.
-            </div>
-          {% endif %}
-          {% if review.basics.description %}
-            <p>Description: {{ review.basics.description|linebreaksbr }}</p>
-          {% endif %}
-          {% if review.basics.soul %}
-            <p>Soul: {{ review.basics.soul|linebreaksbr }}</p>
-          {% endif %}
-        </div>
+          <div class="steps-summary">
+            <div class="review_step">Name: {{ review.basics.name }}</div>
+            {% if review.basics.name_conflict %}
+              <div class="helper warning">
+                Renamed to {{ review.basics.unique_name }} due to duplicate.
+              </div>
+            {% endif %}
+            {% if review.basics.description %}
+              <div class="review_step">Description: {{ review.basics.description|linebreaksbr }}</div>
+            {% endif %}
+            {% if review.basics.soul %}
+              <div class="review_step">Soul: {{ review.basics.soul|linebreaksbr }}</div>
+            {% endif %}
+            {% if review.basics.sandbox_paths %}
+              <div class="review_step">
+                Sandbox paths:
+                <ul class="review_sandbox_list">
+                  {% for path in review.basics.sandbox_paths %}
+                    <li>{{ path }}</li>
+                  {% endfor %}
+                </ul>
+              </div>
+            {% endif %}
+          </div>
       </div>
-      <div>
+      <div class="review-card">
         <strong>LLM Settings</strong>
         <div class="steps-summary">
-          <p>Model: {{ review.llm.default_model }}</p>
+          <div class="review_step">Model: {{ review.llm.default_model }}</div>
           {% if review.llm.temperature %}
-            <p>Temperature: {{ review.llm.temperature }}</p>
+            <div class="review_step">Temperature: {{ review.llm.temperature }}</div>
           {% endif %}
           {% if review.llm.policy_name %}
-            <p>Policy: {{ review.llm.policy_name }}</p>
+            <div class="review_step">Policy: {{ review.llm.policy_name }}</div>
           {% endif %}
-          <p>Plan enabled: {{ review.llm.plan_enabled|yesno:"Yes,No" }}</p>
+          <div class="review_step">Plan enabled: {{ review.llm.plan_enabled|yesno:"Yes,No" }}</div>
         </div>
       </div>
-      <div>
+      <div class="review-card">
         <strong>Tool Controls</strong>
         {% if review.tools %}
-          <div class="form-section">
+          <div class="review-tool-grid">
             {% for definition in review.tools %}
-              <div class="tool-row">
-                <div>
+              <div class="tool-card">
+                <div class="tool-card__info">
                   <strong>{{ definition.tool.tool_group.name }}</strong>
                   <p>{{ definition.tool.name }} — {{ definition.description|default:definition.tool.description }}</p>
                   <span class="risk-tag {{ definition.tool.risk|lower }}">{{ definition.tool.risk|title }}</span>
@@ -53,24 +63,25 @@
           <div class="helper">No tools have been granted yet.</div>
         {% endif %}
       </div>
-      <div>
+      <div class="review-card">
         <strong>Workspace</strong>
         <div class="steps-summary">
-          {% if review.workspace.workspace_id %}
-            Workspace ID: {{ review.workspace.workspace_id }}
-          {% endif %}
           {% if review.workspace.workspace_name %}
-            {% if review.workspace.workspace_id %}<br>{% endif %}
-            Workspace Name: {{ review.workspace.workspace_name }}
+            <div class="review_step">Workspace Name: {{ review.workspace.workspace_name }}</div>
+          {% endif %}
+          {% if review.workspace.workspace_id %}
+            <div class="review_step">Workspace ID: <span class="helper">{{ review.workspace.workspace_id }}</span></div>
           {% endif %}
         </div>
       </div>
       {% if owner_form %}
-        <div>
+        <div class="review-card">
           <strong>Owner</strong>
-          {{ owner_form.owner }}
-          {{ owner_form.owner.help_text }}
-          {{ owner_form.owner.errors }}
+          <div class="steps-summary">
+            {{ owner_form.owner }}
+            {{ owner_form.owner.help_text }}
+            {{ owner_form.owner.errors }}
+          </div>
         </div>
       {% endif %}
     </div>

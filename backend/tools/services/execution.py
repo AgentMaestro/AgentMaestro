@@ -5,6 +5,7 @@ import json
 import logging
 import time
 from hashlib import sha256
+from pathlib import Path
 
 import httpx
 from django.conf import settings
@@ -22,6 +23,97 @@ TOOL_CALL_COMPLETED_EVENT = "tool_call_completed"
 
 class ToolrunnerError(RuntimeError):
     pass
+
+_PATH_KEYWORDS = (
+    "path",
+    "paths",
+    "cwd",
+    "directory",
+    "dir",
+    "root",
+    "target",
+    "source",
+    "dest",
+    "destination",
+    "file",
+    "filename",
+    "repo",
+    "workspace",
+)
+
+
+def _collect_path_strings(payload: object | None) -> list[str]:
+    matches: list[str] = []
+
+    def _collect(value: object | None, key: str | None = None) -> None:
+        if isinstance(value, dict):
+            for sub_key, sub_value in value.items():
+                lower_key = (sub_key or "").lower()
+                if any(token in lower_key for token in _PATH_KEYWORDS):
+                    matches.extend(_extract_strings(sub_value))
+                _collect(sub_value, sub_key)
+        elif isinstance(value, (list, tuple, set)):
+            for item in value:
+                _collect(item, key)
+        elif isinstance(value, str) and key:
+            lower_key = key.lower()
+            if any(token in lower_key for token in _PATH_KEYWORDS):
+                matches.append(value)
+
+    def _extract_strings(value: object | None) -> list[str]:
+        if isinstance(value, str):
+            return [value]
+        if isinstance(value, (list, tuple, set)):
+            result: list[str] = []
+            for item in value:
+                result.extend(_extract_strings(item))
+            return result
+        if isinstance(value, dict):
+            result: list[str] = []
+            for sub_value in value.values():
+                result.extend(_extract_strings(sub_value))
+            return result
+        return []
+
+    _collect(payload)
+    return matches
+
+
+def _resolve_candidate_path(raw_path: str) -> Path | None:
+    try:
+        candidate = Path(raw_path)
+    except Exception:
+        return None
+    if not candidate.is_absolute():
+        candidate = Path(settings.BASE_DIR) / candidate
+    try:
+        return candidate.expanduser().resolve()
+    except Exception:
+        return None
+
+
+def _ensure_paths_within_sandbox(tool_call: ToolCall) -> None:
+    agent = getattr(tool_call.run, "agent", None)
+    if not agent:
+        return
+    allowed_roots = agent.get_sandbox_roots()
+    if not allowed_roots:
+        return
+    paths = _collect_path_strings(tool_call.args or {})
+    if not paths:
+        return
+    for raw_path in paths:
+        resolved = _resolve_candidate_path(raw_path)
+        if not resolved:
+            continue
+        for root in allowed_roots:
+            try:
+                if resolved == root or resolved.is_relative_to(root):
+                    break
+            except Exception:
+                continue
+        else:
+            raise ToolrunnerError(f"Path '{resolved}' is outside the agent sandbox")
 
 
 def _build_toolrunner_payload(tool_call: ToolCall, definition: ToolDefinition) -> tuple[bytes, dict]:
@@ -80,6 +172,7 @@ def execute_tool_call(tool_call_id: str) -> ToolCall:
         .select_related("run__workspace")
         .get(id=tool_call_id)
     )
+    _ensure_paths_within_sandbox(tool_call)
     if tool_call.status not in {ToolCall.Status.QUEUED, ToolCall.Status.RUNNING}:
         raise RuntimeError(f"Cannot execute tool call in status {tool_call.status}")
 

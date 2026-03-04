@@ -118,3 +118,10 @@ toolrunner/.agentmaestro/
 # Codex personal files
 # =========================================
 AGENTS.md
+
+
+# =========================================
+# Startup scripts may contain $env var's
+# ==========================================
+backend\scripts\runserver.ps1
+toolrunner\scripts\runtools.ps1

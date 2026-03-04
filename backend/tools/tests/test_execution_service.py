@@ -10,7 +10,7 @@ from core.models import Workspace, WorkspaceMembership
 from runs.models import AgentRun, AgentStep, RunEvent
 from core.services.limits import LimitExceeded
 from tools.models import ToolCall, ToolDefinition
-from tools.services.execution import execute_tool_call, TOOL_CALL_COMPLETED_EVENT
+from tools.services.execution import TOOL_CALL_COMPLETED_EVENT, ToolrunnerError, execute_tool_call
 from tools.services.quotas import release_tool_call_slots, acquire_tool_call_slots
 
 pytestmark = pytest.mark.django_db(transaction=True)
@@ -134,3 +134,17 @@ def test_execute_tool_call_respects_quota(monkeypatch):
             execute_tool_call(str(tool_call.id))
     finally:
         release_tool_call_slots(workspace_id, run_id, blocker)
+
+
+def test_execute_tool_call_enforces_agent_sandbox(monkeypatch, tmp_path):
+    tool_call = _build_test_run("sandbox")
+    agent = tool_call.run.agent
+    allowed_dir = tmp_path / "allowed"
+    blocked_dir = tmp_path / "blocked"
+    allowed_dir.mkdir()
+    blocked_dir.mkdir()
+    agent.sandbox_paths = [str(allowed_dir)]
+    agent.save()
+    tool_call.args["cwd"] = str(blocked_dir)
+    with pytest.raises(ToolrunnerError):
+        execute_tool_call(str(tool_call.id))

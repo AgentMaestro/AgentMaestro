@@ -11,6 +11,7 @@ from django.urls import reverse
 from django.views.decorators.http import require_http_methods
 
 from agents.current import agent_creation_context
+from agents.utils import build_transport_status, find_agent_telegram_endpoint
 from core.models import Workspace, WorkspaceMembership
 
 from .forms import (
@@ -21,7 +22,6 @@ from .forms import (
     AgentWorkspaceForm,
 )
 from .models import Agent
-from .utils import build_transport_status
 from tools.models import AgentToolGrant, ToolDefinition
 from tools.policy import RISK_ORDER, get_effective_tools, visible_tools_for_user
 
@@ -106,6 +106,9 @@ def _step_form(step: dict[str, object], request, session_data: dict[str, object]
         else:
             initial_tool_ids = [str(definition.tool_id) for definition in definitions]
         return AgentToolsForm(definitions=definitions, initial_tool_ids=initial_tool_ids)
+    if step["key"] == "basics":
+        initial = dict(initial)
+        initial["sandbox_paths"] = _format_sandbox_initial(initial.get("sandbox_paths"))
     return form_class(initial=initial)
 
 
@@ -123,6 +126,29 @@ def _normalize_for_session(value: object) -> object:
     if isinstance(value, list):
         return [_normalize_for_session(v) for v in value]
     return value
+
+
+def _format_sandbox_initial(value: object | None) -> str:
+    if isinstance(value, list):
+        return "\n".join(str(item) for item in value if item)
+    if isinstance(value, str):
+        return value
+    return ""
+
+
+def _parse_sandbox_paths(raw: object | None) -> list[str]:
+    if raw is None:
+        return []
+    if isinstance(raw, list):
+        candidates = raw
+    else:
+        candidates = str(raw).splitlines()
+    sanitized: list[str] = []
+    for item in candidates:
+        candidate = str(item).strip()
+        if candidate:
+            sanitized.append(candidate)
+    return sanitized
 
 
 def _workspace_from_payload(payload: dict[str, object], create: bool = False) -> Workspace | None:
@@ -195,6 +221,7 @@ def _selected_tool_definitions(session_data: dict[str, object], user) -> list[To
 def _build_review_context(session_data: dict[str, object], user) -> dict[str, object]:
     tools = _selected_tool_definitions(session_data, user)
     basics = dict(session_data.get("basics", {}))
+    basics.setdefault("sandbox_paths", [])
     name = basics.get("name", "")
     if name:
         unique_name = Agent.generate_unique_name(name)
@@ -242,6 +269,8 @@ def agent_create_wizard(request):
                     "workspace_id": str(workspace.id) if workspace else None,
                     "workspace_name": workspace_name,
                 }
+            if step_def["key"] == "basics":
+                cleaned["sandbox_paths"] = _parse_sandbox_paths(cleaned.get("sandbox_paths"))
             _save_step_data(request, step_def["key"], cleaned)
             if step == len(STEPS):
                 return _complete_wizard(request, session_data, owner_form)
@@ -297,6 +326,7 @@ def _complete_wizard(request, session_data: dict[str, object], owner_form: forms
             policy_name=llm.get("policy_name", "react"),
             plan_enabled=llm.get("plan_enabled", False),
             tool_policy_json={"selected_tools": [definition.tool.name for definition in tools]},
+            sandbox_paths=basics.get("sandbox_paths", []),
             owner=owner or request.user,
         )
     _create_tool_grants(agent, workspace, session_data)
@@ -325,15 +355,28 @@ def agent_detail(request, slug: str):
     if not _can_access_agent(request.user, agent):
         raise PermissionDenied("Workspace access required to view this agent.")
 
+    owner_agents = []
+    if request.user.is_active and request.user.is_authenticated and request.user.id == agent.owner_id:
+        owner_agents = (
+            Agent.objects.filter(owner=request.user)
+            .order_by("name")
+            .values("name", "slug")
+        )
+
     effective_tools = get_effective_tools(agent, request.user)
     context = {
         "agent": agent,
         "workspace": agent.workspace,
         "tool_count": len(effective_tools),
         "tools": _serialize_effective_tools(effective_tools),
-        "transport_status": build_transport_status(agent),
+        "owner_agents": list(owner_agents),
         "websocket_url": f"/ws/agents/{agent.slug}/chat/",
+        "sandbox_paths": agent.sandbox_paths or [],
+        "telegram_status": None,
     }
+    telegram_endpoint = find_agent_telegram_endpoint(agent)
+    if telegram_endpoint:
+        context["telegram_status"] = build_transport_status(agent, telegram_endpoint)
     return render(request, "agents/agent_detail.html", context)
 
 

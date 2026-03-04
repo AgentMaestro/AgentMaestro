@@ -29,7 +29,7 @@ def build_transport_status(agent, endpoint: TransportEndpoint | None = None) -> 
     if not endpoint:
         endpoint = find_agent_telegram_endpoint(agent)
     connected = False
-    detail = "Telegram bot is not configured for this agent."
+    detail = None
     if endpoint and endpoint.config:
         connected = True
         config = endpoint.config

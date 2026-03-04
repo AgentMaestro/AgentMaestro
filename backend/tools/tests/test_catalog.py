@@ -3,12 +3,14 @@ from django.test import TestCase
 
 from tools.models import Tool, ToolGroup, ToolRisk
 from tools.policy import visible_tools_for_user
+from tools.registry import TOOL_REGISTRY
 
 
 class ToolCatalogTests(TestCase):
     def test_seed_tools_creates_catalog_entries(self):
         call_command("seed_tools")
-        group = ToolGroup.objects.filter(name="File Operations").first()
+        group_name = TOOL_REGISTRY[0]["name"]
+        group = ToolGroup.objects.filter(name=group_name).first()
         self.assertIsNotNone(group)
         tool = Tool.objects.filter(name="file_read").first()
         self.assertIsNotNone(tool)

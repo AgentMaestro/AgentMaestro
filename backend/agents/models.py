@@ -1,4 +1,5 @@
 import uuid
+from pathlib import Path
 
 from django.conf import settings
 from django.contrib.auth import get_user_model
@@ -28,10 +29,11 @@ class Agent(TimeStampedModel):
     description = models.TextField(blank=True, default="")
     default_model = models.CharField(max_length=80, default="gpt-5")
     temperature = models.DecimalField(max_digits=4, decimal_places=2, default=0.70)
-    soul = models.TextField()
+    soul = models.TextField(blank=True, default="")
     policy_name = models.CharField(max_length=32, default="react")
     plan_enabled = models.BooleanField(default=False)
     tool_policy_json = models.JSONField(default=dict, blank=True)
+    sandbox_paths = models.JSONField(default=list, blank=True)
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.SET_NULL,
@@ -62,6 +64,29 @@ class Agent(TimeStampedModel):
 
     def __str__(self):
         return f"{self.workspace}:{self.name}"
+
+    def get_sandbox_roots(self) -> tuple[Path, ...]:
+        raw_paths = self.sandbox_paths or []
+        roots: list[Path] = []
+        seen: set[Path] = set()
+        for raw in raw_paths:
+            if not raw:
+                continue
+            try:
+                candidate = Path(str(raw)).expanduser()
+            except Exception:
+                continue
+            if not candidate.is_absolute():
+                candidate = Path(settings.BASE_DIR) / candidate
+            try:
+                normalized = candidate.resolve()
+            except OSError:
+                continue
+            if normalized in seen:
+                continue
+            seen.add(normalized)
+            roots.append(normalized)
+        return tuple(roots)
 
     @classmethod
     def generate_unique_name(cls, base_name: str, exclude_pk=None) -> str:

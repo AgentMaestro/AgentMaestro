@@ -8,7 +8,7 @@
   const messagesEl = shell.querySelector("[data-chat-messages]");
   const form = shell.querySelector("[data-chat-form]");
   const textarea = shell.querySelector("[data-chat-input]");
-  const reconnectBtn = shell.querySelector("[data-reconnect-btn]");
+  const connectionActionBtn = shell.querySelector("[data-connection-action]");
   const toolPanel = shell.querySelector("[data-tool-requests]");
   const wsUrl = shell.dataset.wsUrl;
   const toolPlaceholder = toolPanel?.querySelector(".tool-request-empty");
@@ -24,9 +24,40 @@
     }
   };
 
+  let isConnected = false;
+
+  const updateConnectionAction = (connected) => {
+    if (!connectionActionBtn) {
+      return;
+    }
+    connectionActionBtn.classList.remove("success", "danger", "hidden");
+    if (connected) {
+      connectionActionBtn.textContent = "Disconnect";
+      connectionActionBtn.classList.add("danger");
+    } else {
+      connectionActionBtn.textContent = "Connect";
+      connectionActionBtn.classList.add("success");
+    }
+  };
+
+  const appendSystemMessage = (text) => {
+    appendMessage({
+      role: "system",
+      direction: "in",
+      text,
+      timestamp: new Date().toISOString(),
+    });
+  };
+
   const setStatus = (text) => {
     if (statusEl) {
       statusEl.textContent = text;
+    }
+    isConnected = text === "Connected";
+    updateConnectionAction(isConnected);
+    if (statusEl) {
+      statusEl.classList.toggle("connected", text === "Connected");
+      statusEl.classList.toggle("disconnected", text === "Disconnected");
     }
   };
 
@@ -212,13 +243,14 @@
     let payload;
     try {
       payload = JSON.parse(event.data);
+      console.log(payload);
     } catch (error) {
       console.warn("Unable to parse agent chat payload", error);
       return;
     }
     switch (payload.type) {
       case "connected":
-        setStatus(payload.transport_status?.detail || "Connected");
+        setStatus("Connected");
         if (textarea) {
           textarea.removeAttribute("disabled");
         }
@@ -255,6 +287,14 @@
         });
         setStatus("Error");
         return;
+      case "system":
+        appendMessage({
+          role: "system",
+          direction: "in",
+          text: payload.text || "",
+          timestamp: payload.timestamp,
+        });
+        return;
       default:
         return;
     }
@@ -269,6 +309,7 @@
     setStatus("Connecting…");
     const protocol = window.location.protocol === "https:" ? "wss" : "ws";
     const url = `${protocol}://${window.location.host}${wsUrl}`;
+    console.log("WS url = ", url);
     socket = new WebSocket(url);
     socket.addEventListener("open", () => {
       setStatus("Connected");
@@ -277,12 +318,16 @@
       }
     });
     socket.addEventListener("message", handleSocketMessage);
-    socket.addEventListener("close", () => {
-      setStatus("Disconnected");
-      if (textarea) {
-        textarea.setAttribute("disabled", "true");
-      }
-    });
+      socket.addEventListener("close", () => {
+        const wasConnected = isConnected;
+        setStatus("Disconnected");
+        if (textarea) {
+          textarea.setAttribute("disabled", "true");
+        }
+        if (wasConnected) {
+          appendSystemMessage("Disconnected from the agent");
+        }
+      });
     socket.addEventListener("error", () => {
       setStatus("Connection error");
     });
@@ -314,8 +359,19 @@
     sendMessage();
   });
 
-  reconnectBtn?.addEventListener("click", () => {
-    connect();
+  connectionActionBtn?.addEventListener("click", () => {
+    if (isConnected) {
+      socket?.close();
+    } else {
+      connect();
+    }
+  });
+
+  textarea?.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" && !event.shiftKey) {
+      event.preventDefault();
+      sendMessage();
+    }
   });
 
   window.addEventListener("beforeunload", () => {

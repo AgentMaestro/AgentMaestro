@@ -13,8 +13,6 @@ websocket_urlpatterns = [
     # Per-run stream (run detail page)
     re_path(r"^ws/ui/run/(?P<run_id>[0-9a-fA-F-]+)/$", consumers.RunConsumer.as_asgi()),
     # Agent detail chat (allows optional leading slash)
-    re_path(
-        r"^/?ws/agents/(?P<slug>[-\\w]+)/chat/$",
-        AgentChatConsumer.as_asgi(),
+    re_path(r"^ws/agents/(?P<slug>[-\w]+)/chat/$", AgentChatConsumer.as_asgi(),
     ),
 ]

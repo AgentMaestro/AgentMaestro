@@ -19,7 +19,7 @@ class ToolAdmin(admin.ModelAdmin):
 
 @admin.register(ToolDefinition)
 class ToolDefinitionAdmin(admin.ModelAdmin):
-    list_display = ("tool", "workspace", "default_risk_level", "enabled")
+    list_display = ("tool", "description", "workspace", "default_risk_level", "enabled", "default_requires_approval")
     list_filter = ("workspace", "default_risk_level", "enabled")
     search_fields = ("tool__name", "workspace__name")
 

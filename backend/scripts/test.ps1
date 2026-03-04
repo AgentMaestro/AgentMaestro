@@ -3,6 +3,7 @@ param(
   [string[]]$Args
 )
 
+
 $tempRoot = "C:\Dev\AgentMaestro\backend\pytest_temp"
 $baseTemp = $tempRoot
 
@@ -13,13 +14,21 @@ if (Test-Path $baseTemp) { Remove-Item -Recurse -Force $baseTemp -ErrorAction Si
 New-Item -ItemType Directory -Force $baseTemp | Out-Null
 
 
+
+# ------------------------------------------------------------------------------------------------------
+
 # Pre-delete workspace test path if it exists
 $testPath = "C:\tmp\agentmaestro\sandbox\pytest_temp"
 if (Test-Path $testPath) { Remove-Item -Recurse -Force $testPath -ErrorAction SilentlyContinue }
 
 # Pre-delete other test folders
-$test1Path = "C:\Dev\AgentMaestro\backtest\.pytest-temp"
+$test1Path = "C:\Dev\AgentMaestro\backend\.pytest-temp"
 if (Test-Path $test1Path) { Remove-Item -Recurse -Force $test1Path -ErrorAction SilentlyContinue }
+
+$test2Path = "C:\Dev\AgentMaestro\backend\DevAgentMaestrobackendpytest_temp"
+if (Test-Path $test2Path) { Remove-Item -Recurse -Force $test2Path -ErrorAction SilentlyContinue }
+
+# -------------------------------------------------------------------------------------------------------
 
 $env:TMP = $tempRoot
 $env:TEMP = $tempRoot

@@ -4,7 +4,7 @@ from .models import LLMModelProfile, LLMRun, LLMMessage, LLMToolCall
 
 @admin.register(LLMModelProfile)
 class LLMModelProfileAdmin(admin.ModelAdmin):
-    list_display = ("name", "agent_role", "provider", "model", "is_active", "updated_at")
+    list_display = ("name", "agent_role", "provider", "model", "temperature", "is_active", "updated_at")
     list_filter = ("provider", "agent_role", "is_active")
     search_fields = ("name", "model")
 

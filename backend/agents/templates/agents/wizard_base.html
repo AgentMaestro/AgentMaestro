@@ -10,6 +10,7 @@
       background: #f5f7fa;
       margin: 0;
       padding: 0;
+      line-height: 1.4;
     }
 
     .wizard-shell {
@@ -68,6 +69,7 @@
       padding: 10px 12px;
       font-size: 1rem;
       font-family: inherit;
+      box-sizing: border-box;
     }
 
     textarea {
@@ -167,6 +169,79 @@
 
     .tool-card__toggle label {
       font-weight: 600;
+    }
+
+    .review-grid {
+      display: grid;
+      gap: 8px;
+    }
+
+    .review-card {
+      border: 1px solid #e4e9f2;
+      border-radius: 12px;
+      background: #ffffff;
+      padding: 8px 12px;
+      box-shadow: 0 4px 16px rgba(15, 23, 42, 0.08);
+    }
+
+    .review-card strong {
+      display: block;
+      margin-bottom: 2px;
+      font-size: 0.95rem;
+    }
+
+    .review-card .steps-summary {
+      background: #f8f9ff;
+      border-radius: 10px;
+      padding: 4px 8px;
+      border: 1px solid #e4e9f2;
+      font-family: inherit;
+      margin-top: 3px;
+      white-space: normal;
+    }
+
+    .review-card .steps-summary .review_step {
+      margin: 1px 0;
+      line-height: 1.25;
+    }
+
+    .review_sandbox_list {
+      margin: 2px 0 0;
+      padding-left: 1.25rem;
+      color: #1f2937;
+    }
+
+    .review_step {
+      margin: 1px 0;
+      line-height: 1.25;
+    }
+
+    .review-card select {
+      padding: 6px 8px;
+      font-size: 0.9rem;
+    }
+
+    .helper {
+      margin-top: 2px;
+    }
+
+    .review-tool-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 12px;
+      margin-top: 12px;
+    }
+
+    @media (max-width: 1000px) {
+      .review-tool-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+    }
+
+    @media (max-width: 700px) {
+      .review-tool-grid {
+        grid-template-columns: 1fr;
+      }
     }
 
     .tool-card__toggle input {

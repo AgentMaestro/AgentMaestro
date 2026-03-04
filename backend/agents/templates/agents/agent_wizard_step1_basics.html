@@ -28,6 +28,14 @@
         {% endif %}
         {{ form.soul.errors }}
       </div>
+      <div>
+        {{ form.sandbox_paths.label_tag }}
+        {{ form.sandbox_paths }}
+        {% if form.sandbox_paths.help_text %}
+          <div class="helper">{{ form.sandbox_paths.help_text }}</div>
+        {% endif %}
+        {{ form.sandbox_paths.errors }}
+      </div>
     </div>
     <div style="margin-top: 24px;">
       <button type="submit" class="primary">Next step</button>

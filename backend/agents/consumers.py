@@ -1,5 +1,7 @@
 import asyncio
 import json
+import logging
+from textwrap import shorten
 
 from asgiref.sync import sync_to_async
 from channels.db import database_sync_to_async
@@ -11,6 +13,10 @@ from agents.models import Agent
 from agents.utils import build_transport_status
 from core.models import WorkspaceMembership
 from llm.models import LLMModelProfile
+from llm.services.providers.openai_ws import (
+    OpenAIResponsesWSException,
+    OpenAIResponsesWSPreviousResponseNotFound,
+)
 from llm.services.registry import get_client
 from runs.models import AgentRun, AgentStep
 from runs.services.events import append_event
@@ -24,6 +30,8 @@ from tools.services.approvals import (
     TOOL_CALL_DENIED_EVENT,
     TOOL_CALL_STATUS_EVENT,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def _run_group(run_id: str) -> str:
@@ -110,6 +118,34 @@ def _update_provider_metadata(tool_call_id: str, call_id: str) -> None:
     ToolCall.objects.filter(id=tool_call_id).update(provider_call_id=call_id)
 
 
+@database_sync_to_async
+def _assert_tool_allowed(agent: Agent, user, tool_name: str):
+    return assert_tool_allowed(agent, user, tool_name)
+
+
+@database_sync_to_async
+def _create_agent_run(agent: Agent, user, started_at: timezone.datetime):
+    return AgentRun.objects.create(
+        workspace=agent.workspace,
+        agent=agent,
+        started_by=user,
+        status=AgentRun.Status.RUNNING,
+        channel=AgentRun.Channel.DASHBOARD,
+        started_at=started_at,
+        input_text="",
+    )
+
+
+@database_sync_to_async
+def _build_transport_status(agent: Agent):
+    return build_transport_status(agent)
+
+
+@database_sync_to_async
+def _get_effective_tools(agent: Agent, user):
+    return get_effective_tools(agent, user)
+
+
 class AgentChatConsumer(AsyncJsonWebsocketConsumer):
     agent: Agent | None = None
     session = None
@@ -121,6 +157,22 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
     workspace_group: str | None = None
     approvals_group: str | None = None
     _tool_call_waiters: dict[str, asyncio.Future] = {}
+
+    _include_system_context = False
+    async def _log_ws_traffic(self, label: str, data: object | None):
+        if not data:
+            return
+        try:
+            payload_text = json.dumps(data, ensure_ascii=False, default=str)
+        except Exception:
+            payload_text = str(data)
+        await self.send_json(
+            {
+                "type": "system",
+                "text": f"[{label}] {payload_text}",
+                "timestamp": timezone.now().isoformat(),
+            }
+        )
 
     async def connect(self):
         user = self.scope.get("user")
@@ -142,26 +194,36 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
 
         self.agent = agent
         workspace_id = str(agent.workspace_id)
-        run = AgentRun.objects.create(
-            workspace=agent.workspace,
-            agent=agent,
-            started_by=user,
-            status=AgentRun.Status.RUNNING,
-            channel=AgentRun.Channel.DASHBOARD,
-            started_at=timezone.now(),
-            input_text="",
-        )
+        run = await _create_agent_run(agent, user, timezone.now())
         self.run = run
         self.run_id = str(run.id)
         profile = await _get_profile(agent.policy_name)
         provider = profile.provider if profile else getattr(settings, "LLM_PROVIDER", "openai")
         model_name = profile.model if profile else agent.default_model
         self.client = get_client(provider)
+        logger.info(
+            "Opening OpenAI WS session for agent=%s run=%s model=%s provider=%s",
+            agent.slug,
+            self.run_id,
+            model_name,
+            provider,
+        )
         await self.client.cleanup_ws_sessions()
-        self.session = await self.client.get_ws_session(self.run_id, model_name)
+        try:
+            self.session = await self.client.get_ws_session(self.run_id, model_name)
+        except Exception as exc:
+            logger.error("OpenAI WS session error for agent %s: %s", agent.slug, exc, exc_info=True)
+            await self.close(code=1011)
+            return
         self.session_tools = []
+        logger.info(
+            "OpenAI WS session established for agent=%s run=%s model=%s",
+            agent.slug,
+            self.run_id,
+            model_name,
+        )
 
-        effective_tools = get_effective_tools(agent, user)
+        effective_tools = await _get_effective_tools(agent, user)
         self.tools_meta = [
             {
                 "name": entry.tool.name,
@@ -201,22 +263,41 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
             await channel_layer.group_add(approvals_group, self.channel_name)
             self.workspace_group = run_group
             self.approvals_group = approvals_group
+        transport_status = await _build_transport_status(agent)
         await self.send_json(
             {
                 "type": "connected",
                 "system_context": self.system_context or "",
                 "tools": self.tools_meta,
-                "transport_status": build_transport_status(agent),
+                "transport_status": transport_status,
                 "model": model_name,
+            }
+        )
+        system_detail = f"OpenAI WS connected ({model_name})"
+        await self.send_json(
+            {
+                "type": "system",
+                "text": system_detail,
+                "timestamp": timezone.now().isoformat(),
             }
         )
 
     async def disconnect(self, code):
         if self.client and self.run_id:
+            agent_slug = self.agent.slug if self.agent else "unknown"
             try:
                 await self.client.close_ws_session(self.run_id)
-            except Exception:
-                pass
+                logger.info(
+                    "Closed OpenAI WS session for agent=%s run=%s", agent_slug, self.run_id
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Failed to close OpenAI WS session for agent=%s run=%s: %s",
+                    agent_slug,
+                    self.run_id,
+                    exc,
+                    exc_info=True,
+                )
         channel_layer = self.channel_layer
         if channel_layer:
             if self.workspace_group:
@@ -232,6 +313,24 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
                 return
             self.history.append({"role": "user", "content": text})
             await self._dispatch_to_provider()
+            return
+        if message_type == "tool_disconnect":
+            user = self.scope.get("user")
+            user_label = getattr(user, "username", "unknown")
+            await self._log_ws_traffic(
+                "tool_disconnect",
+                {"user": user_label, "run_id": self.run_id, "agent": self.agent.slug if self.agent else "unknown"},
+            )
+            await self.send_json(
+                {
+                    "type": "system",
+                    "text": f"Disconnect requested by {user_label}. Closing OpenAI session.",
+                    "timestamp": timezone.now().isoformat(),
+                }
+            )
+            logger.info("Disconnect requested via WS for agent=%s run=%s", user_label, self.run_id)
+            # TODO: integrate tool_disconnect events with the approvals/channel layer if needed.
+            await self.close(code=1000)
             return
         if message_type == "tool_approve":
             tool_call_id = content.get("tool_call_id")
@@ -254,22 +353,53 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
             return
         async with self._send_lock:
             tools = self.session_tools if self.session_tools else None
+            reconnect_attempts = 0
+            max_reconnects = 1
             while True:
                 input_items = self._build_input_items()
+                response_payload = {
+                    "model": self.session.model if self.session else "unknown",
+                    "input": input_items,
+                }
+                if tools:
+                    response_payload["tools"] = tools
+                payload_snapshot: dict[str, object] = {
+                    "type": "response.create",
+                    "model": response_payload["model"],
+                    "store": False,
+                    "input": response_payload["input"],
+                }
+                if tools:
+                    payload_snapshot["tools"] = tools
+                previous_id = getattr(self.session, "previous_response_id", None)
+                if previous_id:
+                    payload_snapshot["previous_response_id"] = previous_id
+                await self._log_ws_traffic("WS Send", payload_snapshot)
                 try:
                     response = await self.session.create_or_continue(
                         input_items=input_items,
                         tools=tools,
                     )
-                except Exception as exc:
-                    await self.send_json(
-                        {
-                            "type": "error",
-                            "message": str(exc),
-                            "timestamp": timezone.now().isoformat(),
-                        }
+                    await self._log_ws_traffic(
+                        "WS Rcv",
+                        response.get("raw") if isinstance(response, dict) else response,
                     )
-                    return
+                except OpenAIResponsesWSPreviousResponseNotFound as exc:
+                    if self.session:
+                        self.session.previous_response_id = None
+                    await self._handle_ws_failure(exc, input_items, summary=True)
+                    if reconnect_attempts >= max_reconnects:
+                        await self._send_error_and_abort(exc)
+                        return
+                    reconnect_attempts += 1
+                    continue
+                except OpenAIResponsesWSException as exc:
+                    await self._handle_ws_failure(exc, input_items, summary=True)
+                    if reconnect_attempts >= max_reconnects:
+                        await self._send_error_and_abort(exc)
+                        return
+                    reconnect_attempts += 1
+                    continue
 
                 tool_calls = response.get("tool_calls") or []
                 if tool_calls:
@@ -288,7 +418,7 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
                             "timestamp": timezone.now().isoformat(),
                         }
                     )
-                break
+                    return
 
     async def _handle_tool_call(self, call: dict[str, object]):
         tool_name = (call.get("name") or "").strip()
@@ -304,7 +434,7 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
         call_id = str(call.get("call_id") or call.get("id") or call.get("tool_call_id") or "")
         args = self._parse_tool_args(call.get("arguments"))
         try:
-            entry = self._find_effective_tool(tool_name)
+            entry = await self._find_effective_tool(tool_name)
         except ToolNotAllowedError as exc:
             denied_id = await _record_denied_tool_call(
                 run_id=str(self.run_id),
@@ -373,10 +503,10 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
                 return {"raw": payload}
         return {"value": payload}
 
-    def _find_effective_tool(self, tool_name: str):
+    async def _find_effective_tool(self, tool_name: str):
         agent = self.agent
         user = self.scope.get("user")
-        return assert_tool_allowed(agent, user, tool_name)
+        return await _assert_tool_allowed(agent, user, tool_name)
 
     async def push(self, event: dict):
         payload = event.get("payload")
@@ -420,6 +550,8 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
             content = (entry.get("content") or "").strip()
             if not content or role not in {"system", "user", "assistant"}:
                 continue
+            if role == "system" and not self._include_system_context:
+                continue
             items.append(
                 {
                     "type": "message",
@@ -429,10 +561,76 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
             )
         return items
 
+    def _summarize_input_items(self, input_items: list[dict[str, object]]) -> str:
+        snippets: list[str] = []
+        for item in input_items[-3:]:
+            role = item.get("role")
+            content_items = item.get("content", [])
+            if isinstance(content_items, list):
+                text = " ".join(
+                    str(entry.get("text") or "")
+                    for entry in content_items
+                    if isinstance(entry, dict)
+                ).strip()
+            else:
+                text = str(content_items or "").strip()
+            if not text:
+                continue
+            snippets.append(f"{role}: {text}")
+        return " | ".join(snippets) if snippets else "no input captured"
+
+    async def _handle_ws_failure(
+        self,
+        exc: Exception,
+        input_items: list[dict[str, object]],
+        *,
+        summary: bool = False,
+    ) -> None:
+        summary_text = self._summarize_input_items(input_items) if summary else ""
+        logger.warning(
+            "OpenAI WS reconnect triggered run=%s agent=%s reason=%s summary=%s",
+            self.run_id,
+            self.agent.slug if self.agent else "unknown",
+            exc,
+            summary_text,
+        )
+        await self.send_json(
+            {
+                "type": "system",
+                "text": f"OpenAI WS connection hiccup: {exc}. Reconnecting…",
+                "timestamp": timezone.now().isoformat(),
+            }
+        )
+        if summary_text:
+            await self.send_json(
+                {
+                    "type": "system",
+                    "text": f"Last context: {summary_text}",
+                    "timestamp": timezone.now().isoformat(),
+                }
+            )
+
+    async def _send_error_and_abort(self, exc: Exception) -> None:
+        logger.error("OpenAI WS giving up after retries for run=%s: %s", self.run_id, exc)
+        await self.send_json(
+            {
+                "type": "error",
+                "message": str(exc),
+                "timestamp": timezone.now().isoformat(),
+            }
+        )
+    SYSTEM_CONTEXT_LIMIT = 450
+
     def _build_system_context(self, agent: Agent) -> str:
         fragments = []
         if agent.soul:
-            fragments.append(agent.soul.strip())
+            fragments.append(
+                shorten(
+                    " ".join(agent.soul.splitlines()),
+                    width=self.SYSTEM_CONTEXT_LIMIT,
+                    placeholder="…",
+                )
+            )
         if agent.policy_name:
             fragments.append(f"Policy: {agent.policy_name}.")
         return " ".join(fragments).strip()

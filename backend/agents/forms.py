@@ -28,6 +28,12 @@ class AgentBasicForm(forms.Form):
         label="Soul",
         help_text="Define how the agent should act, react, and behave.",
     )
+    sandbox_paths = forms.CharField(
+        required=False,
+        widget=forms.Textarea(attrs={"rows": 3}),
+        label="Sandbox paths",
+        help_text="Supply newline-separated paths that the agent is allowed to access.",
+    )
 
 
 class AgentLLMForm(forms.Form):

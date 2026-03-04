@@ -188,10 +188,10 @@ CELERY_BEAT_SCHEDULE = {
         "task": "runs.tasks.archive_completed_runs",
         "schedule": timedelta(hours=ARCHIVE_INTERVAL_HOURS),
     },
-    "comms.telegram_poll_scheduler": {
-        "task": "comms.tasks.telegram_poll_scheduler",
-        "schedule": timedelta(seconds=TELEGRAM_POLL_INTERVAL_SECONDS),
-    },
+    #"comms.telegram_poll_scheduler": {
+    #    "task": "comms.tasks.telegram_poll_scheduler",
+    #    "schedule": timedelta(seconds=TELEGRAM_POLL_INTERVAL_SECONDS),
+    #},  TODO add back in telegram poll scheduler
 }
 
 # ToolRunner settings (new preferred names)
@@ -215,3 +215,9 @@ LLM_MAX_RETRIES = int(os.getenv("LLM_MAX_RETRIES", "3"))
 
 # OPENAI KEY
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+OPENAI_WS_DEBUG = os.getenv("OPENAI_WS_DEBUG", "1")
+OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL", "wss://api.openai.com/v1/responses")
+OPENAI_TRANSPORT = os.getenv("OPENAI_TRANSPORT", "http")
+OPENAI_WS_TIMEOUT_SECONDS = os.getenv("OPENAI_WS_TIMEOUT_SECONDS", "120")
+OPENAI_WS_IDLE_TIMEOUT_SECONDS = os.getenv("OPENAI_WS_IDLE_TIMEOUT_SECONDS", "1200")
+OPENAI_HTTP_MODE = os.getenv("OPENAI_HTTP_MODE", "responses")

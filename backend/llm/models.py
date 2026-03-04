@@ -6,6 +6,9 @@ from django.utils import timezone
 class AgentRole(models.TextChoices):
     PLANNER = "planner", "Planner"
     CODER = "coder", "Coder"
+    ASSISTANT = "assistant", "Assistant"
+    RESEARCHER = "researcher", "Researcher"
+    WRITER = "writer", "Writer"
     GENERIC = "generic", "Generic"
 
 
