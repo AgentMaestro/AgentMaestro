@@ -1,9 +1,12 @@
+import ast
+import json
 import uuid
 from pathlib import Path
 
+from django.apps import apps
 from django.conf import settings
 from django.contrib.auth import get_user_model
-from django.db import models
+from django.db import models, OperationalError
 from django.utils.text import slugify
 
 from agents.current import get_current_agent_creator
@@ -18,12 +21,23 @@ class Agent(TimeStampedModel):
     VALID_ROLES = set(ROLE_ORDER)
 
     DEFAULT_MODEL_ORDER = (
+        "gpt-5.2",
+        "gpt-5.2-2025-12-11",
+        "gpt-5.2-chat-latest",
+        "gpt-5.2-pro",
+        "gpt-5.2-pro-2025-12-11",
+        "gpt-5.1",
+        "gpt-5.1-2025-11-13",
+        "gpt-5.1-codex",
+        "gpt-5.1-mini",
+        "gpt-5.1-chat-latest",
         "gpt-5",
         "gpt-5-mini",
         "gpt-5-nano",
-        "gpt-5-reasoning",
-        "gpt-5-reasoning-mini",
-        "gpt-5-code",
+        "gpt-5-2025-08-07",
+        "gpt-5-mini-2025-08-07",
+        "gpt-5-nano-2025-08-07",
+        "gpt-5-chat-latest",
         "gpt-4.1",
         "gpt-4.1-mini",
         "gpt-4.1-nano",
@@ -47,7 +61,8 @@ class Agent(TimeStampedModel):
     slug = models.SlugField(max_length=SLUG_MAX_LENGTH, blank=True)
     description = models.TextField(blank=True, default="")
     default_model = models.CharField(
-        max_length=32, choices=DEFAULT_MODEL_CHOICES, default=DEFAULT_MODEL
+        max_length=32,
+        default=DEFAULT_MODEL,
     )
     temperature = models.DecimalField(max_digits=4, decimal_places=2, default=0.70)
     soul = models.TextField(blank=True, default="")
@@ -89,7 +104,7 @@ class Agent(TimeStampedModel):
         return f"{self.workspace}:{self.name}"
 
     def get_sandbox_roots(self) -> tuple[Path, ...]:
-        raw_paths = self.sandbox_paths or []
+        raw_paths = self._normalize_sandbox_paths(self.sandbox_paths)
         roots: list[Path] = []
         seen: set[Path] = set()
         for raw in raw_paths:
@@ -134,6 +149,7 @@ class Agent(TimeStampedModel):
     def save(self, *args, **kwargs):
         self.role = self._normalize_role(self.role)
         self.default_model = self._normalize_default_model(self.default_model)
+        self.sandbox_paths = self._normalize_sandbox_paths(self.sandbox_paths)
         self._ensure_owner()
         self._ensure_unique_name()
         if self._should_generate_slug():
@@ -187,6 +203,53 @@ class Agent(TimeStampedModel):
             slug = f"{base[:trim_length]}{suffix_value}"
             suffix += 1
 
+    @staticmethod
+    def _normalize_sandbox_paths(raw: object | None) -> list[str]:
+        def _expand_value(value: object | None) -> list[str]:
+            if value is None:
+                return []
+            if isinstance(value, (list, tuple, set)):
+                result: list[str] = []
+                for member in value:
+                    result.extend(_expand_value(member))
+                return result
+            if isinstance(value, dict):
+                if "sandbox_paths" in value:
+                    return _expand_value(value["sandbox_paths"])
+                if "paths" in value:
+                    return _expand_value(value["paths"])
+                result: list[str] = []
+                for member in value.values():
+                    result.extend(_expand_value(member))
+                return result
+            if isinstance(value, str):
+                candidate = value.strip()
+                if not candidate:
+                    return []
+                if (candidate.startswith("{") and candidate.endswith("}")) or (
+                    candidate.startswith("[") and candidate.endswith("]")
+                ):
+                    parsed = None
+                    try:
+                        parsed = json.loads(candidate)
+                    except Exception:
+                        try:
+                            parsed = ast.literal_eval(candidate)
+                        except Exception:
+                            parsed = None
+                    if parsed is not None:
+                        return _expand_value(parsed)
+                return [candidate]
+            return [str(value)]
+
+        candidates = _expand_value(raw)
+        sanitized: list[str] = []
+        for entry in candidates:
+            candidate = str(entry).strip()
+            if candidate:
+                sanitized.append(candidate)
+        return sanitized
+
     @classmethod
     def _normalize_role(cls, value: object | None) -> str:
         candidate = (str(value or "")).strip().lower()
@@ -194,5 +257,40 @@ class Agent(TimeStampedModel):
 
     @classmethod
     def _normalize_default_model(cls, value: object | None) -> str:
-        candidate = (str(value or "")).strip().lower()
-        return candidate if candidate in cls.VALID_DEFAULT_MODELS else cls.DEFAULT_MODEL
+        candidate = (str(value or "")).strip()
+        available = cls._get_available_model_set()
+        if candidate and candidate in available:
+            return candidate
+        return cls.DEFAULT_MODEL
+
+    @classmethod
+    def get_default_model_choices(cls) -> list[tuple[str, str]]:
+        names = cls._get_model_names_from_db()
+        if names:
+            return [(name, name) for name in names]
+        return list(cls.DEFAULT_MODEL_CHOICES)
+
+    @classmethod
+    def _get_available_model_set(cls) -> set[str]:
+        names = cls._get_model_names_from_db()
+        if names:
+            return set(names)
+        return cls.VALID_DEFAULT_MODELS
+
+    @classmethod
+    def _get_model_names_from_db(cls) -> list[str]:
+        try:
+            ModelsAvailable = apps.get_model("llm", "ModelsAvailable")
+        except LookupError:
+            return []
+        try:
+            queryset = (
+                ModelsAvailable.objects.filter(company__iexact="openai", api__iexact="responses")
+                .order_by("name")
+                .values_list("name", flat=True)
+            )
+        except OperationalError:
+            return []
+        except Exception:
+            return []
+        return [str(name) for name in queryset if name]

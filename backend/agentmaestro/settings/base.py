@@ -15,6 +15,8 @@ from pathlib import Path
 import os
 import dj_database_url
 
+from core.utils.redis_checks import validate_redis_db
+
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 
@@ -28,7 +30,7 @@ SECRET_KEY = os.getenv('DJANGO_SECRET_KEY', 'dev-secret-key')
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
-ALLOWED_HOSTS = ['http://127.0.0.1', 'localhost', '127.0.0.1', 'testserver']
+ALLOWED_HOSTS = ['localhost', '127.0.0.1']
 
 # Application definition
 
@@ -91,6 +93,7 @@ WSGI_APPLICATION = 'agentmaestro.wsgi.application'
 ASGI_APPLICATION = 'agentmaestro.asgi.application'
 
 CHANNEL_LAYER_REDIS_URL = os.getenv("CHANNEL_LAYER_REDIS_URL", "redis://127.0.0.1:6379/1")
+validate_redis_db(CHANNEL_LAYER_REDIS_URL, 1, "CHANNEL_LAYER_REDIS_URL")
 
 CHANNEL_LAYERS = {
     "default": {
@@ -99,6 +102,15 @@ CHANNEL_LAYERS = {
     }
 }
 
+# Typically the same as the Celery layer
+# db0 --> Celery + tool result bus
+# db1 --> Django Channels/WS layer
+# This separation is good practice, but I make the Tool Bus definition distinct from the Celery Broker db
+REDIS_TOOL_BUS_URL = os.getenv(
+    "REDIS_TOOL_BUS_URL",
+    "redis://127.0.0.1:6379/0",
+)
+validate_redis_db(REDIS_TOOL_BUS_URL, 0, "REDIS_TOOL_BUS_URL")
 
 # Database
 # https://docs.djangoproject.com/en/4.2/ref/settings/#databases
@@ -154,6 +166,7 @@ STATICFILES_STORAGE = 'whitenoise.storage.CompressedStaticFilesStorage'
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 CELERY_BROKER_URL = os.getenv("CELERY_BROKER_URL", "redis://127.0.0.1:6379/0")
+validate_redis_db(CELERY_BROKER_URL, 0, "CELERY_BROKER_URL")
 BROKER_URL = CELERY_BROKER_URL
 
 ARCHIVE_RETENTION_DAYS = int(os.getenv("ARCHIVE_RETENTION_DAYS", "30"))
@@ -179,6 +192,8 @@ TELEGRAM_POLL_LOCK_REDIS_URL = (
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 
+OPENAI_MODELS_REFRESH_INTERVAL_HOURS = int(os.getenv("OPENAI_MODELS_REFRESH_INTERVAL_HOURS", "24"))
+
 CELERY_BEAT_SCHEDULE = {
     "runs.reconcile_waiting_subruns": {
         "task": "runs.tasks.reconcile_waiting_subruns",
@@ -188,6 +203,10 @@ CELERY_BEAT_SCHEDULE = {
         "task": "runs.tasks.archive_completed_runs",
         "schedule": timedelta(hours=ARCHIVE_INTERVAL_HOURS),
     },
+    #"llm.refresh_openai_models": {
+    #    "task": "llm.tasks.refresh_openai_models",
+    #    "schedule": timedelta(hours=OPENAI_MODELS_REFRESH_INTERVAL_HOURS),
+    #},  TODO add back in periodic model refreshes
     #"comms.telegram_poll_scheduler": {
     #    "task": "comms.tasks.telegram_poll_scheduler",
     #    "schedule": timedelta(seconds=TELEGRAM_POLL_INTERVAL_SECONDS),
@@ -221,3 +240,9 @@ OPENAI_TRANSPORT = os.getenv("OPENAI_TRANSPORT", "http")
 OPENAI_WS_TIMEOUT_SECONDS = os.getenv("OPENAI_WS_TIMEOUT_SECONDS", "120")
 OPENAI_WS_IDLE_TIMEOUT_SECONDS = os.getenv("OPENAI_WS_IDLE_TIMEOUT_SECONDS", "1200")
 OPENAI_HTTP_MODE = os.getenv("OPENAI_HTTP_MODE", "responses")
+
+SCRUB_PROMPTS = os.getenv("SCRUB_PROMPTS", "1") != "0"
+SCRUB_PROMPTS_FOR_TESTS = os.getenv("SCRUB_PROMPTS_FOR_TESTS", "0") != "0"
+TESTING = False
+
+TOOLRUNNER_TOOL_CALL_RESULT_TIMEOUT_SECONDS = os.getenv("TOOLRUNNER_TOOL_CALL_RESULT_TIMEOUT_SECONDS", 30)

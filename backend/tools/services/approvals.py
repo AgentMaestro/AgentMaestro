@@ -10,7 +10,6 @@ from runs.services.state import transition_run
 from runs.services.steps import append_step
 from tools.models import ToolCall
 from tools.services.quotas import acquire_tool_call_slots, release_tool_call_slots
-from tools.tasks import execute_tool_call_async
 
 
 TOOL_CALL_REQUESTED_EVENT = "tool_call_requested"
@@ -51,6 +50,7 @@ def _enqueue_and_schedule(tool_call_id: str) -> None:
     tool_call.updated_at = timezone.now()
     tool_call.save(update_fields=["status", "updated_at"])
     _broadcast_tool_call_status(tool_call, status=ToolCall.Status.QUEUED)
+    from tools.tasks import execute_tool_call_async
     task = execute_tool_call_async.delay(tool_call_id)
     tool_call.celery_task_id = task.id or ""
     tool_call.save(update_fields=["celery_task_id", "updated_at"])

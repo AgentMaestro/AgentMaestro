@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any, Dict
 
 from django.db import transaction
+import logging
 
 from core.services.limits import LimitExceeded, LimitKey, QUOTA_MANAGER
 from runs.models import AgentRun, AgentStep
@@ -34,6 +35,9 @@ def _build_step_event_payload(step: AgentStep) -> Dict[str, Any]:
     }
 
 
+logger = logging.getLogger(__name__)
+
+
 @transaction.atomic
 def run_tick(*, run_id: str) -> Dict[str, Any]:
     """
@@ -45,7 +49,16 @@ def run_tick(*, run_id: str) -> Dict[str, Any]:
     """
     run = None
     try:
-        run = claim_run(run_id)
+        try:
+            run = claim_run(run_id)
+        except AgentRun.DoesNotExist:
+            logger.warning("run_tick missing run %s", run_id)
+            return {
+                "run_id": run_id,
+                "action": "missing",
+                "status": "missing",
+                "step_index": None,
+            }
 
         try:
             QUOTA_MANAGER.record_request(str(run.workspace_id), LimitKey.RUN_TICK)

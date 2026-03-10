@@ -1,13 +1,16 @@
 # backend/runs/tasks.py
 from __future__ import annotations
 
-from agentmaestro.celery import app
+import logging
 
+from agentmaestro.celery import app
 from django.conf import settings
 from runs.models import AgentRun
 from runs.services.checkpoints import archive_completed_runs
 from runs.services.recovery import handle_run_failure
 from runs.services.ticker import run_tick as run_tick_service
+
+logger = logging.getLogger(__name__)
 
 
 @app.task(bind=True, name="runs.tasks.run_tick", max_retries=5)
@@ -40,3 +43,14 @@ def reconcile_waiting_subruns():
     from runs.services.recovery import reconcile_waiting_parents_and_leases
 
     return reconcile_waiting_parents_and_leases()
+
+
+@app.task(bind=True, name="runs.tasks.resume_run_from_tool_output")
+def resume_run_from_tool_output(self, run_id: str, tool_call_id: str) -> None:
+    logger.warning(
+        "resume_run_from_tool_output is deprecated; Redis tool-result bus now drives delivery run=%s tool_call_id=%s task=%s",
+        run_id,
+        tool_call_id,
+        self.request.id,
+    )
+    return None

@@ -18,3 +18,4 @@ ruff>=0.15/stop
 black>=26.1
 openai>=2.0
 websockets>=11.0
+scrubadub>=2.0.1

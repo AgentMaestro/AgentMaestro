@@ -1,0 +1,27 @@
+{% load admin_urls llm_admin_filters %}
+<div class="filter filter-{{ spec.parameter_name }}">
+  <h3>{{ spec.title }}</h3>
+  <form method="get">
+    {% for key, value in cl.params.items %}
+      {% if key != spec.parameter_name %}
+        <input type="hidden" name="{{ key }}" value="{{ value|escape }}" />
+      {% endif %}
+    {% endfor %}
+    <div class="input-filter">
+      <input
+        type="text"
+        name="{{ spec.parameter_name }}"
+        value="{{ spec.value|default_if_none:''|escape }}"
+        placeholder="Exact run UUID"
+        class="vTextField"
+        autocomplete="off"
+      />
+      <button type="submit" class="button default">Filter</button>
+      {% if spec.value %}
+        {% with remove_ids=spec.parameter_name|singleton_list %}
+          <a href="{{ cl|cl_query_with_remove:remove_ids }}" class="button clearlink">Clear</a>
+        {% endwith %}
+      {% endif %}
+    </div>
+  </form>
+</div>

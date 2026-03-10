@@ -7,4 +7,9 @@ app_name = "agents"
 urlpatterns = [
     path("new", views.agent_create_wizard, name="agent_create"),
     path("<slug:slug>/", views.agent_detail, name="agent_detail"),
+    path(
+        "<slug:slug>/run/preallocate/",
+        views.agent_run_preallocate,
+        name="agent_run_preallocate",
+    ),
 ]

@@ -294,8 +294,10 @@ class OpenAIResponsesWebSocketSession:
         self._idle_timeout_seconds = idle_timeout_seconds
         self._ws: Optional[websockets.WebSocketClientProtocol] = None
         self._connect_lock = asyncio.Lock()
-        self._io_lock = asyncio.Lock()
+        self._request_lock = asyncio.Lock()
+        self._request_in_flight = False
         self._first_event_logged = False
+        self._tools_sent = False
 
         logger.debug("-------------- WS START DEBUG LOGS ----------------------")
         logger.debug(f"url = {self._url}")
@@ -315,6 +317,15 @@ class OpenAIResponsesWebSocketSession:
     @property
     def last_activity(self) -> float:
         return self._last_active
+
+    def should_send_tools(self) -> bool:
+        return not self._tools_sent
+
+    def mark_tools_sent(self) -> None:
+        self._tools_sent = True
+
+    def reset_tools_sent(self) -> None:
+        self._tools_sent = False
 
     def _mark_active(self) -> None:
         self._last_active = time.monotonic()
@@ -481,9 +492,10 @@ class OpenAIResponsesWebSocketSession:
             payload["tools"] = tools
         if self.previous_response_id:
             payload["previous_response_id"] = self.previous_response_id
-        payload.setdefault("metadata", {})
-        request_id = payload["metadata"].get("request_id") or str(uuid.uuid4())
-        payload["metadata"]["request_id"] = request_id
+        metadata = payload.get("metadata") or {}
+        request_id = str(uuid.uuid4())
+        metadata["request_id"] = request_id
+        payload["metadata"] = metadata
         attempt = 0
         max_attempts = max(1, OPENAI_WS_MAX_RETRIES)
         while True:
@@ -536,25 +548,29 @@ class OpenAIResponsesWebSocketSession:
         self, payload: Dict[str, Any], request_id: str, attempt: int
     ) -> tuple[Dict[str, Any], float]:
         await self._ensure_connection()
-        async with self._io_lock:
-            payload["previous_response_id"] = self.previous_response_id
-            payload_json = json.dumps(payload, ensure_ascii=False)
-            self._log_send_event(request_id, attempt, payload)
-            start = time.monotonic()
-            logger.debug("OpenAI WS send payload run=%s model=%s", self._run_id, self._model)
+        async with self._request_lock:
+            self._request_in_flight = True
             try:
-                await self._ws.send(payload_json)
-                response = await self._receive_until_complete()
-            except asyncio.TimeoutError as exc:
-                raise OpenAIResponsesWSNetworkError(
-                    "OpenAI WS timeout", status=None, request_id=request_id
-                ) from exc
-            except websockets.WebSocketException as exc:
-                raise OpenAIResponsesWSNetworkError(
-                    "OpenAI WS connection failed during send", status=None, request_id=request_id
-                ) from exc
-            latency = time.monotonic() - start
-            return response, latency
+                payload["previous_response_id"] = self.previous_response_id
+                payload_json = json.dumps(payload, ensure_ascii=False)
+                self._log_send_event(request_id, attempt, payload)
+                start = time.monotonic()
+                logger.debug("OpenAI WS send payload run=%s model=%s", self._run_id, self._model)
+                try:
+                    await self._ws.send(payload_json)
+                    response = await self._receive_until_complete()
+                except asyncio.TimeoutError as exc:
+                    raise OpenAIResponsesWSNetworkError(
+                        "OpenAI WS timeout", status=None, request_id=request_id
+                    ) from exc
+                except websockets.WebSocketException as exc:
+                    raise OpenAIResponsesWSNetworkError(
+                        "OpenAI WS connection failed during send", status=None, request_id=request_id
+                    ) from exc
+                latency = time.monotonic() - start
+                return response, latency
+            finally:
+                self._request_in_flight = False
 
     async def _receive_until_complete(self) -> Dict[str, Any]:
         assert self._ws
@@ -577,17 +593,17 @@ class OpenAIResponsesWebSocketSession:
                     status=getattr(exc, "code", None),
                 ) from exc
             self._mark_active()
-            logger.debug(
-                "OpenAI WS raw recv (first 2000 chars): %s",
-                raw if isinstance(raw, str) else raw[:2000],
-            )
+            #logger.debug(
+            #    "OpenAI WS raw recv (first 2000 chars): %s",
+            #    raw if isinstance(raw, str) else raw[:2000],
+            #)
             raw_preview = raw if isinstance(raw, str) else raw.decode("utf-8", "replace")
-            logger.debug(
-                "OpenAI WS raw frame preview run=%s model=%s payload=%s",
-                self._run_id,
-                self._model,
-                raw_preview[:2000],
-            )
+            #logger.debug(
+            #    "OpenAI WS raw frame preview run=%s model=%s payload=%s",
+            #    self._run_id,
+            #    self._model,
+            #    raw_preview[:2000],
+            #)
             try:
                 event = json.loads(raw_preview)
             except Exception:
@@ -605,13 +621,13 @@ class OpenAIResponsesWebSocketSession:
                     event_type,
                 )
                 self._first_event_logged = True
-            _log_debug("OpenAI WS event type=%s", event_type)
-            logger.debug(
-                "OpenAI WS event payload run=%s model=%s event=%s",
-                self._run_id,
-                self._model,
-                json.dumps(event, ensure_ascii=False)[:2000],
-            )
+            #_log_debug("OpenAI WS event type=%s", event_type)
+            #logger.info(
+            #    "OpenAI WS event payload run=%s model=%s event=%s",
+            #    self._run_id,
+            #    self._model,
+            #    json.dumps(event, ensure_ascii=False)[:2000],
+            #)
             if event_type == "response.completed":
                 response = event.get("response", {})
                 text_summary = _collect_text(response)

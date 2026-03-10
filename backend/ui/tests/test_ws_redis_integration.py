@@ -1,26 +1,71 @@
-# backend/ui/tests/test_ws_redis_integration.py
-import os
-import pytest
 from channels.layers import get_channel_layer
 from channels.testing import WebsocketCommunicator
+import pytest
 
 from agentmaestro.asgi import application
+from agents.models import Agent
+from core.models import Workspace, WorkspaceMembership
+from django.contrib.auth import get_user_model
+from django.test import Client
+from runs.models import AgentRun
 
 
-pytestmark = pytest.mark.asyncio
+pytestmark = [pytest.mark.asyncio, pytest.mark.django_db]
 
 
-def _skip_if_not_redis():
-    if os.getenv("USE_REDIS_CHANNEL_LAYER") != "1":
-        pytest.skip("Set USE_REDIS_CHANNEL_LAYER=1 to run Redis-backed Channels tests.")
+def _require_redis_layer():
+    channel_layer = get_channel_layer()
+    if channel_layer is None or channel_layer.__class__.__name__ != "RedisChannelLayer":
+        pytest.skip("RedisChannelLayer required for this integration test.")
+
+
+def _session_cookie_for_user(user):
+    client = Client()
+    client.force_login(user)
+    return client.cookies["sessionid"].value
+
+
+def _create_authenticated_run(run_id: str):
+    workspace = Workspace.objects.create(name=f"RunGroup-{run_id}")
+    user = get_user_model().objects.create_user(username=f"wsuser-{run_id}", password="x")
+    WorkspaceMembership.objects.create(workspace=workspace, user=user, role=WorkspaceMembership.Role.OWNER)
+    agent = Agent.objects.create(
+        workspace=workspace,
+        owner=user,
+        name=f"RunAgent-{run_id}",
+        soul="Test agent",
+        created_by=user,
+    )
+    run = AgentRun.objects.create(
+        id=run_id,
+        workspace=workspace,
+        agent=agent,
+        started_by=user,
+        status=AgentRun.Status.PENDING,
+        input_text="Integration test run",
+    )
+    return user, run
+
+
+def _create_authenticated_workspace(workspace_id: str):
+    workspace = Workspace.objects.create(id=workspace_id, name=f"WS-{workspace_id}")
+    user = get_user_model().objects.create_user(username=f"wsuser-{workspace_id}", password="x")
+    WorkspaceMembership.objects.create(workspace=workspace, user=user, role=WorkspaceMembership.Role.OPERATOR)
+    return user, workspace
 
 
 async def test_run_group_send_over_redis():
-    _skip_if_not_redis()
+    _require_redis_layer()
 
     run_id = "22222222-2222-2222-2222-222222222222"
     ws_url = f"/ws/ui/run/{run_id}/"
-    communicator = WebsocketCommunicator(application, ws_url)
+    user, _ = _create_authenticated_run(run_id)
+    sessionid = _session_cookie_for_user(user)
+    communicator = WebsocketCommunicator(
+        application,
+        ws_url,
+        headers=[(b"cookie", f"sessionid={sessionid}".encode())],
+    )
 
     connected, _ = await communicator.connect()
     assert connected is True
@@ -55,11 +100,17 @@ async def test_run_group_send_over_redis():
 
 
 async def test_workspace_group_send_over_redis():
-    _skip_if_not_redis()
+    _require_redis_layer()
 
     workspace_id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
     ws_url = f"/ws/ui/workspace/?workspace_id={workspace_id}"
-    communicator = WebsocketCommunicator(application, ws_url)
+    user, _ = _create_authenticated_workspace(workspace_id)
+    sessionid = _session_cookie_for_user(user)
+    communicator = WebsocketCommunicator(
+        application,
+        ws_url,
+        headers=[(b"cookie", f"sessionid={sessionid}".encode())],
+    )
 
     connected, _ = await communicator.connect()
     assert connected is True

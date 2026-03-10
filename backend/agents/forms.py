@@ -45,13 +45,10 @@ class AgentLLMForm(forms.Form):
         help_text="Choose the agent's primary role (used in system context).",
     )
     default_model = forms.ChoiceField(
-        choices=Agent.DEFAULT_MODEL_CHOICES,
+        choices=[],
         initial=Agent.DEFAULT_MODEL,
         label="Default Model",
-        help_text=(
-            "Select the default model for this agent. "
-            f"Available: {', '.join(model for model, _ in Agent.DEFAULT_MODEL_CHOICES)}."
-        ),
+        help_text="Select the default model for this agent.",
     )
     temperature = forms.DecimalField(
         max_digits=4,
@@ -67,6 +64,22 @@ class AgentLLMForm(forms.Form):
         label="Policy Name",
         help_text="Policy name determines reasoning behavior (e.g. react, planner).",
     )
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self._refresh_model_choices()
+
+    def _refresh_model_choices(self) -> None:
+        choices = Agent.get_default_model_choices()
+        self.fields["default_model"].choices = choices
+        labels = [name for name, _ in choices]
+        preview = ", ".join(labels[:12])
+        if len(labels) > 12:
+            preview += f", +{len(labels) - 12} more"
+        self.fields["default_model"].help_text = (
+            "Select the default model for this agent. "
+            f"Available: {preview or Agent.DEFAULT_MODEL}."
+        )
 
 class AgentToolsForm(forms.Form):
     def __init__(self, *args: Any, definitions: list[ToolDefinition], initial_tool_ids: list[str] | None = None, **kwargs: Any):

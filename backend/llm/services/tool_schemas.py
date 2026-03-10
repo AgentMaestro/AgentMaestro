@@ -23,17 +23,39 @@ def _base_tool(name: str, description: str, parameters: Dict[str, Any]) -> Dict[
     }
 
 
-REPO_TREE_PROPERTIES = {
-    "root": {"type": "string"},
-    "max_depth": {"type": "integer", "minimum": 0},
-    "include_files": {"type": "boolean"},
-    "include_dirs": {"type": "boolean"},
-    "follow_symlinks": {"type": "boolean"},
-    "exclude_globs": {"type": "array", "items": {"type": "string"}},
-    "include_globs": {"type": "array", "items": {"type": "string"}},
-    "max_entries": {"type": "integer", "minimum": 1},
-    "include_metadata": {"type": "boolean"},
-    "absolute_root": {"type": "string"},
+REPO_TREE_PARAMETERS = {
+    "path": {
+        "type": "string",
+        "description": "Absolute or repo-relative path to list.",
+    },
+    "max_depth": {
+        "type": "integer",
+        "minimum": 0,
+        "default": 3,
+        "description": "Maximum depth to traverse (0 shows only the root).",
+    },
+    "include_files": {
+        "type": "boolean",
+        "default": True,
+        "description": "Whether to include files in the output.",
+    },
+    "include_dirs": {
+        "type": "boolean",
+        "default": True,
+        "description": "Whether to report directories in the output.",
+    },
+    "follow_symlinks": {
+        "type": "boolean",
+        "default": False,
+        "description": "Whether to follow symlinks while walking.",
+    },
+}
+
+REPO_TREE_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["path"],
+    "properties": deepcopy(REPO_TREE_PARAMETERS),
 }
 
 
@@ -53,7 +75,10 @@ SEARCH_CODE_PROPERTIES = {
 
 
 FILE_READ_PROPERTIES = {
-    "path": {"type": "string"},
+    "path": {
+        "type": "string",
+        "description": "Absolute path or repo-relative path to read.",
+    },
     "mode": {"type": "string", "enum": ["text", "binary"]},
     "encoding": {"type": "string"},
     "start_line": {"type": "integer", "minimum": 1},
@@ -115,8 +140,8 @@ PYTHON_EXEC_PROPERTIES = {
 _TOOL_SCHEMAS = [
     _base_tool(
         "repo_tree",
-        "Walk a directory tree and report entries",
-        _schema(REPO_TREE_PROPERTIES, required=["root"]),
+        "List a directory tree rooted at `path` up to `max_depth`. Returns a deterministic, sorted tree.",
+        REPO_TREE_SCHEMA,
     ),
     _base_tool(
         "search_code",
@@ -152,7 +177,13 @@ _TOOL_SCHEMAS = [
 
 
 _TOOL_TEMPLATES: Dict[str, Dict[str, Any]] = {
-    "repo_tree": {"root": ".", "max_depth": 3, "include_files": True, "absolute_root": "<ABSOLUTE_ROOT>"},
+    "repo_tree": {
+        "path": ".",
+        "max_depth": 3,
+        "include_files": True,
+        "include_dirs": True,
+        "follow_symlinks": False,
+    },
     "search_code": {
         "query": "AGENTMAESTRO_TOOLRUNNER_URL",
         "is_regex": False,

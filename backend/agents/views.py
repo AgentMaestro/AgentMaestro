@@ -6,8 +6,10 @@ from django.contrib.auth import get_user_model
 from django.contrib.auth.decorators import login_required
 from django.core.exceptions import PermissionDenied
 from django.db import transaction
+from django.http import JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
+from django.utils import timezone
 from django.views.decorators.http import require_http_methods
 
 from agents.current import agent_creation_context
@@ -22,6 +24,7 @@ from .forms import (
     AgentWorkspaceForm,
 )
 from .models import Agent
+from runs.models import AgentRun
 from tools.models import AgentToolGrant, ToolDefinition
 from tools.policy import RISK_ORDER, get_effective_tools, visible_tools_for_user
 
@@ -166,6 +169,31 @@ def _workspace_from_payload(payload: dict[str, object], create: bool = False) ->
         )
         return workspace
     return None
+
+
+def _get_agent_with_access(user, slug: str) -> Agent:
+    agent = get_object_or_404(Agent.objects.select_related("workspace"), slug=slug)
+    if agent.owner_id == user.id:
+        return agent
+    if WorkspaceMembership.objects.filter(workspace=agent.workspace, user=user, is_active=True).exists():
+        return agent
+    raise PermissionDenied
+
+
+@login_required
+@require_http_methods(["GET"])
+def agent_run_preallocate(request, slug: str):
+    agent = _get_agent_with_access(request.user, slug)
+    run = AgentRun.objects.create(
+        workspace=agent.workspace,
+        agent=agent,
+        started_by=request.user,
+        status=AgentRun.Status.RUNNING,
+        channel=AgentRun.Channel.DASHBOARD,
+        started_at=timezone.now(),
+        input_text="",
+    )
+    return JsonResponse({"run_id": str(run.id)})
 
 
 def _definition_sort_key(definition: ToolDefinition) -> tuple[str, int, str]:

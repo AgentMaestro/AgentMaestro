@@ -151,8 +151,8 @@ body {
 .chat-message-author-system {
   align-self: center;
   text-align: center;
-  background: #f8fafc;
-  border-color: rgba(15, 23, 42, 0.2);
+  background: #fefce8;
+  border-color: rgba(167, 139, 25, 0.3);
 }
 
 .chat-message-meta {

@@ -2,6 +2,8 @@ import uuid
 from django.db import models
 from django.utils import timezone
 
+from core.models import TimeStampedModel
+
 
 class AgentRole(models.TextChoices):
     PLANNER = "planner", "Planner"
@@ -104,3 +106,17 @@ class LLMToolCall(models.Model):
 
     def __str__(self) -> str:
         return f"{self.tool_name} call for {self.run_id}"
+
+
+class ModelsAvailable(TimeStampedModel):
+    company = models.CharField(max_length=100)
+    name = models.CharField(max_length=200)
+    api = models.CharField(max_length=100)
+    metadata = models.JSONField(default=dict, blank=True)
+
+    class Meta:
+        unique_together = ("company", "api", "name")
+        ordering = ("company", "api", "name")
+
+    def __str__(self) -> str:
+        return f"{self.company}:{self.api}:{self.name}"

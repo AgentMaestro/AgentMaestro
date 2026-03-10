@@ -8,17 +8,84 @@ from hashlib import sha256
 from pathlib import Path
 
 import httpx
+from asgiref.sync import async_to_sync
+from channels.layers import get_channel_layer
 from django.conf import settings
-from django.db import transaction
 from django.utils import timezone
 
-from runs.services.events import append_event
+from agents.models import Agent
 from tools.models import ToolCall, ToolDefinition
 from tools.services.quotas import acquire_tool_call_slots, release_tool_call_slots
+from tools.services.result_bus import store_tool_result
 
 logger = logging.getLogger(__name__)
 
-TOOL_CALL_COMPLETED_EVENT = "tool_call_completed"
+
+def _run_group(run_id: str) -> str:
+    return f"run.{run_id}"
+
+
+def _publish_tool_result_ready(
+    run_id: str, tool_call_id: str, provider_call_id: str | None = None
+) -> None:
+    start_ts = timezone.now().isoformat()
+    logger.info(
+        "_publish_tool_result_ready START run=%s tool_call_id=%s ts=%s",
+        run_id,
+        tool_call_id,
+        start_ts,
+    )
+    channel_layer = get_channel_layer()
+    if channel_layer is None:
+        logger.warning(
+            "_publish_tool_result_ready no channel layer for run=%s tool_call_id=%s",
+            run_id,
+            tool_call_id,
+        )
+        return
+    payload_ts = timezone.now().isoformat()
+    payload = {
+        "type": "push",
+        "topic": "run.event",
+        "event": "tool_result_ready",
+        "ts": payload_ts,
+        "data": {"run_id": run_id, "tool_call_id": tool_call_id},
+    }
+    logger.info(
+        "_publish_tool_result_ready payload ready run=%s tool_call_id=%s provider_call_id=%s ts=%s data=%s",
+        run_id,
+        tool_call_id,
+        provider_call_id,
+        payload_ts,
+        payload.get("data"),
+    )
+    logger.debug(
+        "_publish_tool_result_ready payload run=%s tool_call_id=%s ts=%s payload=%s",
+        run_id,
+        tool_call_id,
+        payload_ts,
+        payload,
+    )
+    try:
+        async_to_sync(channel_layer.group_send)(
+            _run_group(run_id),
+            {"type": "push", "payload": payload},
+        )
+    except Exception as exc:
+        logger.exception(
+            "_publish_tool_result_ready failed to group_send for run=%s tool_call_id=%s ts=%s",
+            run_id,
+            tool_call_id,
+            timezone.now().isoformat(),
+            exc_info=exc,
+        )
+        raise
+    logger.info(
+        "_publish_tool_result_ready COMPLETE sent async_to_sync to channel layer run=%s tool_call_id=%s ts=%s",
+        run_id,
+        tool_call_id,
+        timezone.now().isoformat(),
+    )
 
 
 class ToolrunnerError(RuntimeError):
@@ -92,11 +159,39 @@ def _resolve_candidate_path(raw_path: str) -> Path | None:
         return None
 
 
+def _resolve_sandbox_roots(agent: Agent) -> list[Path]:
+    raw_paths = agent._normalize_sandbox_paths(agent.sandbox_paths)
+    resolved_roots: list[Path] = []
+    seen: set[Path] = set()
+    for raw in raw_paths:
+        candidate = Path(str(raw)).expanduser()
+        if not candidate.is_absolute():
+            candidate = Path(settings.BASE_DIR) / candidate
+        try:
+            normalized = candidate.resolve()
+        except Exception:
+            logger.debug("skipping sandbox candidate %s because it could not be resolved", raw)
+            continue
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        resolved_roots.append(normalized)
+    return resolved_roots
+
+
 def _ensure_paths_within_sandbox(tool_call: ToolCall) -> None:
     agent = getattr(tool_call.run, "agent", None)
     if not agent:
         return
-    allowed_roots = agent.get_sandbox_roots()
+    allowed_roots = _resolve_sandbox_roots(agent)
+    raw_roots = agent._normalize_sandbox_paths(agent.sandbox_paths)
+    logger.debug(
+        "sandbox roots for agent=%s resolved=%s raw=%s",
+        getattr(agent, "slug", "unknown"),
+        [str(root) for root in allowed_roots],
+        raw_roots,
+    )
+
     if not allowed_roots:
         return
     paths = _collect_path_strings(tool_call.args or {})
@@ -106,13 +201,39 @@ def _ensure_paths_within_sandbox(tool_call: ToolCall) -> None:
         resolved = _resolve_candidate_path(raw_path)
         if not resolved:
             continue
+        matched = False
         for root in allowed_roots:
             try:
-                if resolved == root or resolved.is_relative_to(root):
+                is_equal = resolved == root
+                is_relative = resolved.is_relative_to(root)
+                logger.debug(
+                    "comparing tool path %s to sandbox root %s (equal=%s, relative=%s)",
+                    resolved,
+                    root,
+                    is_equal,
+                    is_relative,
+                )
+                if is_equal or is_relative:
+                    matched = True
                     break
+                logger.debug(
+                    "tool path %s not equal to sandbox root %s (equal=%s, relative=%s)",
+                    resolved,
+                    root,
+                    is_equal,
+                    is_relative,
+                )
             except Exception:
+                logger.debug("skipping sandbox root %s because of %s", root, raw_path, exc_info=True)
                 continue
-        else:
+        if not matched:
+            logger.warning(
+                "Path %s not covered by sandbox roots for agent=%s resolved_roots=%s raw=%s",
+                resolved,
+                getattr(agent, "slug", "unknown"),
+                [str(root) for root in allowed_roots],
+                raw_roots,
+            )
             raise ToolrunnerError(f"Path '{resolved}' is outside the agent sandbox")
 
 
@@ -145,25 +266,54 @@ def _sign_payload(body: bytes, timestamp: str) -> str:
 
 
 def _emit_tool_call_completed(tool_call: ToolCall, duration_ms: int) -> None:
+    tool_call.refresh_from_db(fields=["provider_call_id"])
+    provider_call_id = str(tool_call.provider_call_id or "").strip() or None
     payload = {
         "tool_call_id": str(tool_call.id),
         "status": tool_call.status,
+        "tool_name": tool_call.tool_name,
         "exit_code": tool_call.exit_code,
-        "stdout": tool_call.stdout,
-        "stderr": tool_call.stderr,
-        "result": tool_call.result,
+        "stdout": tool_call.stdout or "",
+        "stderr": tool_call.stderr or "",
+        "result": tool_call.result or {},
         "duration_ms": duration_ms,
+        "run_id": str(tool_call.run_id),
+        "correlation_id": str(tool_call.correlation_id),
+        "provider_call_id": provider_call_id,
     }
+    logger.info(
+        "execution._emit_tool_call_completed --> Tool name=%s run=%s result=%s status=%s",
+        tool_call.tool_name,
+        tool_call.run_id,
+        tool_call.result,
+        tool_call.status,
+    )
+    logger.info(
+        "ToolRunner emitting completion run=%s tool_call=%s status=%s exit=%s args=%s",
+        tool_call.run_id,
+        tool_call.id,
+        tool_call.status,
+        tool_call.exit_code,
+        list((tool_call.args or {}).keys()),
+    )
 
-    def _after_commit():
-        append_event(
+    try:
+        store_tool_result(
             run_id=str(tool_call.run_id),
-            event_type=TOOL_CALL_COMPLETED_EVENT,
+            tool_call_id=str(tool_call.id),
             payload=payload,
-            correlation_id=tool_call.correlation_id,
         )
-
-    transaction.on_commit(_after_commit)
+        _publish_tool_result_ready(
+            str(tool_call.run_id),
+            str(tool_call.id),
+            provider_call_id=provider_call_id,
+        )
+    except Exception:
+        logger.exception(
+            "Failed to store or publish tool_result for run=%s tool_call=%s",
+            tool_call.run_id,
+            tool_call.id,
+        )
 
 
 def execute_tool_call(tool_call_id: str) -> ToolCall:
@@ -172,7 +322,9 @@ def execute_tool_call(tool_call_id: str) -> ToolCall:
         .select_related("run__workspace")
         .get(id=tool_call_id)
     )
+    logger.info("execute_tool_call start tool_call=%s run=%s status=%s", tool_call.id, tool_call.run_id, tool_call.status)
     _ensure_paths_within_sandbox(tool_call)
+    logger.info("execute_tool_call sandbox check passed tool_call=%s", tool_call.id)
     if tool_call.status not in {ToolCall.Status.QUEUED, ToolCall.Status.RUNNING}:
         raise RuntimeError(f"Cannot execute tool call in status {tool_call.status}")
 
@@ -181,6 +333,7 @@ def execute_tool_call(tool_call_id: str) -> ToolCall:
         .filter(workspace_id=tool_call.run.workspace_id, name=tool_call.tool_name, enabled=True)
         .first()
     )
+    logger.info("execute_tool_call tool_definition lookup tool_call=%s definition=%s", tool_call.id, definition.id if definition else None)
     if not definition:
         raise RuntimeError(f"tool {tool_call.tool_name} not enabled for workspace")
 
@@ -212,6 +365,7 @@ def execute_tool_call(tool_call_id: str) -> ToolCall:
     exit_code = None
     succeeded = False
     result_payload: dict[str, object] = {}
+    logger.info("execute_tool_call sending http tool_call=%s tool=%s", tool_call.id, tool_call.tool_name)
     try:
         with httpx.Client(timeout=settings.TOOLRUNNER_HTTP_TIMEOUT) as client:
             request = httpx.Request("POST", settings.TOOLRUNNER_URL)
@@ -233,7 +387,11 @@ def execute_tool_call(tool_call_id: str) -> ToolCall:
         stderr = f"toolrunner error: {exc.response.status_code}"
     except httpx.RequestError as exc:
         stderr = f"toolrunner request failed: {exc}"
+    except Exception as exc:  # pragma: no cover
+        logger.exception("execute_tool_call exception tool_call=%s", tool_call.id)
+        raise
     finally:
+        logger.info("execute_tool_call completed tool_call=%s status=%s result=%s", tool_call.id, tool_call.status, tool_call.result)
         duration_ms = int(round((time.monotonic() - start) * 1000))
         now = timezone.now()
         tool_call.status = ToolCall.Status.COMPLETED if succeeded else ToolCall.Status.FAILED

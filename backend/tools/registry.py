@@ -9,7 +9,16 @@ TOOL_REGISTRY = [
                 "name": "file_read",
                 "description": "Read a local file path.",
                 "risk": ToolRisk.SAFE,
-                "args_schema": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]},
+                "args_schema": {
+                    "type": "object",
+                    "properties": {
+                        "path": {
+                            "type": "string",
+                            "description": "Absolute path or repo-relative path to read.",
+                        }
+                    },
+                    "required": ["path"],
+                },
                 "requires_approval": False,
                 "released": True,
             },
@@ -18,6 +27,28 @@ TOOL_REGISTRY = [
                 "description": "List repository tree contents.",
                 "risk": ToolRisk.SAFE,
                 "requires_approval": False,
+                "args_schema": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["path"],
+                    "properties": {
+                        "path": {
+                            "type": "string",
+                            "description": "Absolute or repo-relative path to list.",
+                        },
+                        "max_depth": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "default": 3,
+                            "description": "Maximum depth to traverse (0 shows only the root).",
+                        },
+                        "include_files": {
+                            "type": "boolean",
+                            "default": True,
+                            "description": "Whether to include files in the output.",
+                        },
+                    },
+                },
                 "released": True,
             },
             {

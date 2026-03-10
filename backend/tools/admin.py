@@ -1,4 +1,6 @@
-from django.contrib import admin
+from copy import deepcopy
+
+from django.contrib import admin, messages
 from django.utils.html import format_html
 from django.urls import reverse
 
@@ -22,6 +24,43 @@ class ToolDefinitionAdmin(admin.ModelAdmin):
     list_display = ("tool", "description", "workspace", "default_risk_level", "enabled", "default_requires_approval")
     list_filter = ("workspace", "default_risk_level", "enabled")
     search_fields = ("tool__name", "workspace__name")
+    actions = ("sync_to_tools",)
+
+    @admin.action(description="Sync to Tools")
+    def sync_to_tools(self, request, queryset):
+        synced = 0
+        missing_names: list[str] = []
+
+        for definition in queryset.select_related("tool"):
+            tool_name = (definition.tool.name if definition.tool else definition.name).strip()
+            if not tool_name:
+                missing_names.append(f"{definition.workspace}:<missing name>")
+                continue
+
+            tool = Tool.objects.filter(name=tool_name).first()
+            if not tool:
+                missing_names.append(tool_name)
+                continue
+
+            definition.description = tool.description
+            definition.args_schema = deepcopy(tool.args_schema or {})
+            definition.save(update_fields=["description", "args_schema", "updated_at"])
+            synced += 1
+
+        if synced:
+            self.message_user(
+                request,
+                f"Synced {synced} ToolDefinition entr{'y' if synced == 1 else 'ies'} from Tool records.",
+                level=messages.SUCCESS,
+            )
+        if missing_names:
+            preview = ", ".join(missing_names[:5])
+            more = "" if len(missing_names) <= 5 else f" (+{len(missing_names) - 5} more)"
+            self.message_user(
+                request,
+                f"No matching Tool found for: {preview}{more}",
+                level=messages.WARNING,
+            )
 
 
 @admin.register(AgentToolGrant)

@@ -7,13 +7,35 @@ from django.test import override_settings
 
 from agents.models import Agent
 from core.models import Workspace, WorkspaceMembership
-from runs.models import AgentRun, AgentStep, RunEvent
+from runs.models import AgentRun, AgentStep
 from core.services.limits import LimitExceeded
 from tools.models import ToolCall, ToolDefinition
-from tools.services.execution import TOOL_CALL_COMPLETED_EVENT, ToolrunnerError, execute_tool_call
+from tools.services.execution import ToolrunnerError, execute_tool_call
 from tools.services.quotas import release_tool_call_slots, acquire_tool_call_slots
 
 pytestmark = pytest.mark.django_db(transaction=True)
+
+
+class DummyChannelLayer:
+    def __init__(self):
+        self.sent: list[tuple[str, dict]] = []
+
+    async def group_send(self, group: str, message: dict) -> None:
+        self.sent.append((group, message))
+
+
+@pytest.fixture
+def fake_result_bus(monkeypatch):
+    calls: list[tuple[str, str, dict]] = []
+    monkeypatch.setattr(
+        "tools.services.execution.store_tool_result",
+        lambda run_id, tool_call_id, payload, ttl_seconds=3600: calls.append(
+            (run_id, tool_call_id, payload)
+        ),
+    )
+    layer = DummyChannelLayer()
+    monkeypatch.setattr("tools.services.execution.get_channel_layer", lambda: layer)
+    return calls, layer
 
 
 def _build_test_run(suffix: str):
@@ -69,7 +91,7 @@ class DummyClient:
     TOOLRUNNER_OUTPUT_LIMIT=128,
     TOOLRUNNER_HTTP_TIMEOUT=10,
 )
-def test_execute_tool_call_success(monkeypatch):
+def test_execute_tool_call_success(monkeypatch, fake_result_bus):
     tool_call = _build_test_run("success")
     response = httpx.Response(
         200,
@@ -91,7 +113,15 @@ def test_execute_tool_call_success(monkeypatch):
     assert tool_call.stdout == "done"
     assert tool_call.result == {"foo": "bar"}
 
-    assert RunEvent.objects.filter(run=tool_call.run, event_type=TOOL_CALL_COMPLETED_EVENT).exists()
+    calls, layer = fake_result_bus
+    assert len(calls) == 1
+    stored_run_id, stored_tool_call_id, payload = calls[0]
+    assert stored_run_id == str(tool_call.run_id)
+    assert stored_tool_call_id == str(tool_call.id)
+    assert payload["status"] == ToolCall.Status.COMPLETED
+    assert payload["tool_call_id"] == str(tool_call.id)
+    assert layer.sent
+    assert layer.sent[0][1]["payload"]["event"] == "tool_result_ready"
 
 
 @override_settings(
@@ -101,7 +131,7 @@ def test_execute_tool_call_success(monkeypatch):
     TOOLRUNNER_OUTPUT_LIMIT=128,
     TOOLRUNNER_HTTP_TIMEOUT=10,
 )
-def test_execute_tool_call_failure(monkeypatch):
+def test_execute_tool_call_failure(monkeypatch, fake_result_bus):
     tool_call = _build_test_run("failure")
     response = httpx.Response(500)
     class FailureClient(DummyClient):
@@ -114,6 +144,11 @@ def test_execute_tool_call_failure(monkeypatch):
     tool_call.refresh_from_db()
     assert tool_call.status == ToolCall.Status.FAILED
     assert "toolrunner error" in tool_call.stderr
+    calls, layer = fake_result_bus
+    assert len(calls) == 1
+    payload = calls[0][2]
+    assert payload["status"] == ToolCall.Status.FAILED
+    assert layer.sent[0][1]["payload"]["event"] == "tool_result_ready"
 
 
 @override_settings(

@@ -4,6 +4,11 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
+import logging
+
+
+logger = logging.getLogger(__name__)
+
 
 def iso_utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -39,10 +44,29 @@ class PushMessage:
             out["workspace_id"] = self.workspace_id
         if self.user_id:
             out["user_id"] = self.user_id
+        logger.debug(
+            "PushMessage.to_dict generated type=%s topic=%s ts=%s event=%s seq=%s run=%s workspace=%s keys=%s",
+            self.type,
+            self.topic,
+            self.ts,
+            self.event,
+            self.seq,
+            self.run_id,
+            self.workspace_id,
+            sorted((self.data or {}).keys()),
+        )
         return out
 
 
 def make_run_push(*, run_id: str, event: str, data: Dict[str, Any], seq: Optional[int] = None, workspace_id: Optional[str] = None) -> Dict[str, Any]:
+    logger.debug(
+        "make_run_push run=%s event=%s seq=%s workspace=%s data_keys=%s",
+        run_id,
+        event,
+        seq,
+        workspace_id,
+        sorted((data or {}).keys()),
+    )
     return PushMessage(
         type="push",
         topic="run.event",

@@ -31,6 +31,7 @@ if (Test-Path $test2Path) { Remove-Item -Recurse -Force $test2Path -ErrorAction 
 $env:TMP = $tempRoot
 $env:TEMP = $tempRoot
 $env:PYTEST_ADDOPTS = "--basetemp=$baseTemp --ignore-glob=**\pytest_* --ignore-glob=**\.pytest_* --ignore-glob=**\pytest-*"
+$env:DJANGO_ALLOW_ASYNC_UNSAFE = "1"  # workaround for async test issues to allow the legacy synchronous helpts to touch the ORM from within async tests
 
 $previousTransport = $env:OPENAI_TRANSPORT
 $env:OPENAI_TRANSPORT = "http"

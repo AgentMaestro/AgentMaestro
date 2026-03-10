@@ -1,27 +1,64 @@
 # backend/ui/tests/test_ws_redis_fanout.py
-import os
-import pytest
 from channels.layers import get_channel_layer
 from channels.testing import WebsocketCommunicator
+import pytest
 
 from agentmaestro.asgi import application
+from agents.models import Agent
+from core.models import Workspace, WorkspaceMembership
+from django.contrib.auth import get_user_model
+from django.test import Client
+from runs.models import AgentRun
 
-pytestmark = pytest.mark.asyncio
+
+pytestmark = [pytest.mark.asyncio, pytest.mark.django_db]
 
 
-def _skip_if_not_redis():
-    if os.getenv("USE_REDIS_CHANNEL_LAYER") != "1":
-        pytest.skip("Set USE_REDIS_CHANNEL_LAYER=1 to run Redis-backed Channels tests.")
+def _require_redis_layer():
+    channel_layer = get_channel_layer()
+    if channel_layer is None or channel_layer.__class__.__name__ != "RedisChannelLayer":
+        pytest.skip("RedisChannelLayer required for this fanout test.")
+
+
+def _session_cookie_for_user(user):
+    client = Client()
+    client.force_login(user)
+    return client.cookies["sessionid"].value
+
+
+def _create_authenticated_run(run_id: str):
+    workspace = Workspace.objects.create(name=f"RunFanout-{run_id}")
+    user = get_user_model().objects.create_user(username=f"fanout-{run_id}", password="x")
+    WorkspaceMembership.objects.create(workspace=workspace, user=user, role=WorkspaceMembership.Role.ADMIN)
+    agent = Agent.objects.create(
+        workspace=workspace,
+        owner=user,
+        name=f"FanoutAgent-{run_id}",
+        soul="Fanout agent",
+        created_by=user,
+    )
+    run = AgentRun.objects.create(
+        id=run_id,
+        workspace=workspace,
+        agent=agent,
+        started_by=user,
+        status=AgentRun.Status.PENDING,
+        input_text="Fanout run",
+    )
+    return user, run
 
 
 async def test_run_group_fanout_two_clients():
-    _skip_if_not_redis()
+    _require_redis_layer()
 
     run_id = "33333333-3333-3333-3333-333333333333"
     ws_url = f"/ws/ui/run/{run_id}/"
 
-    c1 = WebsocketCommunicator(application, ws_url)
-    c2 = WebsocketCommunicator(application, ws_url)
+    user, _ = _create_authenticated_run(run_id)
+    sessionid = _session_cookie_for_user(user)
+    headers = [(b"cookie", f"sessionid={sessionid}".encode())]
+    c1 = WebsocketCommunicator(application, ws_url, headers=headers)
+    c2 = WebsocketCommunicator(application, ws_url, headers=headers)
 
     ok1, _ = await c1.connect()
     ok2, _ = await c2.connect()
