@@ -20,6 +20,7 @@ class Command(BaseCommand):
             for tool_data in group_data.get("tools", []):
                 defaults = {
                     "description": tool_data.get("description", ""),
+                    "required_parameters": tool_data.get("required_parameters", tool_data.get("args_schema", {}).get("required", [])),
                     "args_schema": tool_data.get("args_schema", {}),
                     "risk": tool_data.get("risk"),
                     "requires_approval": tool_data.get("requires_approval", False),

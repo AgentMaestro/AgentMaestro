@@ -1,10 +1,14 @@
+from django.contrib.admin.sites import AdminSite
 from django.contrib.auth import get_user_model
+from django.contrib.messages.storage.fallback import FallbackStorage
+from django.contrib.sessions.middleware import SessionMiddleware
 from django.db import IntegrityError
-from django.test import TestCase
+from django.test import RequestFactory, TestCase
 from django.urls import reverse
 
 from core.models import Workspace
 
+from .admin import AgentAdmin
 from agents.current import agent_creation_context
 from agents.tooling import TOOL_REGISTRY
 from tools.models import AgentToolGrant, Tool, ToolDefinition, ToolGroup, ToolRisk
@@ -198,3 +202,64 @@ class AgentDetailViewTests(TestCase):
         self.client.force_login(other)
         response = self.client.get(reverse("agents:agent_detail", kwargs={"slug": self.agent.slug}))
         self.assertEqual(response.status_code, 403)
+
+
+class AgentAdminToolSyncTests(TestCase):
+    def setUp(self):
+        self.user = get_user_model().objects.create_user(username="admin-owner")
+        self.workspace = Workspace.objects.create(name="Admin Workspace")
+        self.agent = Agent.objects.create(
+            workspace=self.workspace,
+            owner=self.user,
+            name="Admin Agent",
+            soul="Admin soul",
+            tool_policy_json={},
+        )
+        self.group = ToolGroup.objects.create(name="admin-tools")
+        self.tool = Tool.objects.create(
+            name="file_delete",
+            tool_group=self.group,
+            risk=ToolRisk.DANGEROUS,
+            requires_approval=True,
+            released=True,
+        )
+        self.admin = AgentAdmin(Agent, AdminSite())
+        self.factory = RequestFactory()
+
+    def _build_request(self):
+        request = self.factory.post("/admin/agents/agent/")
+        request.user = self.user
+        middleware = SessionMiddleware(lambda req: None)
+        middleware.process_request(request)
+        request.session.save()
+        request._messages = FallbackStorage(request)
+        return request
+
+    def test_save_model_creates_definition_and_grant_for_selected_tools(self):
+        self.agent.tool_policy_json = {"selected_tools": ["file_delete"]}
+
+        self.admin.save_model(self._build_request(), self.agent, form=None, change=True)
+
+        definition = ToolDefinition.objects.get(workspace=self.workspace, tool=self.tool)
+        grant = AgentToolGrant.objects.get(agent=self.agent, tool=self.tool)
+        self.assertTrue(definition.enabled)
+        self.assertEqual(definition.name, "file_delete")
+        self.assertTrue(grant.enabled)
+
+    def test_save_model_links_existing_definition_and_enables_disabled_rows(self):
+        ToolDefinition.objects.create(
+            workspace=self.workspace,
+            tool=None,
+            name="file_delete",
+            enabled=False,
+        )
+        AgentToolGrant.objects.create(agent=self.agent, tool=self.tool, enabled=False)
+        self.agent.tool_policy_json = {"selected_tools": ["file_delete"]}
+
+        self.admin.save_model(self._build_request(), self.agent, form=None, change=True)
+
+        definition = ToolDefinition.objects.get(workspace=self.workspace, tool=self.tool)
+        grant = AgentToolGrant.objects.get(agent=self.agent, tool=self.tool)
+        self.assertTrue(definition.enabled)
+        self.assertEqual(definition.name, "file_delete")
+        self.assertTrue(grant.enabled)

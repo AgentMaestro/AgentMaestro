@@ -3,6 +3,7 @@ import pytest
 from channels.testing import WebsocketCommunicator
 from django.contrib.auth import get_user_model
 from django.test import Client
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 from agentmaestro.asgi import application
@@ -90,6 +91,10 @@ async def test_agent_chat_consumer_sends_tools_and_messages(monkeypatch):
     connected_event = await communicator.receive_json_from()
     assert connected_event["type"] == "connected"
     assert "Respond carefully." in connected_event["system_context"]
+    assert "read the repository `AGENTS.md` file" in connected_event["system_context"]
+    assert "confirming that you read `AGENTS.md`" in connected_event["system_context"]
+    assert "Repository instruction file:" in connected_event["system_context"]
+    assert "Use this exact repo-root path when reading `AGENTS.md`" in connected_event["system_context"]
     assert any(tool["name"] == "chat_tool" for tool in connected_event["tools"])
 
     await communicator.send_json_to({"type": "chat.message", "text": "Hello world"})
@@ -131,3 +136,37 @@ async def test_agent_chat_consumer_push_sets_tool_call_future():
     )
     assert future.done()
     assert future.result()["tool_call_id"] == "abc"
+
+
+@pytest.mark.asyncio
+@pytest.mark.django_db
+async def test_build_ws_input_items_uses_only_tool_output_for_continuation():
+    user = get_user_model().objects.create_user(username="ws-input-user")
+    workspace = Workspace.objects.create(name="ws-input-ws")
+    agent = Agent.objects.create(workspace=workspace, owner=user, name="WS Input Agent", soul="Prompt")
+    consumer = AgentChatConsumer(
+        scope={"type": "websocket", "user": user, "url_route": {"kwargs": {"slug": agent.slug}}}
+    )
+    consumer.run_id = "run-123"
+    consumer.session = SimpleNamespace(previous_response_id="resp-123")
+    consumer.history = [
+        {"role": "system", "content": "system context"},
+        {"role": "user", "content": "Hi, what do you know?"},
+        {
+            "role": "tool",
+            "content": "{\"ok\": true}",
+            "tool_call_id": "tool-123",
+            "provider_call_id": "call-123",
+        },
+    ]
+    consumer._tool_output_payload = {"provider_call_id": "call-123"}
+
+    items = consumer._build_ws_input_items()
+
+    assert items == [
+        {
+            "type": "function_call_output",
+            "call_id": "call-123",
+            "output": "{\"ok\": true}",
+        }
+    ]

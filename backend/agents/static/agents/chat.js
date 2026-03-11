@@ -9,12 +9,16 @@
     const form = shell.querySelector("[data-chat-form]");
     const textarea = shell.querySelector("[data-chat-input]");
     const connectionActionBtn = shell.querySelector("[data-connection-action]");
+    const approvalGrantsListEl = shell.querySelector("[data-approval-grants-list]");
+    const approvalGrantsEmptyEl = shell.querySelector("[data-approval-grants-empty]");
+    const clearApprovalGrantsBtn = shell.querySelector("[data-clear-approval-grants]");
     const wsUrl = shell.dataset.wsUrl;
     const runPreallocUrl = shell.dataset.runPreallocUrl;
     const agentName = shell.dataset.agentName || "Maestro";
     const userName = shell.dataset.userName || "You";
     const agentSlug = shell.dataset.agentSlug || "";
     const toolCards = new Map();
+    let activeApprovalGrants = [];
     const RUN_ID_STORAGE_KEY = "agentmaestro.active_run_id";
     const log = (...args) => console.log("[chat.js]", ...args);
     let activeRunId = null;
@@ -39,6 +43,64 @@
         if (messagesEl) {
             messagesEl.scrollTop = messagesEl.scrollHeight;
         }
+    };
+
+    const renderApprovalGrants = () => {
+        if (!approvalGrantsListEl || !approvalGrantsEmptyEl || !clearApprovalGrantsBtn) {
+            return;
+        }
+        approvalGrantsListEl.textContent = "";
+        const grants = Array.isArray(activeApprovalGrants) ? activeApprovalGrants : [];
+        grants.forEach((grant) => {
+            const item = document.createElement("div");
+            item.className = "approval-grant-item";
+
+            const header = document.createElement("div");
+            header.className = "approval-grant-item-header";
+
+            const tool = document.createElement("span");
+            tool.className = "approval-grant-tool";
+            tool.textContent = grant.tool_name || "tool";
+
+            const revokeBtn = document.createElement("button");
+            revokeBtn.type = "button";
+            revokeBtn.className = "approval-grant-revoke";
+            revokeBtn.textContent = "Revoke";
+            revokeBtn.addEventListener("click", () => {
+                sendToolControl("tool_revoke_grant", null, {grant_id: grant.id});
+            });
+
+            header.append(tool, revokeBtn);
+
+            const scope = document.createElement("div");
+            scope.className = "approval-grant-scope";
+            scope.textContent = grant.label || grant.scope_display || grant.scope_path || "";
+
+            const meta = document.createElement("div");
+            meta.className = "approval-grant-meta";
+            const createdBits = [];
+            if (grant.created_by) {
+                createdBits.push(`by ${grant.created_by}`);
+            }
+            if (grant.created_at) {
+                createdBits.push(formatTimestamp(grant.created_at));
+            }
+            meta.textContent = createdBits.join(" · ");
+
+            item.append(header, scope);
+            if (meta.textContent) {
+                item.append(meta);
+            }
+            approvalGrantsListEl.append(item);
+        });
+        const hasGrants = grants.length > 0;
+        approvalGrantsEmptyEl.hidden = hasGrants;
+        clearApprovalGrantsBtn.disabled = !hasGrants;
+    };
+
+    const setApprovalGrants = (grants) => {
+        activeApprovalGrants = Array.isArray(grants) ? grants : [];
+        renderApprovalGrants();
     };
 
     let isConnected = false;
@@ -213,6 +275,27 @@
         }) + " EST";
     };
 
+    const isCollapsibleTransportSystemMessage = (payload) => {
+        const text = typeof payload?.text === "string" ? payload.text.trim() : "";
+        return (
+            (payload?.role || "agent") === "system" &&
+            (text.startsWith("[WS Send]") || text.startsWith("[WS Rcv]"))
+        );
+    };
+
+    const updateTransportToggle = (button, expanded) => {
+        if (!button) {
+            return;
+        }
+        button.textContent = expanded ? "^" : "v";
+        button.setAttribute(
+            "aria-label",
+            expanded ? "Collapse system message" : "Expand system message"
+        );
+        button.setAttribute("aria-expanded", expanded ? "true" : "false");
+        button.title = expanded ? "Collapse" : "Expand";
+    };
+
     const createMessageElement = (payload) => {
         const roleName = payload.role || "agent";
         const direction = payload.direction || (roleName === "operator" ? "out" : "in");
@@ -221,6 +304,10 @@
 
         const meta = document.createElement("div");
         meta.className = "chat-message-meta";
+        const metaLead = document.createElement("div");
+        metaLead.className = "chat-message-meta-lead";
+        const metaTrail = document.createElement("div");
+        metaTrail.className = "chat-message-meta-trail";
         const authorLabel = document.createElement("span");
         authorLabel.className = "chat-message-author";
         const defaultAuthor = roleName === "assistant" ? agentName.toLowerCase() : roleName;
@@ -231,19 +318,37 @@
         const kindLabelText = payload.kind || payload.role || roleName;
         const showType =
             roleName === "system" && kindLabelText && kindLabelText !== authorLabelText;
+        metaLead.append(authorLabel);
         if (showType) {
             const kind = document.createElement("span");
             kind.className = "chat-message-type";
             kind.textContent = kindLabelText;
-            meta.append(authorLabel, kind, timestamp);
-        } else {
-            meta.append(authorLabel, timestamp);
+            metaLead.append(kind);
         }
+        metaTrail.append(timestamp);
 
         const body = document.createElement("p");
         body.className = "chat-message-text";
         body.textContent = payload.text || "";
 
+        if (isCollapsibleTransportSystemMessage(payload)) {
+            article.classList.add("chat-message-transport-log");
+            body.classList.add("chat-message-text-collapsed");
+            const toggle = document.createElement("button");
+            toggle.type = "button";
+            toggle.className = "chat-message-toggle";
+            updateTransportToggle(toggle, false);
+            toggle.addEventListener("click", () => {
+                const expanded = body.classList.toggle("chat-message-text-expanded");
+                body.classList.toggle("chat-message-text-collapsed", !expanded);
+                article.classList.toggle("chat-message-expanded", expanded);
+                updateTransportToggle(toggle, expanded);
+                scrollToBottom();
+            });
+            metaTrail.append(toggle);
+        }
+
+        meta.append(metaLead, metaTrail);
         article.append(meta, body);
         return article;
     };
@@ -306,7 +411,11 @@
         if (!socket || socket.readyState !== WebSocket.OPEN) {
             return;
         }
-        socket.send(JSON.stringify({type, tool_call_id: toolCallId, ...extra}));
+        const payload = {type, ...extra};
+        if (toolCallId) {
+            payload.tool_call_id = toolCallId;
+        }
+        socket.send(JSON.stringify(payload));
     };
 
     const renderArgs = (args) => {
@@ -315,6 +424,79 @@
         } catch {
             return String(args);
         }
+    };
+
+    const renderDetail = (detail) => {
+        if (detail === null || typeof detail === "undefined" || detail === "") {
+            return "";
+        }
+        if (typeof detail === "string") {
+            return detail;
+        }
+        try {
+            return JSON.stringify(detail, null, 2);
+        } catch {
+            return String(detail);
+        }
+    };
+
+    const updateDetailToggle = (button, expanded) => {
+        if (!button) {
+            return;
+        }
+        button.textContent = expanded ? "^" : "v";
+        button.setAttribute(
+            "aria-label",
+            expanded ? "Collapse tool response" : "Expand tool response"
+        );
+        button.setAttribute("aria-expanded", expanded ? "true" : "false");
+        button.title = expanded ? "Collapse response" : "Expand response";
+    };
+
+    const setToolCardDetail = (card, detail) => {
+        if (!card?._detailEl || !card?._footerEl || !card?._detailToggle) {
+            return;
+        }
+        const rendered = renderDetail(detail);
+        if (!rendered) {
+            card._detailEl.textContent = "";
+            card._detailEl.classList.add("tool-request-detail-collapsed");
+            card._detailEl.classList.remove("tool-request-detail-expanded");
+            card._footerEl.hidden = true;
+            card._detailToggle.hidden = true;
+            updateDetailToggle(card._detailToggle, false);
+            return;
+        }
+        card._detailEl.textContent = rendered;
+        card._footerEl.hidden = false;
+        card._detailToggle.hidden = false;
+        card._detailEl.classList.add("tool-request-detail-collapsed");
+        card._detailEl.classList.remove("tool-request-detail-expanded");
+        updateDetailToggle(card._detailToggle, false);
+    };
+
+    const setApprovalButtonsState = (card, state) => {
+        if (!card?._approveBtn || !card?._denyBtn) {
+            return;
+        }
+        const approveBtn = card._approveBtn;
+        const denyBtn = card._denyBtn;
+        const grantSelect = card._grantSelect;
+        approveBtn.classList.remove("selected");
+        denyBtn.classList.remove("selected");
+        approveBtn.disabled = state !== "pending";
+        denyBtn.disabled = state !== "pending";
+        if (grantSelect) {
+            grantSelect.disabled = state !== "pending";
+        }
+        approveBtn.textContent = state === "approved" ? "Approve ✓" : "Approve";
+        denyBtn.textContent = state === "denied" ? "Deny ✓" : "Deny";
+        if (state === "approved") {
+            approveBtn.classList.add("selected");
+        } else if (state === "denied") {
+            denyBtn.classList.add("selected");
+        }
+        card.dataset.approvalState = state;
     };
 
     const createToolCard = (payload) => {
@@ -353,20 +535,37 @@
 
         const actions = document.createElement("div");
         actions.className = "tool-request-card-actions";
-        if (payload.requires_approval) {
+        if (payload.awaiting_approval) {
+            if (Array.isArray(payload.approval_options) && payload.approval_options.length > 1) {
+                const grantSelect = document.createElement("select");
+                grantSelect.className = "tool-request-grant-select";
+                payload.approval_options.forEach((option) => {
+                    const el = document.createElement("option");
+                    el.value = option.mode || "once";
+                    el.textContent = option.label || option.mode || "Approve once";
+                    grantSelect.append(el);
+                });
+                card._grantSelect = grantSelect;
+                actions.append(grantSelect);
+            }
             const approveBtn = document.createElement("button");
-            approveBtn.className = "primary";
+            approveBtn.className = "tool-approve-btn";
             approveBtn.textContent = "Approve";
             approveBtn.addEventListener("click", () => {
-                sendToolControl("tool_approve", payload.tool_call_id);
+                sendToolControl("tool_approve", payload.tool_call_id, {
+                    grant_mode: card._grantSelect?.value || "once",
+                });
             });
             const denyBtn = document.createElement("button");
-            denyBtn.className = "secondary";
+            denyBtn.className = "tool-deny-btn";
             denyBtn.textContent = "Deny";
             denyBtn.addEventListener("click", () => {
                 sendToolControl("tool_deny", payload.tool_call_id);
             });
+            card._approveBtn = approveBtn;
+            card._denyBtn = denyBtn;
             actions.append(approveBtn, denyBtn);
+            setApprovalButtonsState(card, "pending");
         } else {
             const queued = document.createElement("span");
             queued.textContent = payload.status || "Queued";
@@ -377,10 +576,32 @@
 
         const footer = document.createElement("div");
         footer.className = "tool-request-footer";
+        footer.hidden = true;
+        const footerHeader = document.createElement("div");
+        footerHeader.className = "tool-request-footer-header";
+        const footerLabel = document.createElement("span");
+        footerLabel.className = "tool-request-footer-label";
+        footerLabel.textContent = "Response";
+        const detailToggle = document.createElement("button");
+        detailToggle.type = "button";
+        detailToggle.className = "tool-request-detail-toggle";
+        detailToggle.hidden = true;
+        updateDetailToggle(detailToggle, false);
         const detail = document.createElement("div");
         detail.className = "tool-request-detail";
-        footer.append(detail);
+        detail.classList.add("tool-request-detail-collapsed");
+        detailToggle.addEventListener("click", () => {
+            const expanded = detail.classList.toggle("tool-request-detail-expanded");
+            detail.classList.toggle("tool-request-detail-collapsed", !expanded);
+            footer.classList.toggle("tool-request-footer-expanded", expanded);
+            updateDetailToggle(detailToggle, expanded);
+            scrollToBottom();
+        });
+        footerHeader.append(footerLabel, detailToggle);
+        footer.append(footerHeader, detail);
         card._detailEl = detail;
+        card._detailToggle = detailToggle;
+        card._footerEl = footer;
 
         const bodyWrap = document.createElement("div");
         bodyWrap.className = "chat-message-text";
@@ -407,12 +628,17 @@
             card._queuedEl.style.display = status === "QUEUED" ? "" : "none";
         }
         if (card._detailEl && info) {
-            card._detailEl.textContent = info;
+            setToolCardDetail(card, info);
         }
-        const disableButtons = status !== "PENDING_APPROVAL";
-        card.querySelectorAll("button").forEach((btn) => {
-            btn.disabled = disableButtons;
-        });
+        if (card._approveBtn && card._denyBtn) {
+            if (status === "PENDING_APPROVAL") {
+                setApprovalButtonsState(card, "pending");
+            } else if (status === "DENIED") {
+                setApprovalButtonsState(card, "denied");
+            } else {
+                setApprovalButtonsState(card, "approved");
+            }
+        }
     };
 
     const handleToolRequest = (payload) => {
@@ -449,7 +675,7 @@
             text: `Tool ${data.tool_name} completed with status ${data?.status || "completed"}.`,
             kind: "tool",
         });
-        updateToolCardStatus(data.tool_call_id, data?.status || "COMPLETED", data.result && JSON.stringify(data.result));
+        updateToolCardStatus(data.tool_call_id, data?.status || "COMPLETED", data.result);
     };
 
     const handleToolDenied = (payload) => {
@@ -490,6 +716,7 @@
                 if (activeRunId) {
                     storeRunId(activeRunId);
                 }
+                setApprovalGrants(payload.approval_grants || []);
                 setStatus("Connected");
                 if (textarea) {
                     textarea.removeAttribute("disabled");
@@ -536,6 +763,11 @@
                 handleToolDenied(payload);
                 setStatus("Connected");
                 console.log("[WS] tool_denied run_id=", activeRunId, payload);
+                console.log("[WS RCV] ****************  END WS MESSAGE ******************");
+                return;
+            case "approval_grants":
+                setApprovalGrants(payload.grants || []);
+                console.log("[WS] approval_grants run_id=", activeRunId, payload);
                 console.log("[WS RCV] ****************  END WS MESSAGE ******************");
                 return;
             case ["error", "tool_error"]:
@@ -776,6 +1008,10 @@
     });
     document.addEventListener("visibilitychange", () => {
         console.warn("[VISIBILITY]", document.visibilityState);
+    });
+
+    clearApprovalGrantsBtn?.addEventListener("click", () => {
+        sendToolControl("tool_clear_grants", null);
     });
 
     initializeRunAndConnect();

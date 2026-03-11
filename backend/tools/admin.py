@@ -1,10 +1,52 @@
+import json
 from copy import deepcopy
 
 from django.contrib import admin, messages
+from django.core.management import call_command
+from django.http import HttpResponse
 from django.utils.html import format_html
 from django.urls import reverse
 
-from .models import Tool, ToolCall, ToolDefinition, ToolGroup, AgentToolGrant
+from .models import Tool, ToolApprovalGrant, ToolCall, ToolDefinition, ToolGroup, AgentToolGrant
+
+
+def _serialize_admin_value(value):
+    if hasattr(value, "isoformat"):
+        try:
+            return value.isoformat()
+        except TypeError:
+            pass
+    if hasattr(value, "hex"):
+        try:
+            return str(value)
+        except TypeError:
+            pass
+    if isinstance(value, dict):
+        return {str(key): _serialize_admin_value(subvalue) for key, subvalue in value.items()}
+    if isinstance(value, list):
+        return [_serialize_admin_value(item) for item in value]
+    return value
+
+
+def _serialize_model_instance(obj):
+    data: dict[str, object] = {}
+    for field in obj._meta.concrete_fields:
+        data[field.name] = _serialize_admin_value(field.value_from_object(obj))
+    return data
+
+
+def _json_export_response(*, model_label: str, records: list[dict[str, object]]) -> HttpResponse:
+    payload = {
+        "model": model_label,
+        "count": len(records),
+        "records": records,
+    }
+    response = HttpResponse(
+        json.dumps(payload, indent=2, sort_keys=True),
+        content_type="application/json",
+    )
+    response["Content-Disposition"] = f'attachment; filename="{model_label.lower()}_export.json"'
+    return response
 
 
 @admin.register(ToolGroup)
@@ -14,9 +56,36 @@ class ToolGroupAdmin(admin.ModelAdmin):
 
 @admin.register(Tool)
 class ToolAdmin(admin.ModelAdmin):
-    list_display = ("tool_group", "name", "description", "risk", "requires_approval", "released", "updated_at")
+    list_display = ("tool_group", "name", "description", "required_parameters_display", "risk", "requires_approval", "released", "updated_at")
     list_filter = ("tool_group", "risk", "requires_approval", "released")
     search_fields = ("name", "slug", "tool_group__name")
+    actions = ("import_schemas", "export_tools_to_json")
+
+    def required_parameters_display(self, obj: Tool) -> str:
+        return ", ".join(obj.required_parameters or [])
+    required_parameters_display.short_description = "Required params"
+
+    @admin.action(description="Import Schemas")
+    def import_schemas(self, request, queryset):
+        call_command("seed_tools")
+        self.message_user(
+            request,
+            "Imported tool schemas from the global registry via seed_tools.",
+            level=messages.SUCCESS,
+        )
+
+    @admin.action(description="Export Tools to JSON")
+    def export_tools_to_json(self, request, queryset):
+        records: list[dict[str, object]] = []
+        for tool in queryset.select_related("tool_group").order_by("tool_group__name", "name"):
+            row = _serialize_model_instance(tool)
+            row["tool_group_detail"] = {
+                "id": str(tool.tool_group_id),
+                "name": tool.tool_group.name,
+                "description": tool.tool_group.description,
+            }
+            records.append(row)
+        return _json_export_response(model_label="Tool", records=records)
 
 
 @admin.register(ToolDefinition)
@@ -24,7 +93,7 @@ class ToolDefinitionAdmin(admin.ModelAdmin):
     list_display = ("tool", "description", "workspace", "default_risk_level", "enabled", "default_requires_approval")
     list_filter = ("workspace", "default_risk_level", "enabled")
     search_fields = ("tool__name", "workspace__name")
-    actions = ("sync_to_tools",)
+    actions = ("sync_to_tools", "export_tools_to_json")
 
     @admin.action(description="Sync to Tools")
     def sync_to_tools(self, request, queryset):
@@ -62,6 +131,32 @@ class ToolDefinitionAdmin(admin.ModelAdmin):
                 level=messages.WARNING,
             )
 
+    @admin.action(description="Export Tools to JSON")
+    def export_tools_to_json(self, request, queryset):
+        records: list[dict[str, object]] = []
+        definitions = queryset.select_related("tool", "workspace", "tool__tool_group").order_by(
+            "workspace__name",
+            "tool__name",
+            "name",
+        )
+        for definition in definitions:
+            row = _serialize_model_instance(definition)
+            row["workspace_detail"] = {
+                "id": str(definition.workspace_id),
+                "name": definition.workspace.name,
+            }
+            if definition.tool_id:
+                row["tool_detail"] = {
+                    "id": str(definition.tool_id),
+                    "name": definition.tool.name,
+                    "slug": definition.tool.slug,
+                    "tool_group": definition.tool.tool_group.name,
+                }
+            else:
+                row["tool_detail"] = None
+            records.append(row)
+        return _json_export_response(model_label="ToolDefinition", records=records)
+
 
 @admin.register(AgentToolGrant)
 class AgentToolGrantAdmin(admin.ModelAdmin):
@@ -70,9 +165,16 @@ class AgentToolGrantAdmin(admin.ModelAdmin):
     search_fields = ("agent__name", "tool__name")
 
 
+@admin.register(ToolApprovalGrant)
+class ToolApprovalGrantAdmin(admin.ModelAdmin):
+    list_display = ("tool_name", "run", "scope_type", "scope_path", "created_by", "revoked_at")
+    list_filter = ("tool_name", "scope_type", "revoked_at")
+    search_fields = ("tool_name", "scope_path", "run__id")
+
+
 @admin.register(ToolCall)
 class ToolCallAdmin(admin.ModelAdmin):
-    list_display = ("id", "tool_name", "status", "requires_approval", "run_link")
+    list_display = ("id", "tool_name", "status", "requires_approval", "approval_grant", "run_link")
     list_filter = ("status", "requires_approval")
     search_fields = ("id", "tool_name", "run__id")
 

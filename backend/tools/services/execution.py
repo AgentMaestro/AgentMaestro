@@ -19,6 +19,8 @@ from tools.services.quotas import acquire_tool_call_slots, release_tool_call_slo
 from tools.services.result_bus import store_tool_result
 
 logger = logging.getLogger(__name__)
+_DEFAULT_TOOLRUNNER_SANDBOX_ROOT = Path("C:/tmp/agentmaestro/sandbox")
+_DEFAULT_TOOLRUNNER_HTTP_TIMEOUT_BUFFER_S = 30.0
 
 
 def _run_group(run_id: str) -> str:
@@ -239,6 +241,17 @@ def _ensure_paths_within_sandbox(tool_call: ToolCall) -> None:
 
 def _build_toolrunner_payload(tool_call: ToolCall, definition: ToolDefinition) -> tuple[bytes, dict]:
     args = tool_call.args or {}
+    allowed_roots = []
+    agent = getattr(tool_call.run, "agent", None)
+    if agent is not None:
+        allowed_roots = [str(root) for root in _resolve_sandbox_roots(agent)]
+    repo_root = str(Path(settings.BASE_DIR).resolve().parent)
+    sandbox_root = Path(getattr(settings, "TOOLRUNNER_SANDBOX_ROOT", _DEFAULT_TOOLRUNNER_SANDBOX_ROOT)).resolve()
+    tmp_root = str(sandbox_root.parent)
+    allow_write = bool(
+        tool_call.tool_name in {"file_write", "file_patch"}
+        and tool_call.approved_at
+    )
     payload = {
         "request_id": str(tool_call.id),
         "workspace_id": str(tool_call.run.workspace_id),
@@ -249,6 +262,10 @@ def _build_toolrunner_payload(tool_call: ToolCall, definition: ToolDefinition) -
             "risk_level": tool_call.risk_level,
             "tool_definition_id": str(definition.id),
             "requires_approval": tool_call.requires_approval,
+            "allow_write": allow_write,
+            "allowed_roots": allowed_roots,
+            "repo_root": repo_root,
+            "tmp_root": tmp_root,
         },
     }
     limits = dict(args.get("limits") or {})
@@ -263,6 +280,67 @@ def _sign_payload(body: bytes, timestamp: str) -> str:
     key = settings.TOOLRUNNER_SECRET.encode("utf-8")
     message = timestamp.encode("utf-8") + b"." + body
     return hmac.new(key, message, sha256).hexdigest()
+
+
+def _toolrunner_error_payload(response: httpx.Response) -> dict[str, object]:
+    try:
+        payload = response.json()
+        if isinstance(payload, dict):
+            return payload
+    except Exception:
+        pass
+    try:
+        body_text = response.text
+    except Exception:
+        body_text = ""
+    return {
+        "ok": False,
+        "error": {
+            "code": "tool_runner.HTTP_ERROR",
+            "message": f"toolrunner returned HTTP {response.status_code}",
+            "details": {"body": body_text[:4000]},
+        },
+    }
+
+
+def _coerce_positive_seconds(raw_value: object | None, *, divisor: float = 1.0) -> float | None:
+    if raw_value in (None, "", False):
+        return None
+    try:
+        value = float(raw_value)
+    except (TypeError, ValueError):
+        return None
+    if value <= 0:
+        return None
+    return value / divisor
+
+
+def _tool_timeout_seconds(tool_call: ToolCall, payload: dict[str, object]) -> float | None:
+    args = tool_call.args or {}
+    timeout_s = _coerce_positive_seconds(args.get("timeout_ms"), divisor=1000.0)
+    if timeout_s is not None:
+        return timeout_s
+    limits = payload.get("limits")
+    if isinstance(limits, dict):
+        timeout_s = _coerce_positive_seconds(limits.get("timeout_s"))
+        if timeout_s is not None:
+            return timeout_s
+    return None
+
+
+def _toolrunner_http_timeout_seconds(tool_call: ToolCall, payload: dict[str, object]) -> float:
+    default_timeout = float(getattr(settings, "TOOLRUNNER_HTTP_TIMEOUT", 45))
+    tool_timeout = _tool_timeout_seconds(tool_call, payload)
+    if tool_timeout is None:
+        return default_timeout
+    buffer_s = float(
+        getattr(
+            settings,
+            "TOOLRUNNER_HTTP_TIMEOUT_BUFFER",
+            _DEFAULT_TOOLRUNNER_HTTP_TIMEOUT_BUFFER_S,
+        )
+    )
+    return max(default_timeout, tool_timeout + max(buffer_s, 1.0))
 
 
 def _emit_tool_call_completed(tool_call: ToolCall, duration_ms: int) -> None:
@@ -365,9 +443,19 @@ def execute_tool_call(tool_call_id: str) -> ToolCall:
     exit_code = None
     succeeded = False
     result_payload: dict[str, object] = {}
+    tool_timeout_s = _tool_timeout_seconds(tool_call, payload)
+    http_timeout_s = _toolrunner_http_timeout_seconds(tool_call, payload)
     logger.info("execute_tool_call sending http tool_call=%s tool=%s", tool_call.id, tool_call.tool_name)
+    logger.info(
+        "execute_tool_call timeout plan tool_call=%s tool=%s tool_timeout_s=%s http_timeout_s=%s default_http_timeout_s=%s",
+        tool_call.id,
+        tool_call.tool_name,
+        tool_timeout_s,
+        http_timeout_s,
+        getattr(settings, "TOOLRUNNER_HTTP_TIMEOUT", 45),
+    )
     try:
-        with httpx.Client(timeout=settings.TOOLRUNNER_HTTP_TIMEOUT) as client:
+        with httpx.Client(timeout=http_timeout_s) as client:
             request = httpx.Request("POST", settings.TOOLRUNNER_URL)
             response = client.post(
                 settings.TOOLRUNNER_URL,
@@ -384,9 +472,40 @@ def execute_tool_call(tool_call_id: str) -> ToolCall:
         stderr = data.get("stderr") or ""
         result_payload = data.get("result") or {}
     except httpx.HTTPStatusError as exc:
-        stderr = f"toolrunner error: {exc.response.status_code}"
+        error_payload = _toolrunner_error_payload(exc.response)
+        result_payload = {
+            "http_status": exc.response.status_code,
+            "toolrunner_response": error_payload,
+        }
+        error = error_payload.get("error") if isinstance(error_payload, dict) else {}
+        error = error if isinstance(error, dict) else {}
+        code = str(error.get("code") or "").strip()
+        message = str(error.get("message") or "").strip()
+        if code and message:
+            stderr = f"toolrunner error: {code}: {message}"
+        elif message:
+            stderr = f"toolrunner error: {message}"
+        else:
+            stderr = f"toolrunner error: {exc.response.status_code}"
     except httpx.RequestError as exc:
-        stderr = f"toolrunner request failed: {exc}"
+        result_payload = {
+            "http_timeout_s": http_timeout_s,
+            "tool_timeout_s": tool_timeout_s,
+            "timeout_source": "TOOLRUNNER_HTTP_TIMEOUT"
+            if isinstance(exc, httpx.TimeoutException)
+            else None,
+            "tool_timeout_source": "args.timeout_ms_or_limits.timeout_s"
+            if tool_timeout_s is not None
+            else None,
+        }
+        if isinstance(exc, httpx.TimeoutException):
+            stderr = (
+                "toolrunner request failed: timed out "
+                f"(source=TOOLRUNNER_HTTP_TIMEOUT effective_timeout_s={http_timeout_s}"
+                f" tool_timeout_s={tool_timeout_s})"
+            )
+        else:
+            stderr = f"toolrunner request failed: {exc}"
     except Exception as exc:  # pragma: no cover
         logger.exception("execute_tool_call exception tool_call=%s", tool_call.id)
         raise

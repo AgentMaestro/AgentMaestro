@@ -65,6 +65,13 @@ async def run_tool(
             resp = await client.post(base_url, content=body, headers=headers)
             resp.raise_for_status()
             data = resp.json()
+        except httpx.TimeoutException as exc:
+            return {
+                "ok": False,
+                "result": None,
+                "meta": {"timeout_source": "TOOLRUNNER_HTTP_TIMEOUT", "timeout_seconds": timeout},
+                "error": f"toolrunner request timed out (source=TOOLRUNNER_HTTP_TIMEOUT timeout_seconds={timeout})",
+            }
         except Exception as exc:
             return {"ok": False, "result": None, "meta": {}, "error": str(exc)}
 

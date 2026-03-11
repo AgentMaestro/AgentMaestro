@@ -44,12 +44,12 @@
   }
 
   // Helpers for command sending (approve/cancel/retry stubs for now).
-  function sendApproveToolCall(ws, toolCallId) {
+  function sendApproveToolCall(ws, toolCallId, grantMode = "once") {
     if (!ws || ws.readyState !== WebSocket.OPEN) {
       console.warn("[run_ws] WS not open.");
       return;
     }
-    ws.send(JSON.stringify({ type: "cmd", cmd: "approve_tool_call", tool_call_id: toolCallId }));
+    ws.send(JSON.stringify({ type: "cmd", cmd: "approve_tool_call", tool_call_id: toolCallId, grant_mode: grantMode }));
   }
 
 function sendCancelRun(ws, runId) {

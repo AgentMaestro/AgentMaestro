@@ -1,4 +1,395 @@
+from copy import deepcopy
+import json
+
 from .models import ToolRisk
+
+
+def _schema_docs(required_parameters, examples, response_fields=None) -> str:
+    lines: list[str] = []
+    required = list(required_parameters or [])
+    if required:
+        lines.append("REQUIRED PARAMETERS:")
+        for name in required:
+            lines.append(f"- {name}")
+    else:
+        lines.append("REQUIRED PARAMETERS:")
+        lines.append("- none")
+    example_items = []
+    if isinstance(examples, list):
+        example_items = [item for item in examples if item is not None]
+    elif examples is not None:
+        example_items = [examples]
+    if example_items:
+        lines.append("")
+        if len(example_items) == 1:
+            lines.append("MINIMAL WORKING EXAMPLE PAYLOAD:")
+            lines.append(json.dumps(example_items[0], indent=2))
+        else:
+            lines.append("WORKING EXAMPLE PAYLOADS:")
+            for example in example_items:
+                lines.append(json.dumps(example, indent=2))
+    if response_fields:
+        lines.append("")
+        lines.append("RESPONSE FIELDS TO EXPECT:")
+        for field_name, meaning in response_fields.items():
+            lines.append(f"- {field_name}: {meaning}")
+    return "\n".join(lines)
+
+
+_TOOL_EXAMPLES = {
+    "file_read": [
+        {"path": "README.md", "mode": "text"},
+        {"path": "C:\\tmp\\agentmaestro\\smoke_tools\\hello.py", "mode": "text"},
+    ],
+    "repo_tree": [
+        {"path": "backend", "max_depth": 3, "include_files": True},
+        {"path": "C:\\Dev\\AgentMaestro\\backend\\runs\\tests\\fixtures\\tool_repo", "max_depth": 3, "include_files": True},
+    ],
+    "file_write": [
+        {"path": "notes/hello.py", "content": "print('hello')\n"},
+        {"path": "C:\\tmp\\agentmaestro\\smoke_tools\\hello.py", "content": "print('hello')\n", "overwrite": True},
+    ],
+    "file_delete": [
+        {"path": "notes/hello.py"},
+        {"path": "C:\\tmp\\agentmaestro\\smoke_tools\\hello.py"},
+    ],
+    "file_patch": [
+        {"path": "notes/hello.py", "patch_unified": "--- a/notes/hello.py\n+++ b/notes/hello.py\n@@ -1,1 +1,1 @@\n-print('hello')\n+print('hello world')\n"},
+        {"path": "C:\\tmp\\agentmaestro\\smoke_tools\\hello.py", "patch_unified": "--- a/hello.py\n+++ b/hello.py\n@@ -1,1 +1,1 @@\n-print('hello')\n+print('hello world')\n"},
+    ],
+    "git_add": [
+        {"repo_dir": ".", "paths": ["backend/tools/admin.py"]},
+        {"repo_dir": "C:\\Dev\\AgentMaestro", "paths": ["C:\\Dev\\AgentMaestro\\backend\\tools\\admin.py"]},
+    ],
+    "git_status": [
+        {"repo_dir": ".", "porcelain": "v1", "include_untracked": True},
+        {"repo_dir": "C:\\Dev\\AgentMaestro", "porcelain": "v1", "include_untracked": True},
+    ],
+    "git_diff": [
+        {"repo_dir": ".", "paths": ["backend/tools/admin.py"], "staged": False},
+        {"repo_dir": "C:\\Dev\\AgentMaestro", "paths": ["C:\\Dev\\AgentMaestro\\backend\\tools\\admin.py"], "staged": False},
+    ],
+    "git_log": [
+        {"repo_dir": ".", "max_count": 5},
+        {"repo_dir": "C:\\Dev\\AgentMaestro", "max_count": 5},
+    ],
+    "git_apply": [
+        {"repo_dir": ".", "patch_unified": "--- a/example.txt\n+++ b/example.txt\n@@ -1 +1 @@\n-old\n+new\n"},
+        {"repo_dir": "C:\\Dev\\AgentMaestro", "patch_unified": "--- a/example.txt\n+++ b/example.txt\n@@ -1 +1 @@\n-old\n+new\n"},
+    ],
+    "git_branch_create": [
+        {"repo_dir": ".", "name": "smoke/tool-docs", "checkout": False},
+        {"repo_dir": "C:\\Dev\\AgentMaestro", "name": "smoke/tool-docs", "checkout": False},
+    ],
+    "git_checkout": [
+        {"repo_dir": ".", "ref": "main"},
+        {"repo_dir": "C:\\Dev\\AgentMaestro", "ref": "main"},
+    ],
+    "git_commit": [
+        {"repo_dir": ".", "message": "Smoke test commit"},
+        {"repo_dir": "C:\\Dev\\AgentMaestro", "message": "Smoke test commit", "paths_to_add": ["C:\\Dev\\AgentMaestro\\backend\\tools\\admin.py"]},
+    ],
+    "git_push": [
+        {"repo_dir": ".", "remote": "origin", "ref": "main"},
+        {"repo_dir": "C:\\Dev\\AgentMaestro", "remote": "origin", "ref": "main"},
+    ],
+    "python_exec": [
+        {"code": "from pathlib import Path\nprint(Path('README.md').exists())"},
+        {"files": [{"path": "scripts/hello.py", "content_b64": "cHJpbnQoJ2hlbGxvJykK"}], "entrypoint": "scripts/hello.py"},
+    ],
+    "webhook": {"url": "https://example.test/webhook", "payload": {"event": "smoke"}},
+    "coverage_runner": [
+        {"kind": "pytest_coverage", "cwd": ".", "args": ["toolrunner/app/tests/test_file_write.py"], "timeout_ms": 600000},
+        {"kind": "pytest_coverage", "cwd": "C:\\Dev\\AgentMaestro", "args": ["C:\\Dev\\AgentMaestro\\toolrunner\\app\\tests\\test_file_write.py"], "timeout_ms": 600000},
+    ],
+    "format_runner": [
+        {"tool": "ruff_format", "mode": "apply", "cwd": ".", "paths": ["toolrunner/app/tests/test_file_write.py"]},
+        {"tool": "ruff_format", "mode": "apply", "cwd": "C:\\Dev\\AgentMaestro", "paths": ["C:\\Dev\\AgentMaestro\\toolrunner\\app\\tests\\test_file_write.py"]},
+    ],
+    "lint_runner": [
+        {"tool": "ruff", "cwd": ".", "paths": ["backend/tools"]},
+        {"tool": "ruff", "cwd": "C:\\Dev\\AgentMaestro", "paths": ["C:\\Dev\\AgentMaestro\\backend\\tools"]},
+    ],
+    "run_command": {
+        "cmd": ["cmd", "/C", "echo RUN_COMMAND_SMOKE_OK && dir C:\\Dev\\AgentMaestro\\toolrunner\\app\\tools"],
+        "cwd": ".",
+    },
+    "search_code": [
+        {"query": "provider_call_id", "root": "backend", "include_globs": ["**/*.py"]},
+        {"query": "provider_call_id", "root": "C:\\Dev\\AgentMaestro\\backend", "include_globs": ["**/*.py"]},
+    ],
+    "shell_exec": [
+        {"cmd": ["powershell", "-NoProfile", "-Command", "Get-Location"], "cwd": "."},
+        {"cmd": ["powershell", "-NoProfile", "-Command", "Get-Location"], "cwd": "C:\\Dev\\AgentMaestro"},
+    ],
+    "test_runner": [
+        {"kind": "pytest", "pytest_args": ["toolrunner/app/tests/test_file_write.py"], "cwd": ".", "parse": "pytest", "timeout_ms": 600000},
+        {"kind": "pytest", "pytest_args": ["C:\\Dev\\AgentMaestro\\toolrunner\\app\\tests\\test_file_write.py"], "cwd": "C:\\Dev\\AgentMaestro", "parse": "pytest", "timeout_ms": 600000},
+    ],
+    "typecheck_runner": [
+        {"tool": "mypy", "cwd": ".", "args": ["backend"], "timeout_ms": 300000, "max_output_bytes": 262144},
+        {"tool": "mypy", "cwd": "C:\\Dev\\AgentMaestro", "args": ["C:\\Dev\\AgentMaestro\\backend"], "timeout_ms": 300000, "max_output_bytes": 262144},
+    ],
+}
+
+_TOOL_ADDITIONAL_DOCS = {
+    "file_read": "\n\nPATH NOTES:\n"
+    "- `path` may be absolute or repo-relative.\n"
+    "- Repo-relative paths resolve from the repository root when one is provided in policy context.",
+    "repo_tree": "\n\nPATH NOTES:\n"
+    "- `path` may be absolute or repo-relative.\n"
+    "- Repo-relative paths resolve from the repository root when one is provided in policy context.",
+    "file_write": "\n\nPATH NOTES:\n"
+    "- `path` may be absolute or repo-relative.\n"
+    "- Repo-relative paths resolve from the repository root when one is provided in policy context.\n\n"
+    "WRITE MODE NOTES:\n"
+    "- `overwrite` is optional.\n"
+    "- Leave `overwrite=false` to avoid replacing an existing file.\n"
+    "- Set `overwrite=true` when you intentionally want to replace an existing file instead of deleting it first.\n"
+    "- Use `file_delete` only when the goal is to remove the file entirely.",
+    "file_patch": "\n\nPATCH FORMAT NOTES:\n"
+    "- `path` may be absolute or repo-relative.\n"
+    "- Repo-relative paths resolve from the repository root when one is provided in policy context.\n"
+    "- `patch_unified` is required.\n"
+    "- Provide a complete unified diff for a single target file.\n"
+    "- Include `---` and `+++` file markers and at least one `@@` hunk header.\n"
+    "- Hunk headers must use explicit, accurate unified diff ranges, for example `@@ -1,2 +1,2 @@` or `@@ -0,0 +1,3 @@`.\n"
+    "- Shorthand headers like `@@ -1 +1 @@` are rejected. Even pure insertions must include counts.\n"
+    "- Do not include Codex `*** Begin Patch` / `*** End Patch` fences; this tool expects only unified diff text.\n\n"
+    "SUCCESSFUL PATCH EXAMPLES:\n"
+    "- Modify an existing file:\n"
+    "  --- a/hello.py\n"
+    "  +++ b/hello.py\n"
+    "  @@ -1,1 +1,1 @@\n"
+    "  -print('hello')\n"
+    "  +print('hello world')\n"
+    "- Add a new file with `create_if_missing=true`:\n"
+    "  --- /dev/null\n"
+    "  +++ b/new_file.txt\n"
+    "  @@ -0,0 +1 @@\n"
+    "  +created by patch\n\n"
+    "TROUBLESHOOTING:\n"
+    "- If parsing fails, check that `---` / `+++` markers are present and every `@@` header uses explicit counts.\n"
+    "- If the wrong file is targeted, make sure the diff path suffix matches the `path` argument.\n"
+    "- If a hunk is rejected, re-read the file and rebuild the patch against the current contents.\n"
+    "- Use standard `\\n` line endings in the diff text. Mixed or malformed newline style can break patch parsing.",
+    "test_runner": "\n\nRUN MODE NOTES:\n"
+    "- `kind` is required.\n"
+    "- Supported kinds are `powershell_script`, `pytest`, and `command`.\n"
+    "- Choose exactly one mode:\n"
+    "  - `kind=powershell_script` requires `script_path`\n"
+    "  - `kind=pytest` requires `pytest_args`\n"
+    "  - `kind=command` requires `cmd`\n"
+    "- Prefer `kind=pytest` for narrow smoke tests and `kind=powershell_script` for repo-standard test entrypoints.\n\n"
+    "MINIMAL SUCCESSFUL EXAMPLES:\n"
+    "- Pytest mode:\n"
+    "  `{ \"kind\": \"pytest\", \"pytest_args\": [\"toolrunner/app/tests/test_file_write.py\"], \"cwd\": \".\", \"parse\": \"pytest\" }`\n"
+    "- PowerShell script mode:\n"
+    "  `{ \"kind\": \"powershell_script\", \"script_path\": \"backend/scripts/runtests.ps1\", \"cwd\": \".\" }`\n\n"
+    "TROUBLESHOOTING:\n"
+    "- If you get an HTTP 500 or generic runner failure, retry once with the same payload to rule out a transient worker issue.\n"
+    "- If it still fails, narrow the test target or switch from script mode to direct pytest mode.\n"
+    "- If no detail is returned, inspect backend/toolrunner server logs for the underlying test command and stderr.\n"
+    "- To find candidate pytest targets, inspect the repo's `tests/` directories and existing smoke-test examples.\n\n"
+    "PYTHON ENVIRONMENT NOTES:\n"
+    "- `pytest` mode runs through `TOOLRUNNER_PYTHON`.\n"
+    "- If `TOOLRUNNER_PYTHON` is unset, toolrunner falls back to `.venv` discovery before using plain `python`.\n"
+    "- If `pytest` is missing, the tool reports the resolved interpreter path and source.",
+    "coverage_runner": "\n\nRUN MODE NOTES:\n"
+    "- `kind` is required and currently must be `pytest_coverage`.\n"
+    "- Provide pytest target arguments via `args`.\n"
+    "- Coverage generates a `coverage.json` artifact in the working directory.\n\n"
+    "MINIMAL SUCCESSFUL EXAMPLE:\n"
+    "- `{ \"kind\": \"pytest_coverage\", \"cwd\": \".\", \"args\": [\"toolrunner/app/tests/test_file_write.py\"] }`\n\n"
+    "TROUBLESHOOTING:\n"
+    "- If coverage fails with a generic runner error, try the same target first with `test_runner`.\n"
+    "- If the test run passes but coverage still fails, inspect logs for the follow-up `coverage json` command.\n"
+    "- Use a narrow pytest target first to keep output and run time predictable.\n\n"
+    "PYTHON ENVIRONMENT NOTES:\n"
+    "- Coverage commands run through `TOOLRUNNER_PYTHON`.\n"
+    "- If `TOOLRUNNER_PYTHON` is unset, toolrunner falls back to `.venv` discovery before using plain `python`.\n"
+    "- If `coverage` or `pytest` is missing, the tool reports the resolved interpreter path and source.",
+    "format_runner": "\n\nRUN MODE NOTES:\n"
+    "- `tool` is required.\n"
+    "- Supported formatter modes are `ruff_format`, `black`, `prettier`, and `command`.\n"
+    "- Choose `mode=check` for validation-only or `mode=apply` to write changes.\n"
+    "- `cwd` and each item in `paths` may be absolute or repo-relative.\n"
+    "- Use `cmd` only when `tool=command`.\n\n"
+    "MINIMAL SUCCESSFUL EXAMPLE:\n"
+    "- `{ \"tool\": \"ruff_format\", \"mode\": \"apply\", \"cwd\": \".\", \"paths\": [\"toolrunner/app/tests/test_file_write.py\"] }`\n\n"
+    "TROUBLESHOOTING:\n"
+    "- If formatting fails, try a single file in `paths` before expanding scope.\n"
+    "- `changed_files` parsing is best for `ruff_format`; other formatter modes may only return stdout/stderr.\n"
+    "- If you need an arbitrary formatter command, use `tool=command` and provide `cmd`.\n\n"
+    "PYTHON ENVIRONMENT NOTES:\n"
+    "- `ruff_format` runs through `TOOLRUNNER_PYTHON`.\n"
+    "- If `TOOLRUNNER_PYTHON` is unset, toolrunner falls back to `.venv` discovery before using plain `python`.\n"
+    "- If `ruff` is missing, the tool reports the resolved interpreter path and source.",
+    "run_command": "\n\nCOMMAND ARGUMENT NOTES:\n"
+    "- `cmd` is required and must be a list of strings.\n"
+    "- Pass the executable and each argument as a separate list item.\n"
+    "- Do not send a single shell string unless you are explicitly invoking a shell such as `cmd /C` or `powershell -Command`.\n"
+    "- `cwd` may be absolute or repo-relative.\n\n"
+    "MINIMAL SUCCESSFUL EXAMPLE:\n"
+    "- `{ \"cmd\": [\"cmd\", \"/C\", \"echo RUN_COMMAND_SMOKE_OK && dir C:\\\\Dev\\\\AgentMaestro\\\\toolrunner\\\\app\\\\tools\"], \"cwd\": \".\" }`\n\n"
+    "TROUBLESHOOTING:\n"
+    "- If validation fails, check that `cmd` is an array and not a single string.\n"
+    "- If you need shell features such as `&&`, invoke a shell explicitly through `cmd /C` or `powershell -Command`.\n"
+    "- If the command times out, inspect the returned timeout source and effective timeout value.",
+    "search_code": "\n\nPATH NOTES:\n"
+    "- `root` may be omitted, repo-relative, or absolute.\n"
+    "- Repo-relative `root` values resolve from the repository root when one is provided in policy context.\n"
+    "- Absolute `root` values are permitted only when they fall under the allowed roots for the run.\n"
+    "- `include_globs` are evaluated relative to the provided `root`.\n\n"
+    "RESULT NOTES:\n"
+    "- Match snippets include `line`, `col`, and `line_text` when the tool can derive them from the scanned text.",
+    "shell_exec": "\n\nPATH NOTES:\n"
+    "- `cwd` may be absolute or repo-relative.\n"
+    "- Repo-relative `cwd` values resolve from the repository root when one is provided in policy context.",
+    "python_exec": "\n\nPATH NOTES:\n"
+    "- Each `files[].path` and `entrypoint` value may be absolute or repo-relative.\n"
+    "- Repo-relative values resolve from the repository root when one is provided in policy context.",
+    "file_delete": "\n\nPATH NOTES:\n"
+    "- `path` may be absolute or repo-relative.\n"
+    "- Repo-relative paths resolve from the repository root when one is provided in policy context.",
+    "git_add": "\n\nPATH NOTES:\n"
+    "- `repo_dir` may be absolute or repo-relative.\n"
+    "- Each item in `paths` may be absolute or repo-relative to the selected repository.\n"
+    "- Repo-relative values resolve from the repository root when one is provided in policy context.",
+    "git_status": "\n\nPATH NOTES:\n"
+    "- `repo_dir` may be absolute or repo-relative.\n"
+    "- Repo-relative `repo_dir` resolves from the repository root when one is provided in policy context.",
+    "git_diff": "\n\nPATH NOTES:\n"
+    "- `repo_dir` may be absolute or repo-relative.\n"
+    "- Each item in `paths` may be absolute or repo-relative to the selected repository.\n"
+    "- Repo-relative values resolve from the repository root when one is provided in policy context.",
+    "git_log": "\n\nPATH NOTES:\n"
+    "- `repo_dir` may be absolute or repo-relative.\n"
+    "- Repo-relative `repo_dir` resolves from the repository root when one is provided in policy context.",
+    "git_apply": "\n\nPATH NOTES:\n"
+    "- `repo_dir` may be absolute or repo-relative.\n"
+    "- Repo-relative `repo_dir` resolves from the repository root when one is provided in policy context.",
+    "git_branch_create": "\n\nPATH NOTES:\n"
+    "- `repo_dir` may be absolute or repo-relative.\n"
+    "- Repo-relative `repo_dir` resolves from the repository root when one is provided in policy context.",
+    "git_checkout": "\n\nPATH NOTES:\n"
+    "- `repo_dir` may be absolute or repo-relative.\n"
+    "- Repo-relative `repo_dir` resolves from the repository root when one is provided in policy context.",
+    "git_commit": "\n\nPATH NOTES:\n"
+    "- `repo_dir` may be absolute or repo-relative.\n"
+    "- Each item in `paths_to_add` may be absolute or repo-relative to the selected repository.\n"
+    "- Repo-relative values resolve from the repository root when one is provided in policy context.",
+    "git_push": "\n\nPATH NOTES:\n"
+    "- `repo_dir` may be absolute or repo-relative.\n"
+    "- Repo-relative `repo_dir` resolves from the repository root when one is provided in policy context.",
+    "lint_runner": "\n\nPATH NOTES:\n"
+    "- `cwd` and each item in `paths` may be absolute or repo-relative.\n"
+    "- Repo-relative values resolve from the repository root when one is provided in policy context.\n\n"
+    "PYTHON ENVIRONMENT NOTES:\n"
+    "- `ruff` runs through `TOOLRUNNER_PYTHON`.\n"
+    "- If `TOOLRUNNER_PYTHON` is unset, toolrunner falls back to `.venv` discovery before using plain `python`.\n"
+    "- If `ruff` is missing, the tool reports the resolved interpreter path and source.",
+    "typecheck_runner": "\n\nPATH NOTES:\n"
+    "- `cwd` may be absolute or repo-relative.\n"
+    "- Path arguments passed through `args` may also be absolute or repo-relative when the underlying type checker supports them.\n\n"
+    "DEFAULT LIMITS:\n"
+    "- `timeout_ms` defaults to `300000`.\n"
+    "- `max_output_bytes` defaults to `262144`.\n\n"
+    "PYTHON ENVIRONMENT NOTES:\n"
+    "- `mypy` and `pyright` run through `TOOLRUNNER_PYTHON`.\n"
+    "- If `TOOLRUNNER_PYTHON` is unset, toolrunner falls back to `.venv` discovery before using plain `python`.\n"
+    "- If a Python-backed type checker is missing, the tool reports the resolved interpreter path and source.",
+}
+
+
+_TOOL_RESPONSE_FIELDS = {
+    "file_read": {
+        "path": "Echoes the requested path value.",
+        "mode": "Whether the response content is text or binary.",
+        "content": "Returned text content for text mode.",
+        "content_base64": "Returned bytes encoded as base64 for binary mode.",
+        "truncated": "True when max_bytes cut the response short.",
+    },
+    "repo_tree": {
+        "root": "The root path that was listed.",
+        "entries": "Sorted tree entries returned by the tool.",
+        "stats": "Counts for files, dirs, exclusions, and allowed roots used by policy.",
+        "truncated": "True when max_entries limited the walk.",
+    },
+    "search_code": {
+        "matches": "Path-sorted files with snippets for each match; snippets include line, col, and line_text when available.",
+        "stats": "File counts, total matches, and exclusion totals.",
+        "truncated": "True when max_results or timeout limits stopped the scan.",
+    },
+    "file_write": {
+        "resolved_path": "The exact filesystem path that was ultimately written.",
+        "created": "True when the file did not exist before this write.",
+        "overwritten": "True when an existing file was replaced.",
+        "bytes_written": "Number of bytes written to disk.",
+        "sha256": "Checksum of the written content.",
+    },
+    "file_patch": {
+        "path": "The requested target path.",
+        "applied": "True when every hunk applied cleanly.",
+        "applied_partially": "True when some hunks applied and rejects were produced.",
+        "backup_path": "Backup copy path when backup=true.",
+        "rejects_path": "Reject file path when a hunk fails.",
+    },
+    "file_delete": {
+        "resolved_path": "The exact filesystem path that was targeted for deletion.",
+        "deleted": "True when a file or directory was removed.",
+        "missing": "True when missing_ok=true and the target did not exist.",
+        "deleted_type": "Whether the deleted target was a file or directory.",
+    },
+    "coverage_runner": {
+        "total_percent": "Overall measured coverage percentage from coverage.json.",
+        "files": "Per-file coverage percentages extracted from coverage.json.",
+        "coverage_json_path": "Filesystem path to the generated coverage.json artifact.",
+        "stdout": "Stdout from the coverage run command.",
+        "python_interpreter": "Interpreter path used for Python-backed coverage commands.",
+        "python_interpreter_source": "Whether the interpreter came from TOOLRUNNER_PYTHON or fallback discovery.",
+    },
+    "test_runner": {
+        "summary": "Parsed pytest counts when parse=pytest.",
+        "failed_tests": "Structured failure entries extracted from pytest output.",
+        "exit_code": "Process exit status for the test run.",
+        "stdout": "Captured test output.",
+        "stderr": "Captured error output, if any.",
+        "python_interpreter": "Interpreter path used for pytest mode.",
+        "python_interpreter_source": "Whether the interpreter came from TOOLRUNNER_PYTHON or fallback discovery.",
+    },
+    "format_runner": {
+        "changed_files": "Files detected as changed by formatter output parsing.",
+        "parse_mode": "The formatter/parser mode used to interpret output.",
+        "stdout": "Captured formatter stdout.",
+        "stderr": "Captured formatter stderr.",
+        "python_interpreter": "Interpreter path used for Python-backed formatter modes such as ruff_format.",
+        "python_interpreter_source": "Whether the interpreter came from TOOLRUNNER_PYTHON or fallback discovery.",
+    },
+    "lint_runner": {
+        "issues": "Parsed lint findings when the selected parser supports it.",
+        "parse_mode": "The parser mode used to interpret linter output.",
+        "stdout": "Captured linter stdout.",
+        "stderr": "Captured linter stderr.",
+        "python_interpreter": "Interpreter path used for Python-backed linter modes such as ruff.",
+        "python_interpreter_source": "Whether the interpreter came from TOOLRUNNER_PYTHON or fallback discovery.",
+    },
+    "typecheck_runner": {
+        "diagnostics": "Parsed type-check findings when the selected parser supports it.",
+        "parse_mode": "The parser mode used to interpret output.",
+        "stdout": "Captured type-check stdout.",
+        "stderr": "Captured type-check stderr.",
+        "python_interpreter": "Interpreter path used for Python-backed type checkers such as mypy and pyright.",
+        "python_interpreter_source": "Whether the interpreter came from TOOLRUNNER_PYTHON or fallback discovery.",
+    },
+    "run_command": {
+        "exit_code": "The process exit code, or null if the process timed out.",
+        "stdout": "Captured standard output text.",
+        "stderr": "Captured standard error text.",
+        "timed_out": "True when the process exceeded its timeout.",
+        "timeout_source": "Which timeout setting was enforced for the command.",
+    },
+}
 
 TOOL_REGISTRY = [
     {
@@ -51,13 +442,6 @@ TOOL_REGISTRY = [
                 },
                 "released": True,
             },
-            {
-                "name": "path_filters",
-                "description": "Check which path filters match candidate repository paths.",
-                "risk": ToolRisk.SAFE,
-                "requires_approval": False,
-                "released": True,
-            },
         ],
     },
     {
@@ -70,7 +454,17 @@ TOOL_REGISTRY = [
                 "risk": ToolRisk.ELEVATED,
                 "args_schema": {
                     "type": "object",
-                    "properties": {"path": {"type": "string"}, "content": {"type": "string"}},
+                    "properties": {
+                        "path": {
+                            "type": "string",
+                            "description": "Absolute path or repo-relative path to write.",
+                        },
+                        "content": {"type": "string"},
+                        "overwrite": {
+                            "type": "boolean",
+                            "description": "Optional. When true, replace an existing file instead of failing on overwrite.",
+                        },
+                    },
                     "required": ["path", "content"],
                 },
                 "requires_approval": True,
@@ -82,8 +476,19 @@ TOOL_REGISTRY = [
                 "risk": ToolRisk.ELEVATED,
                 "args_schema": {
                     "type": "object",
-                    "properties": {"patch": {"type": "string"}, "apply_root": {"type": "string"}},
-                    "required": ["patch"],
+                    "properties": {
+                        "path": {
+                            "type": "string",
+                            "description": "Absolute path or repo-relative path to patch.",
+                        },
+                        "patch_unified": {"type": "string"},
+                        "strip_prefix": {"type": "integer", "minimum": 0},
+                        "fail_on_reject": {"type": "boolean"},
+                        "expected_sha256": {"type": "string"},
+                        "create_if_missing": {"type": "boolean"},
+                        "backup": {"type": "boolean"},
+                    },
+                    "required": ["path", "patch_unified"],
                 },
                 "requires_approval": True,
                 "released": True,
@@ -92,9 +497,27 @@ TOOL_REGISTRY = [
                 "name": "file_delete",
                 "description": "Delete a file or directory.",
                 "risk": ToolRisk.DANGEROUS,
-                "args_schema": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]},
+                "args_schema": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "path": {
+                            "type": "string",
+                            "description": "Absolute path or repo-relative path to delete.",
+                        },
+                        "recursive": {
+                            "type": "boolean",
+                            "description": "Delete directories recursively when true.",
+                        },
+                        "missing_ok": {
+                            "type": "boolean",
+                            "description": "Treat a missing target as a successful no-op.",
+                        },
+                    },
+                    "required": ["path"],
+                },
                 "requires_approval": True,
-                "released": False,
+                "released": True,
             },
         ],
     },
@@ -106,7 +529,20 @@ TOOL_REGISTRY = [
                 "name": "git_add",
                 "description": "Stage files for commit.",
                 "risk": ToolRisk.SAFE,
-                "args_schema": {"type": "object", "properties": {"paths": {"type": "array", "items": {"type": "string"}}}, "required": ["paths"]},
+                "args_schema": {
+                    "type": "object",
+                    "properties": {
+                        "repo_dir": {"type": "string", "description": "Absolute or repo-relative repository path."},
+                        "paths": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Absolute or repo-relative paths inside the selected repository.",
+                        },
+                        "all": {"type": "boolean"},
+                        "intent_to_add": {"type": "boolean"},
+                    },
+                    "required": ["paths"],
+                },
                 "requires_approval": False,
                 "released": True,
             },
@@ -117,7 +553,7 @@ TOOL_REGISTRY = [
                 "args_schema": {
                     "type": "object",
                     "properties": {
-                        "repo_dir": {"type": "string"},
+                        "repo_dir": {"type": "string", "description": "Absolute or repo-relative repository path."},
                         "porcelain": {"type": "string", "enum": ["v1", "v2"]},
                         "include_untracked": {"type": "boolean"},
                     },
@@ -132,9 +568,13 @@ TOOL_REGISTRY = [
                 "args_schema": {
                     "type": "object",
                     "properties": {
-                        "repo_dir": {"type": "string"},
+                        "repo_dir": {"type": "string", "description": "Absolute or repo-relative repository path."},
                         "staged": {"type": "boolean"},
-                        "paths": {"type": "array", "items": {"type": "string"}},
+                        "paths": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Absolute or repo-relative paths inside the selected repository.",
+                        },
                         "context_lines": {"type": "integer", "minimum": 0},
                         "detect_renames": {"type": "boolean"},
                     },
@@ -149,7 +589,7 @@ TOOL_REGISTRY = [
                 "args_schema": {
                     "type": "object",
                     "properties": {
-                        "repo_dir": {"type": "string"},
+                        "repo_dir": {"type": "string", "description": "Absolute or repo-relative repository path."},
                         "max_count": {"type": "integer", "minimum": 1},
                         "ref": {"type": "string"},
                     },
@@ -164,7 +604,7 @@ TOOL_REGISTRY = [
                 "args_schema": {
                     "type": "object",
                     "properties": {
-                        "repo_dir": {"type": "string"},
+                        "repo_dir": {"type": "string", "description": "Absolute or repo-relative repository path."},
                         "patch_unified": {"type": "string"},
                         "strip_prefix": {"type": "integer", "minimum": 0},
                         "reject": {"type": "boolean"},
@@ -182,7 +622,7 @@ TOOL_REGISTRY = [
                 "args_schema": {
                     "type": "object",
                     "properties": {
-                        "repo_dir": {"type": "string"},
+                        "repo_dir": {"type": "string", "description": "Absolute or repo-relative repository path."},
                         "name": {"type": "string"},
                         "start_point": {"type": "string"},
                         "checkout": {"type": "boolean"},
@@ -200,7 +640,7 @@ TOOL_REGISTRY = [
                 "args_schema": {
                     "type": "object",
                     "properties": {
-                        "repo_dir": {"type": "string"},
+                        "repo_dir": {"type": "string", "description": "Absolute or repo-relative repository path."},
                         "ref": {"type": "string"},
                         "create": {"type": "boolean"},
                     },
@@ -215,7 +655,18 @@ TOOL_REGISTRY = [
                 "risk": ToolRisk.ELEVATED,
                 "args_schema": {
                     "type": "object",
-                    "properties": {"message": {"type": "string"}},
+                    "properties": {
+                        "repo_dir": {"type": "string", "description": "Absolute or repo-relative repository path."},
+                        "message": {"type": "string"},
+                        "paths_to_add": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Absolute or repo-relative paths inside the selected repository.",
+                        },
+                        "add_all": {"type": "boolean"},
+                        "signoff": {"type": "boolean"},
+                        "amend": {"type": "boolean"},
+                    },
                     "required": ["message"],
                 },
                 "requires_approval": True,
@@ -228,7 +679,7 @@ TOOL_REGISTRY = [
                 "args_schema": {
                     "type": "object",
                     "properties": {
-                        "repo_dir": {"type": "string"},
+                        "repo_dir": {"type": "string", "description": "Absolute or repo-relative repository path."},
                         "remote": {"type": "string"},
                         "ref": {"type": "string"},
                         "set_upstream": {"type": "boolean"},
@@ -251,8 +702,23 @@ TOOL_REGISTRY = [
                 "risk": ToolRisk.DANGEROUS,
                 "args_schema": {
                     "type": "object",
-                    "properties": {"code": {"type": "string"}, "timeout": {"type": "number"}},
-                    "required": ["code"],
+                    "additionalProperties": False,
+                    "properties": {
+                        "code": {"type": "string"},
+                        "files": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "additionalProperties": False,
+                                "properties": {
+                                    "path": {"type": "string", "description": "Absolute or repo-relative file path to write before execution."},
+                                    "content_b64": {"type": "string"},
+                                },
+                                "required": ["path", "content_b64"],
+                            },
+                        },
+                        "entrypoint": {"type": "string", "description": "Absolute or repo-relative path to the Python entrypoint file."},
+                    },
                 },
                 "requires_approval": True,
                 "released": True,
@@ -275,8 +741,15 @@ TOOL_REGISTRY = [
                 "risk": ToolRisk.ELEVATED,
                 "args_schema": {
                     "type": "object",
-                    "properties": {"target": {"type": "string"}, "output": {"type": "string"}},
-                    "required": ["target"],
+                    "additionalProperties": False,
+                    "properties": {
+                        "kind": {"type": "string", "enum": ["pytest_coverage"]},
+                        "cwd": {"type": "string", "description": "Absolute or repo-relative working directory."},
+                        "args": {"type": "array", "items": {"type": "string"}},
+                        "timeout_ms": {"type": "integer", "minimum": 0},
+                        "max_output_bytes": {"type": "integer", "minimum": 1},
+                    },
+                    "required": ["kind"],
                 },
                 "requires_approval": True,
                 "released": True,
@@ -287,8 +760,18 @@ TOOL_REGISTRY = [
                 "risk": ToolRisk.SAFE,
                 "args_schema": {
                     "type": "object",
-                    "properties": {"path": {"type": "string"}, "line_length": {"type": "integer"}},
-                    "required": ["path"],
+                    "additionalProperties": False,
+                    "properties": {
+                        "tool": {"type": "string", "enum": ["ruff_format", "black", "prettier", "command"]},
+                        "mode": {"type": "string", "enum": ["check", "apply"]},
+                        "cwd": {"type": "string", "description": "Absolute or repo-relative working directory."},
+                        "paths": {"type": "array", "items": {"type": "string"}, "description": "Absolute or repo-relative target paths."},
+                        "args": {"type": "array", "items": {"type": "string"}},
+                        "cmd": {"type": "array", "items": {"type": "string"}},
+                        "timeout_ms": {"type": "integer", "minimum": 0},
+                        "max_output_bytes": {"type": "integer", "minimum": 1},
+                    },
+                    "required": ["tool"],
                 },
                 "requires_approval": False,
                 "released": True,
@@ -299,8 +782,18 @@ TOOL_REGISTRY = [
                 "risk": ToolRisk.SAFE,
                 "args_schema": {
                     "type": "object",
-                    "properties": {"target": {"type": "string"}},
-                    "required": ["target"],
+                    "additionalProperties": False,
+                    "properties": {
+                        "tool": {"type": "string", "enum": ["ruff", "flake8", "eslint", "prettier", "command"]},
+                        "cwd": {"type": "string", "description": "Absolute or repo-relative working directory."},
+                        "paths": {"type": "array", "items": {"type": "string"}, "description": "Absolute or repo-relative target paths."},
+                        "args": {"type": "array", "items": {"type": "string"}},
+                        "cmd": {"type": "array", "items": {"type": "string"}},
+                        "timeout_ms": {"type": "integer", "minimum": 0},
+                        "max_output_bytes": {"type": "integer", "minimum": 1},
+                        "parse": {"type": "string", "enum": ["ruff", "flake8", "eslint", "none"]},
+                    },
+                    "required": ["tool"],
                 },
                 "requires_approval": False,
                 "released": True,
@@ -309,7 +802,41 @@ TOOL_REGISTRY = [
                 "name": "run_command",
                 "description": "Run an arbitrary shell command.",
                 "risk": ToolRisk.ELEVATED,
-                "args_schema": {"type": "object", "properties": {"cmd": {"type": "string"}}, "required": ["cmd"]},
+                "args_schema": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "cmd": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Command as a list of strings. The first item is the executable and each following item is a separate argument.",
+                        },
+                        "cwd": {
+                            "type": "string",
+                            "description": "Absolute or repo-relative working directory.",
+                        },
+                        "env": {
+                            "type": "object",
+                            "additionalProperties": {"type": "string"},
+                            "description": "Optional environment variables to add to the subprocess environment.",
+                        },
+                        "timeout_ms": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "description": "Optional command timeout in milliseconds.",
+                        },
+                        "max_output_bytes": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "description": "Maximum bytes to retain from stdout and stderr.",
+                        },
+                        "stdin_text": {
+                            "type": "string",
+                            "description": "Optional UTF-8 text sent to the process stdin.",
+                        },
+                    },
+                    "required": ["cmd"],
+                },
                 "requires_approval": True,
                 "released": True,
             },
@@ -317,7 +844,22 @@ TOOL_REGISTRY = [
                 "name": "search_code",
                 "description": "Search codebase for text patterns/regex.",
                 "risk": ToolRisk.ELEVATED,
-                "args_schema": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]},
+                "args_schema": {
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string"},
+                        "root": {"type": "string", "description": "Optional absolute or repo-relative search root."},
+                        "is_regex": {"type": "boolean"},
+                        "case_sensitive": {"type": "boolean"},
+                        "include_globs": {"type": "array", "items": {"type": "string"}},
+                        "exclude_globs": {"type": "array", "items": {"type": "string"}},
+                        "max_results": {"type": "integer", "minimum": 1},
+                        "max_matches_per_file": {"type": "integer", "minimum": 1},
+                        "context_lines": {"type": "integer", "minimum": 0},
+                        "timeout_ms": {"type": "integer", "minimum": 0},
+                    },
+                    "required": ["query"],
+                },
                 "requires_approval": True,
                 "released": True,
             },
@@ -325,7 +867,16 @@ TOOL_REGISTRY = [
                 "name": "shell_exec",
                 "description": "Execute a shell command inside the workspace.",
                 "risk": ToolRisk.DANGEROUS,
-                "args_schema": {"type": "object", "properties": {"command": {"type": "string"}}, "required": ["command"]},
+                "args_schema": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "cmd": {"type": "array", "items": {"type": "string"}},
+                        "cwd": {"type": "string", "description": "Absolute or repo-relative working directory."},
+                        "env": {"type": "object", "additionalProperties": {"type": "string"}},
+                    },
+                    "required": ["cmd"],
+                },
                 "requires_approval": True,
                 "released": True,
             },
@@ -335,8 +886,20 @@ TOOL_REGISTRY = [
                 "risk": ToolRisk.ELEVATED,
                 "args_schema": {
                     "type": "object",
-                    "properties": {"suite": {"type": "string"}, "timeout": {"type": "integer"}},
-                    "required": ["suite"],
+                    "additionalProperties": False,
+                    "properties": {
+                        "kind": {"type": "string", "enum": ["powershell_script", "pytest", "command"]},
+                        "script_path": {"type": "string"},
+                        "script_args": {"type": "array", "items": {"type": "string"}},
+                        "pytest_args": {"type": "array", "items": {"type": "string"}},
+                        "cmd": {"type": "array", "items": {"type": "string"}},
+                        "cwd": {"type": "string", "description": "Absolute or repo-relative working directory."},
+                        "env": {"type": "object", "additionalProperties": {"type": "string"}},
+                        "timeout_ms": {"type": "integer", "minimum": 0},
+                        "max_output_bytes": {"type": "integer", "minimum": 1},
+                        "parse": {"type": "string", "enum": ["pytest", "none"]},
+                    },
+                    "required": ["kind"],
                 },
                 "requires_approval": True,
                 "released": True,
@@ -345,9 +908,53 @@ TOOL_REGISTRY = [
                 "name": "typecheck_runner",
                 "description": "Run static type checking tooling.",
                 "risk": ToolRisk.SAFE,
+                "args_schema": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "tool": {"type": "string", "enum": ["mypy", "pyright", "tsc", "command"]},
+                        "cwd": {"type": "string", "description": "Absolute or repo-relative working directory."},
+                        "args": {"type": "array", "items": {"type": "string"}},
+                        "cmd": {"type": "array", "items": {"type": "string"}},
+                        "timeout_ms": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "description": "Optional timeout in milliseconds. Defaults to 300000.",
+                        },
+                        "max_output_bytes": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "description": "Optional stdout/stderr capture limit in bytes. Defaults to 262144.",
+                        },
+                        "parse": {"type": "string", "enum": ["mypy", "pyright", "tsc", "none"]},
+                    },
+                    "required": ["tool"],
+                },
                 "requires_approval": False,
                 "released": True,
             },
         ],
     },
 ]
+
+
+for group in TOOL_REGISTRY:
+    for tool in group.get("tools", []):
+        schema = deepcopy(tool.get("args_schema") or {"type": "object", "properties": {}, "additionalProperties": True})
+        required_parameters = list(tool.get("required_parameters") or schema.get("required") or [])
+        tool["required_parameters"] = required_parameters
+        tool["args_schema"] = schema
+        docs = _schema_docs(
+            required_parameters,
+            _TOOL_EXAMPLES.get(tool["name"]),
+            _TOOL_RESPONSE_FIELDS.get(tool["name"]),
+        )
+        docs = f"{docs}{_TOOL_ADDITIONAL_DOCS.get(tool['name'], '')}"
+        existing_schema_description = str(schema.get("description") or "").strip()
+        schema["description"] = f"{existing_schema_description}\n\n{docs}".strip() if existing_schema_description else docs
+        examples = _TOOL_EXAMPLES.get(tool["name"])
+        if examples is not None:
+            if isinstance(examples, list):
+                schema["examples"] = deepcopy(examples)
+            else:
+                schema["examples"] = [deepcopy(examples)]

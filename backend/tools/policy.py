@@ -28,6 +28,26 @@ class ToolNotAllowedError(Exception):
     pass
 
 
+def _required_parameters(tool: Tool, args_schema: dict) -> list[str]:
+    configured = list(tool.required_parameters or [])
+    if configured:
+        return configured
+    return list((args_schema or {}).get("required") or [])
+
+
+def _format_tool_description(tool: Tool, definition: ToolDefinition, args_schema: dict) -> str:
+    description = (definition.description or tool.description or "").strip()
+    required = _required_parameters(tool, args_schema)
+    if not required:
+        return description
+    required_text = "REQUIRED PARAMETERS: " + ", ".join(required)
+    if required_text in description:
+        return description
+    if not description:
+        return required_text
+    return f"{description}\n\n{required_text}"
+
+
 def visible_tools_for_user(user):
     if user and user.is_superuser:
         return Tool.objects.all()
@@ -58,7 +78,7 @@ def get_effective_tools(agent, user):
         risk = _max_risk(tool.risk, definition.default_risk_level)
         requires_approval = tool.requires_approval or definition.default_requires_approval
         args_schema = definition.args_schema or tool.args_schema or {}
-        description = definition.description or tool.description
+        description = _format_tool_description(tool, definition, args_schema)
         effective_tools.append(
             EffectiveTool(
                 tool=tool,

@@ -29,6 +29,7 @@ The UI and runner assemble a system prompt via `llm.system_context.build_system_
 - **Role overlay**: The agent's gerund role (`planning`, `coding`, `assisting`, or `researching`) inserts a short directive set (e.g., planning focuses on structured checkpoints while assisting emphasizes concise answers). The overlay nudges reasoning style and tool usage before runtime details.
 - **Runtime facts**: A dedicated section reports the model, transport (`http` or `ws`), and up to 12 tool names (with "+N more" when there are additional tools). These lines are presented as mandatory context rather than optional notes.
 - **Policy=react**: If `policy_name.lower()` equals `react`, the builder inserts the full ReAct guidance (reason step-by-step, call tools if needed, wait for results, and only reply once the task is complete). Other policy names do not add policy text.
+- **AGENTS.md startup rule**: The base kernel now instructs the model to read the repository `AGENTS.md` file at the start of a new session when it is available in context or the workspace, and to begin its first reply by confirming that it has read `AGENTS.md`. The model notice also includes the exact repo-root `AGENTS.md` path so the agent does not incorrectly try a run-local relative path like just `AGENTS.md`.
 - **Agent soul**: Any text stored in `agent.soul` is truncated to roughly 450 characters and appended as "Agent-specific instructions," keeping the custom prompt short.
 
 Example output delivered to the model:
@@ -103,7 +104,34 @@ Add new providers by extending `BaseLLMClient` and registering in `services/regi
 
 ## Tool schema catalog
 
-`LLMRunner` exposes a canonical schema for each supported tool (repo_tree, search_code, file_read, file_write, file_patch, shell_exec, python_exec) when no `tools` argument is supplied. The schema definitions live in `llm/services/tool_schemas.py` and include the exact property names the provider expects.
+`LLMRunner` exposes a fallback schema catalog when no `tools` argument is supplied. The fallback catalog now mirrors the executable released tools from `backend/tools/registry.py`, with descriptions/examples added in `llm/services/tool_schemas.py`.
+
+Current fallback tool list:
+
+- `repo_tree`
+- `search_code`
+- `file_read`
+- `file_write`
+- `file_delete`
+- `file_patch`
+- `shell_exec`
+- `python_exec`
+- `git_add`
+- `git_status`
+- `git_diff`
+- `git_log`
+- `git_apply`
+- `git_branch_create`
+- `git_checkout`
+- `git_push`
+- `run_command`
+- `test_runner`
+- `format_runner`
+- `coverage_runner`
+- `lint_runner`
+- `typecheck_runner`
+
+`webhook` is cataloged separately but is not part of the fallback `get_tool_schemas()` list yet because it still uses the dedicated ToolRunner webhook endpoint rather than the normal `/v1/run/tool` dispatch path.
 
 Use `python manage.py llm_print_tool_templates` to print each schema together with an example argument dict. Copy the example keys directly into prompts so the bridge does not reject malformed calls (e.g., `file_write` uses `"path"`, not `"filename"`).
 

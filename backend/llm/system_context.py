@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+from pathlib import Path
 from textwrap import shorten
 from typing import Iterable
+
+from django.conf import settings
 
 ROLE_OVERLAYS = {
     "planning": """
@@ -46,6 +49,8 @@ Operating rules:
 3) Never fabricate tool outputs or claim actions you did not perform.
 4) If a tool call fails, explain the error and propose a next step.
 5) Keep internal reasoning private; present only conclusions and useful steps.
+6) Before answering the first user message in a new session, read the repository `AGENTS.md` file if it is available in the provided context or workspace.
+7) Start your first reply by explicitly confirming that you read `AGENTS.md`.
 
 Context:
 - You may be given tool access and runtime constraints. Stay within them.
@@ -91,11 +96,14 @@ def _format_sandbox_paths(paths: Iterable[str]) -> str:
 def _build_model_notice(agent, model_name: str) -> str:
     sandbox = _format_sandbox_paths(getattr(agent, "sandbox_paths", []) or [])
     policy_name = (getattr(agent, "policy_name", "") or "default").strip()
+    repo_root = Path(settings.BASE_DIR).resolve().parent
+    agents_path = repo_root / "AGENTS.md"
     return "\n".join(
         [
             "Model notice:",
             f"- You are running on model: {model_name}. If asked what model you are, answer exactly: '{model_name}'.",
-            f"- You are authorized to work only in the sandbox area at {sandbox}.",
+            f"- You are authorized to work only within these allowed paths: {sandbox}.",
+            f"- Repository instruction file: {agents_path}. Use this exact repo-root path when reading `AGENTS.md`; do not assume the current working directory is the repo root.",
             f"- Follow Policy {policy_name} located at {POLICY_DOC_PATH}.",
         ]
     )

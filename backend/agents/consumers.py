@@ -34,11 +34,16 @@ from runs.services.steps import append_step
 from runs.services.input_items import build_input_items
 from tools.models import ToolCall
 from tools.policy import ToolNotAllowedError, assert_tool_allowed, get_effective_tools
+from tools.services.approval_grants import active_grants_for_run
 from tools.services.approvals import (
     approve_tool_call,
+    clear_tool_approval_grants,
     deny_tool_call,
     request_tool_call_approval,
+    revoke_tool_approval_grant,
+    grant_options_for_tool_call,
     TOOL_CALL_DENIED_EVENT,
+    TOOL_APPROVAL_GRANTS_UPDATED_EVENT,
     TOOL_CALL_STATUS_EVENT,
 )
 from tools.services.result_bus import pop_pending_tool_results
@@ -190,6 +195,11 @@ def _build_transport_status(agent: Agent):
 @database_sync_to_async
 def _get_effective_tools(agent: Agent, user):
     return get_effective_tools(agent, user)
+
+
+@database_sync_to_async
+def _get_active_tool_approval_grants(run_id: str):
+    return active_grants_for_run(run_id)
 
 
 @database_sync_to_async
@@ -541,6 +551,7 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
                 "transport_status": transport_status,
                 "run_id": self.run_id,
                 "model": model_name,
+                "approval_grants": await _get_active_tool_approval_grants(self.run_id),
             }
         )
         transport_detail = "WS" if self.use_ws else "HTTP"
@@ -648,7 +659,9 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
             tool_call_id = content.get("tool_call_id")
             if tool_call_id:
                 await sync_to_async(approve_tool_call)(
-                    tool_call_id=tool_call_id, user=self.scope.get("user")
+                    tool_call_id=tool_call_id,
+                    user=self.scope.get("user"),
+                    grant_mode=str(content.get("grant_mode") or "once"),
                 )
             return
         if message_type == "tool_deny":
@@ -657,6 +670,22 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
             if tool_call_id:
                 await sync_to_async(deny_tool_call)(
                     tool_call_id=tool_call_id, user=self.scope.get("user"), reason=reason
+                )
+            return
+        if message_type == "tool_revoke_grant":
+            grant_id = content.get("grant_id")
+            if grant_id:
+                await sync_to_async(revoke_tool_approval_grant)(
+                    grant_id=grant_id,
+                    user=self.scope.get("user"),
+                    run_id=str(self.run_id),
+                )
+            return
+        if message_type == "tool_clear_grants":
+            if self.run_id:
+                await sync_to_async(clear_tool_approval_grants)(
+                    run_id=str(self.run_id),
+                    user=self.scope.get("user"),
                 )
             return
 
@@ -976,10 +1005,17 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
                 "type": "tool_request",
                 "tool_call_id": tool_call_id,
                 "tool_name": tool_name,
-                "requires_approval": requires_approval,
+                "requires_approval": tool_call.requires_approval,
+                "awaiting_approval": tool_call.status == ToolCall.Status.PENDING_APPROVAL,
                 "risk": entry.risk,
                 "args": args,
                 "status": tool_call.status,
+                "approval_options": (
+                    grant_options_for_tool_call(tool_call)
+                    if tool_call.status == ToolCall.Status.PENDING_APPROVAL
+                    else []
+                ),
+                "approval_metadata": tool_call.approval_metadata or {},
             }
         )
 
@@ -1260,6 +1296,16 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
             await self.send_json({"type": "tool_status", **data})
             return
 
+        if event_type == TOOL_APPROVAL_GRANTS_UPDATED_EVENT:
+            await self.send_json(
+                {
+                    "type": "approval_grants",
+                    "run_id": data.get("run_id"),
+                    "grants": data.get("grants") or [],
+                }
+            )
+            return
+
         if event_type == "assistant_message":
             logger.info(
                 "4:  Event type -> assistant_message AgentChatConsumer.push debug echo run=%s data=%s",
@@ -1332,9 +1378,27 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
         if not previous_id:
             return self._build_input_items()
 
-        # ✅ If we just executed a tool, we MUST send the tool outputs back.
+        # When continuing a Responses WS turn after a tool call, send only the
+        # staged tool outputs for the outstanding provider call. Re-sending the
+        # full system/user history together with previous_response_id duplicates
+        # the initial context on the continuation request.
         if self.history and self.history[-1].get("role") == "tool":
-            return self._build_input_items()
+            tool_entries: list[dict[str, object]] = []
+            for entry in reversed(self.history):
+                if entry.get("role") != "tool":
+                    break
+                tool_entries.append(entry)
+            tool_entries.reverse()
+            return build_input_items(
+                tool_entries,
+                previous_response_id=previous_id,
+                outstanding_provider_call_id=(
+                    str(self._tool_output_payload.get("provider_call_id") or "").strip()
+                    if self._tool_output_payload
+                    else None
+                ),
+                run_id=self.run_id,
+            )
 
         last_user = self._last_user_message()
         if last_user:

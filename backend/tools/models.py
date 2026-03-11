@@ -32,6 +32,7 @@ class Tool(TimeStampedModel):
     name = models.CharField(max_length=80, unique=True)
     slug = models.SlugField(max_length=120, unique=True, blank=True)
     description = models.TextField(blank=True, default="")
+    required_parameters = models.JSONField(default=list, blank=True)
     tool_group = models.ForeignKey(
         ToolGroup, on_delete=models.PROTECT, related_name="tools"
     )
@@ -126,6 +127,71 @@ class AgentToolGrant(TimeStampedModel):
         return f"{self.agent}:{self.tool} ({status})"
 
 
+class ToolApprovalGrant(TimeStampedModel):
+    class ScopeType(models.TextChoices):
+        EXACT_PATH = "EXACT_PATH", "Exact Path"
+        PATH_PREFIX = "PATH_PREFIX", "Path Prefix"
+        REPO_EXACT = "REPO_EXACT", "Repository"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    workspace = models.ForeignKey(
+        Workspace,
+        on_delete=models.CASCADE,
+        related_name="tool_approval_grants",
+    )
+    run = models.ForeignKey(
+        AgentRun,
+        on_delete=models.CASCADE,
+        related_name="tool_approval_grants",
+    )
+    tool_name = models.CharField(max_length=80)
+    scope_type = models.CharField(
+        max_length=16,
+        choices=ScopeType.choices,
+    )
+    scope_path = models.TextField()
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="created_tool_approval_grants",
+    )
+    source_tool_call = models.ForeignKey(
+        "tools.ToolCall",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="spawned_approval_grants",
+    )
+    metadata = models.JSONField(default=dict, blank=True)
+    revoked_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    revoked_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="revoked_tool_approval_grants",
+    )
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["run", "tool_name", "revoked_at"]),
+            models.Index(fields=["workspace", "run", "revoked_at"]),
+        ]
+
+    @property
+    def is_active(self) -> bool:
+        return self.revoked_at is None
+
+    def revoke(self, user) -> None:
+        self.revoked_at = timezone.now()
+        self.revoked_by = user
+
+    def __str__(self):
+        return f"{self.run_id}:{self.tool_name}:{self.scope_type}"
+
+
 class ToolCall(TimeStampedModel):
     class Status(models.TextChoices):
         REQUESTED = "REQUESTED", "Requested"
@@ -174,6 +240,14 @@ class ToolCall(TimeStampedModel):
         blank=True,
         related_name="approved_tool_calls",
     )
+    approval_grant = models.ForeignKey(
+        "tools.ToolApprovalGrant",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="approved_tool_calls",
+    )
+    approval_metadata = models.JSONField(default=dict, blank=True)
     approved_at = models.DateTimeField(null=True, blank=True)
     started_at = models.DateTimeField(null=True, blank=True)
     ended_at = models.DateTimeField(null=True, blank=True)
@@ -194,9 +268,11 @@ class ToolCall(TimeStampedModel):
             models.Index(fields=["run", "observed_at"]),
         ]
 
-    def mark_approved(self, user):
+    def mark_approved(self, user, *, approval_grant=None, approval_metadata=None):
         self.status = self.Status.QUEUED
         self.approved_by = user
+        self.approval_grant = approval_grant
+        self.approval_metadata = approval_metadata or {}
         self.approved_at = timezone.now()
 
     def __str__(self):

@@ -6,10 +6,13 @@ from agents.models import Agent
 from core.models import Workspace, WorkspaceMembership
 from runs.models import AgentRun, AgentStep
 from tools.models import Tool, ToolDefinition, ToolGroup, ToolRisk, ToolCall
+from tools.services.approval_grants import GRANT_MODE_PATH_PREFIX
 from tools.services.approvals import (
     approve_tool_call,
+    clear_tool_approval_grants,
     deny_tool_call,
     request_tool_call_approval,
+    revoke_tool_approval_grant,
 )
 
 
@@ -89,3 +92,86 @@ def test_deny_tool_call_marks_denied():
 
     assert denied.status == ToolCall.Status.DENIED
     assert denied.error == "not allowed"
+
+
+@pytest.mark.django_db(transaction=True)
+def test_approve_with_run_grant_auto_approves_future_matching_calls():
+    run, tool, user = _build_tool_environment("grant-auto")
+    tool.name = "file_write"
+    tool.save(update_fields=["name", "slug", "updated_at"])
+    ToolDefinition.objects.filter(workspace=run.workspace, tool=tool).update(name=tool.name)
+
+    first_call = request_tool_call_approval(
+        run_id=str(run.id),
+        tool_name=tool.name,
+        args={"path": "notes/first.txt", "content": "one"},
+        requires_approval=True,
+    )
+    approved = approve_tool_call(
+        tool_call_id=str(first_call.id),
+        user=user,
+        grant_mode=GRANT_MODE_PATH_PREFIX,
+    )
+
+    assert approved.status == ToolCall.Status.QUEUED
+    assert approved.approval_grant is not None
+    assert approved.approval_metadata["mode"] == "grant_create"
+
+    auto_approved = request_tool_call_approval(
+        run_id=str(run.id),
+        tool_name=tool.name,
+        args={"path": "notes/second.txt", "content": "two"},
+        requires_approval=True,
+    )
+
+    assert auto_approved.status == ToolCall.Status.QUEUED
+    assert auto_approved.approval_grant_id == approved.approval_grant_id
+    assert auto_approved.approval_metadata["mode"] == "grant_match"
+
+
+@pytest.mark.django_db(transaction=True)
+def test_revoke_and_clear_run_grants_stop_auto_approval():
+    run, tool, user = _build_tool_environment("grant-reset")
+    tool.name = "file_write"
+    tool.save(update_fields=["name", "slug", "updated_at"])
+    ToolDefinition.objects.filter(workspace=run.workspace, tool=tool).update(name=tool.name)
+
+    first_call = request_tool_call_approval(
+        run_id=str(run.id),
+        tool_name=tool.name,
+        args={"path": "notes/first.txt", "content": "one"},
+        requires_approval=True,
+    )
+    approved = approve_tool_call(
+        tool_call_id=str(first_call.id),
+        user=user,
+        grant_mode=GRANT_MODE_PATH_PREFIX,
+    )
+    grant = approved.approval_grant
+
+    revoke_tool_approval_grant(grant_id=str(grant.id), user=user)
+    pending_again = request_tool_call_approval(
+        run_id=str(run.id),
+        tool_name=tool.name,
+        args={"path": "notes/second.txt", "content": "two"},
+        requires_approval=True,
+    )
+    assert pending_again.status == ToolCall.Status.PENDING_APPROVAL
+
+    second_approved = approve_tool_call(
+        tool_call_id=str(pending_again.id),
+        user=user,
+        grant_mode=GRANT_MODE_PATH_PREFIX,
+    )
+    assert second_approved.approval_grant is not None
+
+    cleared = clear_tool_approval_grants(run_id=str(run.id), user=user)
+    assert cleared >= 1
+
+    final_call = request_tool_call_approval(
+        run_id=str(run.id),
+        tool_name=tool.name,
+        args={"path": "notes/third.txt", "content": "three"},
+        requires_approval=True,
+    )
+    assert final_call.status == ToolCall.Status.PENDING_APPROVAL

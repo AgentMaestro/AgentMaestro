@@ -84,6 +84,14 @@ class DummyClient:
         return self.result
 
 
+class TimeoutCapturingClient(DummyClient):
+    last_timeout = None
+
+    def __init__(self, result, timeout=None):
+        super().__init__(result)
+        TimeoutCapturingClient.last_timeout = timeout
+
+
 @override_settings(
     TOOLRUNNER_URL="http://example/v1/execute",
     TOOLRUNNER_SECRET="test-secret",
@@ -169,6 +177,48 @@ def test_execute_tool_call_respects_quota(monkeypatch):
             execute_tool_call(str(tool_call.id))
     finally:
         release_tool_call_slots(workspace_id, run_id, blocker)
+
+
+@override_settings(
+    TOOLRUNNER_URL="http://example/v1/execute",
+    TOOLRUNNER_SECRET="test-secret",
+    TOOLRUNNER_TIMEOUT=5,
+    TOOLRUNNER_OUTPUT_LIMIT=128,
+    TOOLRUNNER_HTTP_TIMEOUT=10,
+    TOOLRUNNER_HTTP_TIMEOUT_BUFFER=30,
+)
+def test_execute_tool_call_uses_tool_timeout_for_http_client(monkeypatch, fake_result_bus):
+    tool_call = _build_test_run("timeout")
+    tool_call.tool_name = "test_runner"
+    tool_call.args = {
+        "kind": "powershell_script",
+        "script_path": "backend/scripts/runtests.ps1",
+        "cwd": ".",
+        "timeout_ms": 120000,
+    }
+    tool_call.save(update_fields=["tool_name", "args", "updated_at"])
+    ToolDefinition.objects.create(workspace=tool_call.run.workspace, name="test_runner", enabled=True)
+    response = httpx.Response(
+        200,
+        json={
+            "request_id": str(uuid.uuid4()),
+            "status": "COMPLETED",
+            "exit_code": 0,
+            "stdout": "done",
+            "stderr": "",
+            "result": {"foo": "bar"},
+            "duration_ms": 10,
+        },
+    )
+
+    def client_factory(*args, **kwargs):
+        return TimeoutCapturingClient(response, timeout=kwargs.get("timeout"))
+
+    monkeypatch.setattr("tools.services.execution.httpx.Client", client_factory)
+
+    execute_tool_call(str(tool_call.id))
+
+    assert TimeoutCapturingClient.last_timeout == 150.0
 
 
 def test_execute_tool_call_enforces_agent_sandbox(monkeypatch, tmp_path):

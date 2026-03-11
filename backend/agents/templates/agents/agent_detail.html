@@ -55,6 +55,85 @@
       border: 1px solid rgba(255, 255, 255, 0.1);
     }
 
+    .approval-grants-card {
+      background: rgba(255, 255, 255, 0.04);
+      border-radius: 12px;
+      padding: 1rem;
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      margin-top: 1rem;
+    }
+    .approval-grants-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 0.75rem;
+      margin-bottom: 0.75rem;
+    }
+    .approval-grants-header strong {
+      color: #f8fafc;
+    }
+    .approval-grants-clear {
+      border: 1px solid rgba(248, 250, 252, 0.2);
+      background: rgba(248, 250, 252, 0.06);
+      color: #f8fafc;
+      border-radius: 8px;
+      padding: 0.35rem 0.7rem;
+      cursor: pointer;
+      font-size: 0.85rem;
+    }
+    .approval-grants-clear:disabled {
+      opacity: 0.55;
+      cursor: default;
+    }
+    .approval-grants-empty {
+      color: rgba(248, 250, 252, 0.68);
+      font-size: 0.92rem;
+      margin: 0;
+    }
+    .approval-grants-list {
+      display: flex;
+      flex-direction: column;
+      gap: 0.55rem;
+    }
+    .approval-grant-item {
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 10px;
+      padding: 0.65rem 0.75rem;
+      background: rgba(15, 23, 42, 0.45);
+    }
+    .approval-grant-item-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 0.5rem;
+      margin-bottom: 0.25rem;
+    }
+    .approval-grant-tool {
+      font-weight: 600;
+      color: #f8fafc;
+    }
+    .approval-grant-scope {
+      color: rgba(248, 250, 252, 0.72);
+      font-size: 0.88rem;
+      line-height: 1.35;
+      word-break: break-word;
+    }
+    .approval-grant-revoke {
+      border: none;
+      background: #7f1d1d;
+      color: #fff;
+      border-radius: 8px;
+      padding: 0.3rem 0.65rem;
+      cursor: pointer;
+      font-size: 0.8rem;
+      font-weight: 600;
+    }
+    .approval-grant-meta {
+      color: rgba(248, 250, 252, 0.52);
+      font-size: 0.76rem;
+      margin-top: 0.25rem;
+    }
+
     .agent-tools-summary {
       font-size: 0.95rem;
       color: rgba(248, 250, 252, 0.8);
@@ -202,6 +281,7 @@
     .chat-form {
       margin-top: auto;
       flex-shrink: 0;
+      max-width: 90%;
     }
     .tool-request-card {
       border: 1px solid rgba(161, 98, 7, 0.25);
@@ -235,21 +315,42 @@
     }
     .tool-request-card-actions {
       display: flex;
+      flex-wrap: wrap;
       gap: 0.4rem;
+      align-items: center;
     }
     .tool-request-card-actions button {
       border: none;
       border-radius: 6px;
       padding: 0.35rem 0.75rem;
       cursor: pointer;
+      font-weight: 600;
+      transition: opacity 0.15s ease, box-shadow 0.15s ease;
     }
-    .tool-request-card-actions button.primary {
-      background: #2563eb;
+    .tool-request-card-actions .tool-approve-btn {
+      background: #198754;
       color: #fff;
     }
-    .tool-request-card-actions button.secondary {
-      background: rgba(255, 255, 255, 0.08);
-      color: #f8fafc;
+    .tool-request-card-actions .tool-deny-btn {
+      background: #dc3545;
+      color: #fff;
+    }
+    .tool-request-card-actions button:disabled {
+      cursor: default;
+      opacity: 0.75;
+    }
+    .tool-request-grant-select {
+      min-width: 260px;
+      max-width: 100%;
+      border-radius: 6px;
+      border: 1px solid rgba(120, 53, 15, 0.2);
+      padding: 0.35rem 0.45rem;
+      background: rgba(255, 251, 235, 0.95);
+      color: #451a03;
+      font-size: 0.82rem;
+    }
+    .tool-request-card-actions button.selected {
+      box-shadow: inset 0 0 0 2px rgba(255, 255, 255, 0.6);
     }
     .tool-request-status {
       font-size: 0.8rem;
@@ -272,9 +373,86 @@
       font-size: 0.85rem;
       color: #78350f;
     }
+    .tool-request-footer-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 0.5rem;
+      margin-bottom: 0.2rem;
+    }
+    .tool-request-footer-label {
+      font-weight: 600;
+    }
+    .tool-request-detail-toggle {
+      border: none;
+      background: transparent;
+      color: inherit;
+      cursor: pointer;
+      font: inherit;
+      line-height: 1;
+      padding: 0 0 0 0.15rem;
+    }
+    .tool-request-detail-toggle:hover {
+      color: #451a03;
+    }
+    .tool-request-detail-toggle:focus-visible {
+      outline: 1px solid rgba(120, 53, 15, 0.4);
+      outline-offset: 2px;
+      border-radius: 4px;
+    }
     .tool-request-detail {
+      line-height: 1.35;
       white-space: pre-wrap;
       word-break: break-word;
+    }
+    .tool-request-detail-collapsed {
+      max-height: calc(1.35em * 8);
+      overflow: hidden;
+    }
+    .tool-request-detail-expanded {
+      max-height: none;
+      overflow: visible;
+    }
+    .chat-message-meta-lead,
+    .chat-message-meta-trail {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.4rem;
+      min-width: 0;
+    }
+    .chat-message-meta-lead {
+      flex: 1 1 auto;
+    }
+    .chat-message-meta-trail {
+      flex: 0 0 auto;
+    }
+    .chat-message-toggle {
+      border: none;
+      background: transparent;
+      color: inherit;
+      cursor: pointer;
+      font: inherit;
+      line-height: 1;
+      padding: 0 0 0 0.15rem;
+    }
+    .chat-message-toggle:hover {
+      color: #0f172a;
+    }
+    .chat-message-toggle:focus-visible {
+      outline: 1px solid rgba(15, 23, 42, 0.45);
+      outline-offset: 2px;
+      border-radius: 4px;
+    }
+    .chat-message-transport-log .chat-message-text {
+      line-height: 1.35;
+    }
+    .chat-message-text-collapsed {
+      max-height: calc(1.35em * 8);
+      overflow: hidden;
+    }
+    .chat-message-text-expanded {
+      max-height: none;
+      overflow: visible;
     }
   </style>
 
@@ -299,7 +477,7 @@
         </div>
         {% if sandbox_paths %}
           <div class="sandbox-card">
-            <strong>Sandbox paths</strong>
+            <strong>Allowed paths</strong>
             <ul class="sandbox-list">
               {% for path in sandbox_paths %}
                 <li>{{ path }}</li>
@@ -336,6 +514,15 @@
             <p class="chat-empty-state">No tools granted yet.</p>
           {% endif %}
         </details>
+
+        <section class="approval-grants-card" data-approval-grants-shell>
+          <div class="approval-grants-header">
+            <strong>Run approvals</strong>
+            <button type="button" class="approval-grants-clear" data-clear-approval-grants disabled>Clear all</button>
+          </div>
+          <div class="approval-grants-list" data-approval-grants-list></div>
+          <p class="approval-grants-empty" data-approval-grants-empty>No temporary approvals for this run.</p>
+        </section>
 
       </div>
     </aside>

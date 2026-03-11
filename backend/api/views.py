@@ -192,7 +192,16 @@ def approve_tool_call_view(request, tool_call_id: str):
         return _json_error(str(exc), status=403)
 
     try:
-        approved = approve_tool_call_service(tool_call_id=str(tool_call.id), user=request.user)
+        payload = _json_payload(request)
+    except ValueError as exc:
+        return _json_error(str(exc), status=400)
+
+    try:
+        approved = approve_tool_call_service(
+            tool_call_id=str(tool_call.id),
+            user=request.user,
+            grant_mode=str(payload.get("grant_mode") or "once"),
+        )
     except Exception as exc:
         return _json_error(str(exc), status=400)
 

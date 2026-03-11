@@ -32,8 +32,8 @@ class AgentBasicForm(forms.Form):
     sandbox_paths = forms.CharField(
         required=False,
         widget=forms.Textarea(attrs={"rows": 3}),
-        label="Sandbox paths",
-        help_text="Supply newline-separated paths that the agent is allowed to access.",
+        label="Allowed paths",
+        help_text="Supply newline-separated paths that the agent is allowed to access with tools.",
     )
 
 

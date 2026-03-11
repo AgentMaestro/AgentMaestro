@@ -15,7 +15,11 @@ from runs.services.event_contracts import (
 )
 from runs.services.recovery import cancel_run, pause_run, resume_run
 from runs.tasks import run_tick as run_tick_task
-from tools.services.approvals import approve_tool_call as approve_tool_call_service
+from tools.services.approvals import (
+    approve_tool_call as approve_tool_call_service,
+    clear_tool_approval_grants as clear_tool_approval_grants_service,
+    revoke_tool_approval_grant as revoke_tool_approval_grant_service,
+)
 from runs.services.subruns import spawn_subrun
 
 APPROVAL_ROLES = {
@@ -311,7 +315,11 @@ class RunConsumer(AsyncJsonWebsocketConsumer):
                 tool_call = await database_sync_to_async(
                     approve_tool_call_service,
                     thread_sensitive=True,
-                )(tool_call_id=tool_call_id, user=user)
+                )(
+                    tool_call_id=tool_call_id,
+                    user=user,
+                    grant_mode=str(content.get("grant_mode") or "once"),
+                )
             except Exception as exc:
                 await self.send_json(
                     make_run_push(
@@ -328,6 +336,84 @@ class RunConsumer(AsyncJsonWebsocketConsumer):
                     run_id=self.run_id or "",
                     event="tool_call_approval_ack",
                     data={"tool_call_id": str(tool_call.id)},
+                )
+            )
+            return
+        if cmd == "revoke_tool_approval_grant":
+            if self.membership_role not in APPROVAL_ROLES:
+                await self.send_json(
+                    make_run_push(
+                        run_id=self.run_id or "",
+                        event="error",
+                        data={"message": "Insufficient role for approvals"},
+                    )
+                )
+                return
+            grant_id = content.get("grant_id")
+            if not grant_id:
+                await self.send_json(
+                    make_run_push(
+                        run_id=self.run_id or "",
+                        event="error",
+                        data={"message": "grant_id is required"},
+                    )
+                )
+                return
+            try:
+                await database_sync_to_async(
+                    revoke_tool_approval_grant_service,
+                    thread_sensitive=True,
+                )(
+                    grant_id=str(grant_id),
+                    user=self.scope.get("user"),
+                    run_id=str(self.run_id),
+                )
+            except Exception as exc:
+                await self.send_json(
+                    make_run_push(
+                        run_id=self.run_id or "",
+                        event="error",
+                        data={"message": str(exc)},
+                    )
+                )
+                return
+            await self.send_json(
+                make_run_push(
+                    run_id=self.run_id or "",
+                    event="tool_approval_grant_revoked_ack",
+                    data={"grant_id": str(grant_id)},
+                )
+            )
+            return
+        if cmd == "clear_tool_approval_grants":
+            if self.membership_role not in APPROVAL_ROLES:
+                await self.send_json(
+                    make_run_push(
+                        run_id=self.run_id or "",
+                        event="error",
+                        data={"message": "Insufficient role for approvals"},
+                    )
+                )
+                return
+            try:
+                cleared = await database_sync_to_async(
+                    clear_tool_approval_grants_service,
+                    thread_sensitive=True,
+                )(run_id=str(self.run_id), user=self.scope.get("user"))
+            except Exception as exc:
+                await self.send_json(
+                    make_run_push(
+                        run_id=self.run_id or "",
+                        event="error",
+                        data={"message": str(exc)},
+                    )
+                )
+                return
+            await self.send_json(
+                make_run_push(
+                    run_id=self.run_id or "",
+                    event="tool_approval_grants_cleared_ack",
+                    data={"count": cleared},
                 )
             )
             return
