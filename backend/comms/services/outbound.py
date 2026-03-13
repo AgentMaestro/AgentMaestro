@@ -28,9 +28,12 @@ def _find_bot_endpoint(conversation: CommsConversation) -> TransportEndpoint:
     return endpoint
 
 
-def send_telegram_message(
+def send_transport_message(
     endpoint: TransportEndpoint, chat_id: str, text: str, **kwargs: object
 ) -> Mapping[str, object]:
+    if endpoint.transport.key != "telegram":
+        raise RuntimeError(f"Transport {endpoint.transport.key} does not support outbound messaging yet")
+
     async def _inner() -> Mapping[str, object]:
         async with TelegramAdapter() as adapter:
             return await adapter.send_message(endpoint, chat_id, text, **kwargs)
@@ -38,22 +41,30 @@ def send_telegram_message(
     return asyncio.run(_inner())
 
 
-def send_telegram_text(
-    conversation: CommsConversation, text: str, actor_label: Optional[str] = None
+def send_conversation_message(
+    conversation: CommsConversation,
+    text: str,
+    *,
+    actor_label: Optional[str] = None,
+    author_type: str = "operator",
+    control_direction: str = "out",
+    control_payload: Optional[dict[str, object]] = None,
+    mirror_to_control: bool = True,
+    **kwargs: object,
 ) -> Mapping[str, object]:
     if not conversation.external_conversation_id:
         raise ValueError("Conversation is missing an external chat ID")
 
     endpoint = _find_bot_endpoint(conversation)
-    response = send_telegram_message(
-        endpoint, conversation.external_conversation_id, text
-    )
+    response = send_transport_message(endpoint, conversation.external_conversation_id, text, **kwargs)
     result = (response or {}).get("result") or {}
     message_id = str(result.get("message_id") or "")
     payload = {
         "sent_at": timezone.now().isoformat(),
         "response": result,
     }
+    if kwargs:
+        payload["request"] = kwargs
 
     comms_message = CommsMessage.objects.create(
         conversation=conversation,
@@ -67,33 +78,50 @@ def send_telegram_text(
     conversation.updated_at = timezone.now()
     conversation.save(update_fields=["updated_at"])
 
-    control_conversation = conversation.control_conversation
-    if not control_conversation:
-        control_conversation = ControlConversation.objects.create(
-            kind="comms_mirror",
-            title=conversation.title or conversation.transport.display_name,
-        )
-        conversation.control_conversation = control_conversation
-        conversation.save(update_fields=["control_conversation"])
+    control_message_id = None
+    if mirror_to_control:
+        control_conversation = conversation.control_conversation
+        if not control_conversation:
+            control_conversation = ControlConversation.objects.create(
+                kind="comms_mirror",
+                title=conversation.title or conversation.transport.display_name,
+            )
+            conversation.control_conversation = control_conversation
+            conversation.save(update_fields=["control_conversation"])
 
-    control_message = ControlMessage.objects.create(
-        conversation=control_conversation,
-        direction="out",
-        author_type="operator",
-        author_label=actor_label or "operator",
-        text=text,
-        payload={"sent": payload},
-        source_transport=conversation.transport.key,
-        source_conversation_id=conversation.external_conversation_id,
-        source_message_id=message_id,
-    )
-    broadcast_control_message(control_message)
+        full_control_payload = dict(control_payload or {})
+        full_control_payload["sent"] = payload
+        control_message = ControlMessage.objects.create(
+            conversation=control_conversation,
+            direction=control_direction,
+            author_type=author_type,
+            author_label=actor_label or author_type,
+            text=text,
+            payload=full_control_payload,
+            source_transport=conversation.transport.key,
+            source_conversation_id=conversation.external_conversation_id,
+            source_message_id=message_id,
+        )
+        broadcast_control_message(control_message)
+        control_message_id = control_message.id
 
     return {
         "response": response,
         "comms_message_id": comms_message.id,
-        "control_message_id": control_message.id,
+        "control_message_id": control_message_id,
     }
+
+
+def send_telegram_message(
+    endpoint: TransportEndpoint, chat_id: str, text: str, **kwargs: object
+) -> Mapping[str, object]:
+    return send_transport_message(endpoint, chat_id, text, **kwargs)
+
+
+def send_telegram_text(
+    conversation: CommsConversation, text: str, actor_label: Optional[str] = None
+) -> Mapping[str, object]:
+    return send_conversation_message(conversation, text, actor_label=actor_label or "operator")
 
 
 def get_telegram_bot_info(endpoint: TransportEndpoint) -> Mapping[str, object]:

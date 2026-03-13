@@ -239,7 +239,7 @@ class OpenAIClient(BaseLLMClient):
         for msg in messages:
             role = msg.get("role")
             if role == "tool":
-                call_id = str(msg.get("tool_call_id") or msg.get("id") or "").strip()
+                call_id = str(msg.get("provider_call_id") or msg.get("tool_call_id") or msg.get("id") or "").strip()
                 content = msg.get("content")
                 if call_id and content is not None:
                     if isinstance(content, (dict, list)):

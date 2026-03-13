@@ -15,11 +15,13 @@ from ..config import (
     is_under_allowed_root,
     is_within_sandbox,
     normalize_search_root,
+    policy_allowed_roots,
     policy_allows_write,
     policy_metadata,
+    policy_runtime_root,
+    resolve_policy_path,
 )
 from ..models import FileWriteArgs
-from ..sandbox import safe_join
 from .path_filters import first_matching_pattern, glob_candidates
 
 
@@ -52,22 +54,29 @@ def _read_existing_sha(path: Path) -> str:
 
 
 def write_file(run_dir: Path, args: FileWriteArgs, policy: dict[str, Any] | None = None):
-    allowed_context_root = normalize_search_root(run_dir)
+    base_dir = policy_runtime_root(policy, "repo_root") or run_dir.resolve()
+    allowed_context_root = normalize_search_root(base_dir)
+    policy_roots = policy_allowed_roots(policy)
     if not is_under_allowed_root(run_dir):
         return _error_response("PATH_NOT_ALLOWED", "Run directory not permitted")
     try:
-        target = safe_join(run_dir, args.path)
+        target = resolve_policy_path(run_dir, args.path, policy)
     except ValueError as exc:
-        return _error_response("PATH_OUTSIDE_WORKSPACE", str(exc))
+        error_code = "PATH_OUTSIDE_WORKSPACE" if "path traversal outside of workspace" in str(exc) else "PATH_NOT_ALLOWED"
+        return _error_response(error_code, str(exc))
 
-    if not is_under_allowed_root(target, (allowed_context_root,)):
+    if not is_under_allowed_root(target, (allowed_context_root, *policy_roots)):
         return _error_response("PATH_NOT_ALLOWED", "Path not permitted")
 
     exclusion = _matching_exclusion(target, run_dir)
     if exclusion:
         return _error_response("PATH_EXCLUDED", "Path excluded by policy", {"pattern": exclusion})
 
-    if not is_within_sandbox(target) and not policy_allows_write(policy):
+    if (
+        not is_within_sandbox(target)
+        and not is_under_allowed_root(target, policy_roots)
+        and not policy_allows_write(policy)
+    ):
         return _error_response(
             "WRITE_NOT_PERMITTED",
             "Writes outside the sandbox require allow_write policy",

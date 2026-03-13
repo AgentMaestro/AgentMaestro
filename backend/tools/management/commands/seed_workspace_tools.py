@@ -55,11 +55,11 @@ class Command(BaseCommand):
                         "args_schema": tool.args_schema,
                         "default_risk_level": tool.risk,
                         "default_requires_approval": tool.requires_approval,
-                        "enabled": enable_all,
                         "config": {},
                     }
+                    create_defaults = {**defaults, "enabled": enable_all}
                     definition, created = ToolDefinition.objects.get_or_create(
-                        workspace=workspace, tool=tool, defaults=defaults
+                        workspace=workspace, tool=tool, defaults=create_defaults
                     )
                     if not created:
                         updated_fields = []
@@ -68,6 +68,9 @@ class Command(BaseCommand):
                             if current != value:
                                 setattr(definition, field, value)
                                 updated_fields.append(field)
+                        if enable_all and not definition.enabled:
+                            definition.enabled = True
+                            updated_fields.append("enabled")
                         if updated_fields:
                             definition.save(update_fields=updated_fields)
                     total += 1

@@ -68,6 +68,80 @@ def test_git_branch_create_no_checkout(monkeypatch, tmp_path: Path):
     assert payload["result"]["checked_out"] is False
 
 
+def test_git_branch_create_timeout_in_branch_phase(monkeypatch, tmp_path: Path):
+    def fake_run_command(run_dir, run_args):
+        return _response(
+            {
+                "exit_code": None,
+                "duration_ms": 15000,
+                "timed_out": True,
+                "stdout": "",
+                "stderr": "command timed out",
+                "stdout_truncated": False,
+                "stderr_truncated": False,
+                "timeout_ms": 15000,
+                "timeout_source": "args.timeout_ms",
+            }
+        )
+
+    monkeypatch.setattr(branch_module, "run_command", fake_run_command)
+    response = run_git_branch_create(tmp_path, GitBranchCreateArgs(name="agent/branch", checkout=False))
+    payload = json.loads(response.body.decode("utf-8"))
+    assert not payload["ok"]
+    assert payload["error"]["code"].endswith("TIMED_OUT")
+    assert payload["error"]["details"] == {
+        "phase": "branch",
+        "timed_out": True,
+        "timeout_ms": 15000,
+        "timeout_source": "args.timeout_ms",
+    }
+
+
+
+def test_git_branch_create_timeout_in_checkout_phase(monkeypatch, tmp_path: Path):
+    calls = {"count": 0}
+
+    def fake_run_command(run_dir, run_args):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            return _response(
+                {
+                    "exit_code": 0,
+                    "duration_ms": 1,
+                    "timed_out": False,
+                    "stdout": "ok",
+                    "stderr": "",
+                    "stdout_truncated": False,
+                    "stderr_truncated": False,
+                }
+            )
+        return _response(
+            {
+                "exit_code": None,
+                "duration_ms": 15000,
+                "timed_out": True,
+                "stdout": "",
+                "stderr": "command timed out",
+                "stdout_truncated": False,
+                "stderr_truncated": False,
+                "timeout_ms": 15000,
+                "timeout_source": "args.timeout_ms",
+            }
+        )
+
+    monkeypatch.setattr(branch_module, "run_command", fake_run_command)
+    response = run_git_branch_create(tmp_path, GitBranchCreateArgs(name="agent/branch", checkout=True))
+    payload = json.loads(response.body.decode("utf-8"))
+    assert not payload["ok"]
+    assert payload["error"]["code"].endswith("TIMED_OUT")
+    assert payload["error"]["details"] == {
+        "phase": "checkout",
+        "timed_out": True,
+        "timeout_ms": 15000,
+        "timeout_source": "args.timeout_ms",
+    }
+
+
 def test_git_branch_create_path_escape(tmp_path: Path):
     response = run_git_branch_create(tmp_path, GitBranchCreateArgs(repo_dir="../outside", name="x"))
     payload = json.loads(response.body.decode("utf-8"))

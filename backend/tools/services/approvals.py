@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, Optional
 
+import logging
 from django.db import transaction
 from django.utils import timezone
 from runs.models import AgentRun, AgentStep
@@ -17,8 +18,12 @@ from tools.services.approval_grants import (
     find_matching_grant,
     serialize_grant,
 )
+from tools.services.command_guardrails import ToolCommandGuardrailError, validate_tool_request
 from tools.services.quotas import acquire_tool_call_slots, release_tool_call_slots
+from comms.services.remote_ops import create_remote_approval_ticket
 
+
+logger = logging.getLogger(__name__)
 
 TOOL_CALL_REQUESTED_EVENT = "tool_call_requested"
 TOOL_CALL_APPROVED_EVENT = "tool_call_approved"
@@ -109,6 +114,17 @@ def request_tool_call_approval(
     }:
         raise RuntimeError(f"Cannot request tool call from run {run.status}")
 
+    try:
+        validate_tool_request(tool_name, args or {})
+    except ToolCommandGuardrailError:
+        logger.info(
+            "Rejected tool request run=%s tool=%s args=%s because a specialized tool should be used",
+            run_id,
+            tool_name,
+            list((args or {}).keys()),
+        )
+        raise
+
     step = append_step(
         run_id=run_id,
         kind=AgentStep.Kind.TOOL_CALL,
@@ -149,6 +165,7 @@ def request_tool_call_approval(
     if requires_approval and not auto_approved:
         acquire_tool_call_slots(str(run.workspace_id), str(run.id), str(tool_call.id))
         transition_run(run_id=run_id, new_status=AgentRun.Status.WAITING_FOR_APPROVAL)
+        create_remote_approval_ticket(tool_call)
         _schedule_approvals_push(
             workspace_id=str(run.workspace_id),
             event=TOOL_CALL_REQUESTED_EVENT,
@@ -160,7 +177,6 @@ def request_tool_call_approval(
             },
         )
     elif requires_approval and auto_approved:
-        acquire_tool_call_slots(str(run.workspace_id), str(run.id), str(tool_call.id))
         _schedule_approvals_push(
             workspace_id=str(run.workspace_id),
             event=TOOL_CALL_APPROVED_EVENT,
@@ -212,7 +228,7 @@ def request_tool_call_approval(
 
 
 @transaction.atomic
-def approve_tool_call(*, tool_call_id: str, user, grant_mode: str = GRANT_MODE_ONCE) -> ToolCall:
+def approve_tool_call(*, tool_call_id: str, user, grant_mode: str = GRANT_MODE_ONCE, actor_label: Optional[str] = None) -> ToolCall:
     tool_call = (
         ToolCall.objects
         .select_for_update()
@@ -270,12 +286,18 @@ def approve_tool_call(*, tool_call_id: str, user, grant_mode: str = GRANT_MODE_O
         event_type=TOOL_CALL_APPROVED_EVENT,
         payload={
             "tool_call_id": str(tool_call.id),
-            "approved_by": getattr(user, "username", None),
+            "approved_by": getattr(user, "username", None) or actor_label,
             "status": tool_call.status,
             "approval_metadata": approval_metadata,
             "approval_grant_id": str(approval_grant.id) if approval_grant else "",
         },
         correlation_id=tool_call.correlation_id,
+    )
+
+    release_tool_call_slots(
+        str(tool_call.run.workspace_id),
+        str(tool_call.run_id),
+        str(tool_call.id),
     )
 
     transition_run(run_id=str(tool_call.run_id), new_status=AgentRun.Status.RUNNING)
@@ -286,7 +308,7 @@ def approve_tool_call(*, tool_call_id: str, user, grant_mode: str = GRANT_MODE_O
         data={
             "run_id": str(tool_call.run_id),
             "tool_call_id": str(tool_call.id),
-            "approved_by": getattr(user, "username", None),
+            "approved_by": getattr(user, "username", None) or actor_label,
             "status": tool_call.status,
             "approval_metadata": approval_metadata,
             "approval_grant_id": str(approval_grant.id) if approval_grant else "",
@@ -299,7 +321,7 @@ def approve_tool_call(*, tool_call_id: str, user, grant_mode: str = GRANT_MODE_O
 
 
 @transaction.atomic
-def deny_tool_call(*, tool_call_id: str, user, reason: Optional[str] = None) -> ToolCall:
+def deny_tool_call(*, tool_call_id: str, user, reason: Optional[str] = None, actor_label: Optional[str] = None) -> ToolCall:
     tool_call = (
         ToolCall.objects
         .select_for_update()
@@ -326,7 +348,7 @@ def deny_tool_call(*, tool_call_id: str, user, reason: Optional[str] = None) -> 
         event_type=TOOL_CALL_DENIED_EVENT,
         payload={
             "tool_call_id": str(tool_call.id),
-            "denied_by": getattr(user, "username", None),
+            "denied_by": getattr(user, "username", None) or actor_label,
             "status": tool_call.status,
             "reason": reason,
         },
@@ -341,7 +363,7 @@ def deny_tool_call(*, tool_call_id: str, user, reason: Optional[str] = None) -> 
         data={
             "run_id": str(tool_call.run_id),
             "tool_call_id": str(tool_call.id),
-            "denied_by": getattr(user, "username", None),
+            "denied_by": getattr(user, "username", None) or actor_label,
             "status": tool_call.status,
         },
     )
@@ -356,7 +378,7 @@ def revoke_tool_approval_grant(*, grant_id: str, user, run_id: str | None = None
     grant = (
         ToolApprovalGrant.objects
         .select_for_update()
-        .select_related("run", "workspace", "created_by")
+        .select_related("run", "workspace")
         .get(id=grant_id)
     )
     if run_id and str(grant.run_id) != str(run_id):

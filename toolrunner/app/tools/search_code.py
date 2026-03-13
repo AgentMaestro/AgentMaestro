@@ -15,10 +15,13 @@ from ..config import (
     is_under_allowed_root,
     normalize_globs,
     normalize_search_root,
+    policy_allowed_roots,
     policy_metadata,
+    policy_runtime_root,
+    resolve_policy_path,
 )
 from ..models import SearchCodeArgs
-from ..sandbox import is_safe_path, safe_join
+from ..sandbox import is_safe_path
 from .path_filters import first_matching_pattern, glob_candidates, matches_patterns
 
 def _error(
@@ -82,11 +85,11 @@ def _line_index_for_position(position: int, starts: list[int]) -> int:
     return idx
 
 
-def list_search_code(run_dir: Path, args: SearchCodeArgs):
-    workspace_context = run_dir
+def list_search_code(run_dir: Path, args: SearchCodeArgs, policy: dict | None = None):
+    policy_roots = policy_allowed_roots(policy)
     if args.absolute_root:
         root_path = Path(args.absolute_root).resolve()
-        if not _path_under_allowed_root(root_path):
+        if not _path_under_allowed_root(root_path, policy_roots):
             return _error(
                 "PATH_NOT_ALLOWED",
                 "absolute_root not permitted",
@@ -95,16 +98,17 @@ def list_search_code(run_dir: Path, args: SearchCodeArgs):
         workspace_context = root_path
     else:
         try:
-            root_path = safe_join(run_dir, args.root)
+            root_path = resolve_policy_path(run_dir, args.root, policy)
         except ValueError as exc:
-            return _error(
-                "PATH_OUTSIDE_WORKSPACE",
-                str(exc),
-                extra_patterns=args.exclude_globs,
-            )
-        root_path = root_path.resolve()
+            error_code = "PATH_OUTSIDE_WORKSPACE" if "path traversal outside of workspace" in str(exc) else "PATH_NOT_ALLOWED"
+            return _error(error_code, str(exc), extra_patterns=args.exclude_globs)
+        requested_root = Path(args.root)
+        if requested_root.is_absolute():
+            workspace_context = root_path if root_path.is_dir() else root_path.parent
+        else:
+            workspace_context = policy_runtime_root(policy, "repo_root") or run_dir.resolve()
 
-    allowed_context_roots = (normalize_search_root(workspace_context),)
+    allowed_context_roots = (normalize_search_root(workspace_context), *policy_roots)
     if not _path_under_allowed_root(root_path, allowed_context_roots):
         return _error(
             "PATH_NOT_ALLOWED",

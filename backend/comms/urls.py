@@ -1,7 +1,9 @@
-"""URL configuration placeholder for the comms app."""
+from django.urls import path
+
+from . import views
 
 app_name = "comms"
 
-urlpatterns: list = [
-    # Wire real endpoints (webhooks, transports, etc.) here when implemented.
+urlpatterns = [
+    path("telegram/<int:endpoint_id>/webhook/", views.telegram_webhook, name="telegram_webhook"),
 ]

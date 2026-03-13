@@ -392,6 +392,7 @@ def agent_detail(request, slug: str):
         )
 
     effective_tools = get_effective_tools(agent, request.user)
+    telegram_endpoint = find_agent_telegram_endpoint(agent)
     context = {
         "agent": agent,
         "workspace": agent.workspace,
@@ -400,12 +401,9 @@ def agent_detail(request, slug: str):
         "owner_agents": list(owner_agents),
         "websocket_url": f"/ws/agents/{agent.slug}/chat/",
         "sandbox_paths": agent.sandbox_paths or [],
-        "telegram_status": None,
+        "telegram_status": build_transport_status(agent, telegram_endpoint),
         "user_name": (request.user.get_full_name() or request.user.username or "You").strip() or "You",
     }
-    telegram_endpoint = find_agent_telegram_endpoint(agent)
-    if telegram_endpoint:
-        context["telegram_status"] = build_transport_status(agent, telegram_endpoint)
     return render(request, "agents/agent_detail.html", context)
 
 

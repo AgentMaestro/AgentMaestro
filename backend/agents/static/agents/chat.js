@@ -9,6 +9,9 @@
     const form = shell.querySelector("[data-chat-form]");
     const textarea = shell.querySelector("[data-chat-input]");
     const connectionActionBtn = shell.querySelector("[data-connection-action]");
+    const runStatusEl = shell.querySelector("[data-run-status]");
+    const pauseRunBtn = shell.querySelector("[data-run-pause]");
+    const resumeRunBtn = shell.querySelector("[data-run-resume]");
     const approvalGrantsListEl = shell.querySelector("[data-approval-grants-list]");
     const approvalGrantsEmptyEl = shell.querySelector("[data-approval-grants-empty]");
     const clearApprovalGrantsBtn = shell.querySelector("[data-clear-approval-grants]");
@@ -104,6 +107,7 @@
     };
 
     let isConnected = false;
+    let activeRunStatus = "RUNNING";
 
     const updateConnectionAction = (connected) => {
         if (!connectionActionBtn) {
@@ -129,12 +133,40 @@
         });
     };
 
+    const updateRunControls = () => {
+        const paused = activeRunStatus === "PAUSED" || activeRunStatus === "WAITING_FOR_USER";
+        if (pauseRunBtn) {
+            pauseRunBtn.disabled = !isConnected || activeRunStatus !== "RUNNING";
+        }
+        if (resumeRunBtn) {
+            resumeRunBtn.disabled = !isConnected || !paused;
+        }
+    };
+
+    const setRunStatus = (status) => {
+        activeRunStatus = String(status || "RUNNING").toUpperCase();
+        if (runStatusEl) {
+            runStatusEl.textContent = activeRunStatus;
+            runStatusEl.classList.remove(
+                "running",
+                "paused",
+                "waiting_for_user",
+                "completed",
+                "failed",
+                "canceled"
+            );
+            runStatusEl.classList.add(activeRunStatus.toLowerCase());
+        }
+        updateRunControls();
+    };
+
     const setStatus = (text) => {
         if (statusEl) {
             statusEl.textContent = text;
         }
         isConnected = text === "Connected";
         updateConnectionAction(isConnected);
+        updateRunControls();
         if (statusEl) {
             statusEl.classList.toggle("connected", text === "Connected");
             statusEl.classList.toggle("disconnected", text === "Disconnected");
@@ -418,6 +450,13 @@
         socket.send(JSON.stringify(payload));
     };
 
+    const sendRunControl = (type, extra = {}) => {
+        if (!socket || socket.readyState !== WebSocket.OPEN) {
+            return;
+        }
+        socket.send(JSON.stringify({type, ...extra}));
+    };
+
     const renderArgs = (args) => {
         try {
             return JSON.stringify(args, null, 2);
@@ -499,6 +538,12 @@
         card.dataset.approvalState = state;
     };
 
+    const getToolStatusKey = (status) =>
+        String(status || "QUEUED")
+            .trim()
+            .replace(/\s+/g, "_")
+            .toUpperCase();
+
     const createToolCard = (payload) => {
         const article = document.createElement("article");
         article.className = "chat-message chat-message-system chat-message-author-system tool-request-entry";
@@ -566,12 +611,6 @@
             card._denyBtn = denyBtn;
             actions.append(approveBtn, denyBtn);
             setApprovalButtonsState(card, "pending");
-        } else {
-            const queued = document.createElement("span");
-            queued.textContent = payload.status || "Queued";
-            queued.className = "tool-request-status";
-            card._queuedEl = queued;
-            actions.append(queued);
         }
 
         const footer = document.createElement("div");
@@ -607,7 +646,11 @@
         bodyWrap.className = "chat-message-text";
         bodyWrap.append(card);
 
-        card.append(header, body, actions, footer);
+        card.append(header, body);
+        if (actions.childElementCount) {
+            card.append(actions);
+        }
+        card.append(footer);
         article.append(meta, bodyWrap);
         card._articleEl = article;
         return card;
@@ -620,20 +663,23 @@
         if (!card) {
             return;
         }
+        const statusText = status || "Queued";
+        const statusKey = getToolStatusKey(statusText);
         if (card._statusEl) {
-            card._statusEl.textContent = status;
+            card._statusEl.textContent = statusText;
+            card._statusEl.dataset.status = statusKey;
         }
-        if (card._queuedEl) {
-            card._queuedEl.textContent = status;
-            card._queuedEl.style.display = status === "QUEUED" ? "" : "none";
+        card.dataset.status = statusKey;
+        if (card._articleEl) {
+            card._articleEl.dataset.status = statusKey;
         }
         if (card._detailEl && info) {
             setToolCardDetail(card, info);
         }
         if (card._approveBtn && card._denyBtn) {
-            if (status === "PENDING_APPROVAL") {
+            if (statusKey === "PENDING_APPROVAL") {
                 setApprovalButtonsState(card, "pending");
-            } else if (status === "DENIED") {
+            } else if (statusKey === "DENIED") {
                 setApprovalButtonsState(card, "denied");
             } else {
                 setApprovalButtonsState(card, "approved");
@@ -669,12 +715,7 @@
             status: data?.status,
             keys: data ? Object.keys(data) : null,
         });
-        appendMessage({
-            role: "system",
-            direction: "in",
-            text: `Tool ${data.tool_name} completed with status ${data?.status || "completed"}.`,
-            kind: "tool",
-        });
+
         updateToolCardStatus(data.tool_call_id, data?.status || "COMPLETED", data.result);
     };
 
@@ -717,6 +758,7 @@
                     storeRunId(activeRunId);
                 }
                 setApprovalGrants(payload.approval_grants || []);
+                setRunStatus(payload.run_status || activeRunStatus);
                 setStatus("Connected");
                 if (textarea) {
                     textarea.removeAttribute("disabled");
@@ -726,7 +768,8 @@
             case "message":
                 appendMessage({
                     role: payload.role || "assistant",
-                    direction: "in",
+                    direction: payload.direction || "in",
+                    author: payload.author,
                     text: payload.text || "",
                     timestamp: payload.timestamp,
                 });
@@ -768,6 +811,24 @@
             case "approval_grants":
                 setApprovalGrants(payload.grants || []);
                 console.log("[WS] approval_grants run_id=", activeRunId, payload);
+                console.log("[WS RCV] ****************  END WS MESSAGE ******************");
+                return;
+            case "pause_run_ack":
+                setRunStatus(payload.status || "PAUSED");
+                appendSystemMessage("Run paused. Messages will queue until you resume.", "run_control");
+                console.log("[WS] pause_run_ack run_id=", activeRunId, payload);
+                console.log("[WS RCV] ****************  END WS MESSAGE ******************");
+                return;
+            case "resume_run_ack":
+                setRunStatus(payload.status || "RUNNING");
+                appendSystemMessage("Run resumed.", "run_control");
+                console.log("[WS] resume_run_ack run_id=", activeRunId, payload);
+                console.log("[WS RCV] ****************  END WS MESSAGE ******************");
+                return;
+            case "cancel_run_ack":
+                setRunStatus(payload.status || "CANCELED");
+                appendSystemMessage("Run canceled.", "run_control");
+                console.log("[WS] cancel_run_ack run_id=", activeRunId, payload);
                 console.log("[WS RCV] ****************  END WS MESSAGE ******************");
                 return;
             case ["error", "tool_error"]:
@@ -969,7 +1030,9 @@
             author: userName,
         });
         socket.send(JSON.stringify({type: "chat.message", text}));
-        renderThinkingPlaceholder("thinking");
+        if (activeRunStatus === "RUNNING") {
+            renderThinkingPlaceholder("thinking");
+        }
         if (textarea) {
             textarea.value = "";
         }
@@ -987,6 +1050,14 @@
         } else {
             connect();
         }
+    });
+
+    pauseRunBtn?.addEventListener("click", () => {
+        sendRunControl("pause_run");
+    });
+
+    resumeRunBtn?.addEventListener("click", () => {
+        sendRunControl("resume_run");
     });
 
     textarea?.addEventListener("keydown", (event) => {
@@ -1014,5 +1085,6 @@
         sendToolControl("tool_clear_grants", null);
     });
 
+    setRunStatus(activeRunStatus);
     initializeRunAndConnect();
 })();

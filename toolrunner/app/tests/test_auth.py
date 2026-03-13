@@ -3,10 +3,12 @@ import hashlib
 import json
 import time
 
+from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
 
 from toolrunner.app import app
 from toolrunner.app.config import SECRET, TIMESTAMP_SKEW_SECONDS
+from toolrunner.app.tools import git_log as git_log_module
 
 client = TestClient(app)
 
@@ -85,3 +87,58 @@ def test_stale_timestamp_rejected():
     )
     assert response.status_code == 401
     assert response.json()["detail"] == "Stale timestamp"
+
+
+def test_request_limits_apply_to_git_log_timeout(monkeypatch):
+    captured: dict[str, int] = {}
+
+    def fake_run_command(run_dir, run_args):
+        captured["timeout_ms"] = run_args.timeout_ms
+        return JSONResponse(
+            status_code=200,
+            content={
+                "ok": True,
+                "result": {
+                    "exit_code": 0,
+                    "duration_ms": 1,
+                    "timed_out": False,
+                    "stdout": "oid1\u0000Alice\u0000alice@example.com\u00001600000000\u0000Fix bug\n",
+                    "stderr": "",
+                    "stdout_truncated": False,
+                    "stderr_truncated": False,
+                },
+            },
+        )
+
+    monkeypatch.setattr(git_log_module, "run_command", fake_run_command)
+    payload = {
+        "request_id": "req-git-log",
+        "workspace_id": "ws-timeout",
+        "run_id": "run-timeout",
+        "tool_name": "git_log",
+        "args": {
+            "repo_dir": ".",
+            "max_count": 5,
+        },
+        "limits": {
+            "timeout_s": 5,
+            "max_output_bytes": 1024,
+        },
+    }
+    body = json.dumps(payload).encode("utf-8")
+    timestamp, signature = signer(body)
+
+    response = client.post(
+        "/v1/run/tool",
+        data=body,
+        headers={
+            "X-AM-Signature": signature,
+            "X-AM-Timestamp": timestamp,
+            "Content-Type": "application/json",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "COMPLETED"
+    assert captured["timeout_ms"] == 5000
+

@@ -6,8 +6,8 @@ from typing import List
 
 from fastapi.responses import JSONResponse
 
+from ..config import resolve_path_from_base, resolve_policy_path
 from ..models import GitAddArgs, RunCommandArgs
-from ..sandbox import safe_join
 from .run_command import run_command
 
 
@@ -25,11 +25,12 @@ def _error_response(code: str, message: str, details: dict | None = None, status
     )
 
 
-def run_git_add(run_dir: Path, args: GitAddArgs):
+def run_git_add(run_dir: Path, args: GitAddArgs, policy: dict | None = None):
     try:
-        repo_path = safe_join(run_dir, args.repo_dir or ".")
+        repo_path = resolve_policy_path(run_dir, args.repo_dir or ".", policy)
     except ValueError as exc:
-        return _error_response("PATH_OUTSIDE_WORKSPACE", str(exc))
+        error_code = "PATH_OUTSIDE_WORKSPACE" if "path traversal outside of workspace" in str(exc) else "PATH_NOT_ALLOWED"
+        return _error_response(error_code, str(exc))
 
     command: List[str] = ["git", "add"]
     if args.all:
@@ -41,9 +42,10 @@ def run_git_add(run_dir: Path, args: GitAddArgs):
     if args.paths:
         for rel_path in args.paths:
             try:
-                target = safe_join(repo_path, rel_path)
+                target = resolve_path_from_base(repo_path, rel_path, policy)
             except ValueError as exc:
-                return _error_response("PATH_OUTSIDE_WORKSPACE", str(exc))
+                error_code = "PATH_OUTSIDE_WORKSPACE" if "path traversal outside of workspace" in str(exc) else "PATH_NOT_ALLOWED"
+                return _error_response(error_code, str(exc))
             try:
                 normalized = target.relative_to(repo_path).as_posix()
             except ValueError:

@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any, Sequence
 
 BASE_DIR = Path(__file__).resolve().parent.parent
+_WINDOWS = os.name == "nt"
 
 _ENV_PATH = BASE_DIR / ".env"
 
@@ -51,7 +52,46 @@ def _expand_path(value: str) -> str:
     return os.path.expanduser(os.path.expandvars(value.strip()))
 
 
-SECRET = os.environ.get("TOOLRUNNER_SECRET", "insecure-secret").encode("utf-8")
+def _resolve_python_interpreter() -> tuple[str, str]:
+    configured = _env_value("TOOLRUNNER_PYTHON").strip()
+    if configured:
+        expanded = _expand_path(configured)
+        candidate = Path(expanded)
+        if candidate.is_absolute():
+            return str(candidate.resolve()), "env:TOOLRUNNER_PYTHON"
+        if any(sep in configured for sep in ("/", "\\")):
+            resolved = (BASE_DIR / candidate).resolve()
+            return str(resolved), "env:TOOLRUNNER_PYTHON"
+        return configured, "env:TOOLRUNNER_PYTHON"
+
+    candidate_paths = []
+    if _WINDOWS:
+        candidate_paths.extend(
+            [
+                BASE_DIR / ".venv" / "Scripts" / "python.exe",
+                BASE_DIR.parent / ".venv" / "Scripts" / "python.exe",
+            ]
+        )
+    else:
+        candidate_paths.extend(
+            [
+                BASE_DIR / ".venv" / "bin" / "python",
+                BASE_DIR.parent / ".venv" / "bin" / "python",
+            ]
+        )
+    for candidate_path in candidate_paths:
+        if candidate_path.exists():
+            label = (
+                "fallback:toolrunner_.venv"
+                if candidate_path.parent.parent.parent == BASE_DIR
+                else "fallback:repo_.venv"
+            )
+            return str(candidate_path.resolve()), label
+    return ("python", "default:python")
+
+
+SECRET = _env_value("TOOLRUNNER_SECRET") or "insecure-secret"
+SECRET = SECRET.encode("utf-8")
 
 _SANDBOX_ROOT_RAW = _env_value("TOOLRUNNER_SANDBOX_ROOT")
 if _SANDBOX_ROOT_RAW:
@@ -61,21 +101,16 @@ else:
 
 SANDBOX_ROOT = _SANDBOX_ROOT_PATH.resolve()
 SANDBOX_ROOT.mkdir(parents=True, exist_ok=True)
-TIMESTAMP_SKEW_SECONDS = int(os.environ.get("TOOLRUNNER_TIMESTAMP_SKEW_SECONDS", "60"))
+TIMESTAMP_SKEW_SECONDS = int(_env_value("TOOLRUNNER_TIMESTAMP_SKEW_SECONDS") or "60")
 
-COMMAND_TIMEOUT = int(os.environ.get("TOOLRUNNER_COMMAND_TIMEOUT", "30"))
-OUTPUT_LIMIT = int(os.environ.get("TOOLRUNNER_OUTPUT_LIMIT", "4096"))
+COMMAND_TIMEOUT = int(_env_value("TOOLRUNNER_TIMEOUT") or "15")
+OUTPUT_LIMIT = int(_env_value("TOOLRUNNER_OUTPUT_LIMIT") or "4096")
 ALLOWED_COMMANDS = [
     part.strip()
-    for part in os.environ.get(
-        "TOOLRUNNER_ALLOWED_COMMANDS", "pytest,python,ruff,black,git,ls,cat,powershell"
-    ).split(",")
+    for part in (_env_value("TOOLRUNNER_ALLOWED_COMMANDS") or "pytest,python,ruff,black,git,ls,cat,powershell").split(",")
     if part.strip()
 ]
-PYTHON_INTERPRETER = os.environ.get("TOOLRUNNER_PYTHON", "python")
-
-
-_WINDOWS = os.name == "nt"
+PYTHON_INTERPRETER, PYTHON_INTERPRETER_SOURCE = _resolve_python_interpreter()
 
 
 def _normalize_for_allowlist(path: Path) -> Path:
@@ -163,6 +198,100 @@ def policy_allows_write(policy: dict[str, Any] | None) -> bool:
     if not policy:
         return False
     return _truthy_flag(policy.get("allow_write"))
+
+
+def policy_allowed_roots(policy: dict[str, Any] | None) -> tuple[Path, ...]:
+    if not policy:
+        return ()
+    raw_roots = policy.get("allowed_roots")
+    if not isinstance(raw_roots, (list, tuple, set)):
+        return ()
+    resolved: list[Path] = []
+    seen: set[Path] = set()
+    for value in raw_roots:
+        candidate_text = str(value or "").strip()
+        if not candidate_text:
+            continue
+        candidate = Path(candidate_text)
+        if not candidate.is_absolute():
+            candidate = BASE_DIR / candidate
+        normalized = _normalize_for_allowlist(candidate)
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        resolved.append(normalized)
+    return tuple(resolved)
+
+
+def policy_runtime_root(policy: dict[str, Any] | None, key: str) -> Path | None:
+    if not policy:
+        return None
+    raw = str(policy.get(key) or "").strip()
+    if not raw:
+        return None
+    try:
+        return normalize_search_root(Path(raw))
+    except Exception:
+        return None
+
+
+def policy_resolution_roots(run_dir: Path, policy: dict[str, Any] | None = None) -> tuple[Path, ...]:
+    roots: list[Path] = []
+    seen: set[Path] = set()
+    for root in (
+        policy_runtime_root(policy, "repo_root"),
+        policy_runtime_root(policy, "tmp_root"),
+        normalize_search_root(run_dir),
+        *policy_allowed_roots(policy),
+    ):
+        if root is None:
+            continue
+        normalized = normalize_search_root(root)
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        roots.append(normalized)
+    return tuple(roots)
+
+
+def resolve_policy_path(run_dir: Path, raw_path: str, policy: dict[str, Any] | None = None) -> Path:
+    requested = Path(str(raw_path or ".").strip() or ".")
+    if requested.is_absolute():
+        resolved = requested.resolve()
+        if not is_under_allowed_root(resolved, policy_resolution_roots(run_dir, policy)):
+            raise ValueError(f"Path '{resolved}' is not permitted")
+        return resolved
+    base_root = policy_runtime_root(policy, "repo_root") or run_dir.resolve()
+    base_root = Path(base_root)
+    base_resolved = base_root.resolve()
+    resolved = (base_root / requested).resolve()
+    try:
+        if resolved != base_resolved and not resolved.is_relative_to(base_resolved):
+            raise ValueError("path traversal outside of workspace")
+    except ValueError as exc:
+        raise ValueError("path traversal outside of workspace") from exc
+    if not is_under_allowed_root(resolved, policy_resolution_roots(run_dir, policy)):
+        raise ValueError(f"Path '{resolved}' is not permitted")
+    return resolved
+
+
+def resolve_path_from_base(base_dir: Path, raw_path: str, policy: dict[str, Any] | None = None) -> Path:
+    requested = Path(str(raw_path or ".").strip() or ".")
+    if requested.is_absolute():
+        resolved = requested.resolve()
+        if not is_under_allowed_root(resolved, policy_resolution_roots(base_dir, policy)):
+            raise ValueError(f"Path '{resolved}' is not permitted")
+        return resolved
+    base_resolved = base_dir.resolve()
+    resolved = (base_resolved / requested).resolve()
+    try:
+        if resolved != base_resolved and not resolved.is_relative_to(base_resolved):
+            raise ValueError("path traversal outside of workspace")
+    except ValueError as exc:
+        raise ValueError("path traversal outside of workspace") from exc
+    if not is_under_allowed_root(resolved, policy_resolution_roots(base_dir, policy)):
+        raise ValueError(f"Path '{resolved}' is not permitted")
+    return resolved
 
 
 DEFAULT_SEARCH_EXCLUDE_GLOBS = (

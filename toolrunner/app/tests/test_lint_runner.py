@@ -3,6 +3,7 @@ from pathlib import Path
 
 from fastapi.responses import JSONResponse
 
+from toolrunner.app.config import PYTHON_INTERPRETER, PYTHON_INTERPRETER_SOURCE
 from toolrunner.app.models import LintArgs
 from toolrunner.app.tools import lint_runner as lint_module
 from toolrunner.app.tools.lint_runner import run_linters
@@ -56,7 +57,7 @@ def test_lint_runner_ruff_parses_json(monkeypatch, tmp_path: Path):
     assert result["parse_warning"] is None
     cmd = captured["cmd"]
     assert cmd == [
-        "python",
+        PYTHON_INTERPRETER,
         "-m",
         "ruff",
         "check",
@@ -215,3 +216,30 @@ def test_lint_runner_path_escape(monkeypatch, tmp_path: Path):
     payload = json.loads(response.body)
     assert not payload["ok"]
     assert payload["error"]["code"].endswith("PATH_OUTSIDE_WORKSPACE")
+
+
+def test_lint_runner_missing_ruff_module(monkeypatch, tmp_path: Path):
+    def fake_run_command(run_dir, run_args):
+        return JSONResponse(
+            status_code=200,
+            content={
+                "ok": True,
+                "result": {
+                    "exit_code": 1,
+                    "duration_ms": 1,
+                    "timed_out": False,
+                    "stdout": "",
+                    "stderr": "No module named 'ruff'",
+                    "stdout_truncated": False,
+                    "stderr_truncated": False,
+                },
+            },
+        )
+
+    monkeypatch.setattr(lint_module, "run_command", fake_run_command)
+    response = run_linters(tmp_path, LintArgs(tool="ruff"))
+    payload = json.loads(response.body)
+    assert not payload["ok"]
+    assert payload["error"]["code"].endswith("MISSING_RUNTIME_DEPENDENCY")
+    assert payload["error"]["details"]["python_interpreter"] == PYTHON_INTERPRETER
+    assert payload["error"]["details"]["python_interpreter_source"] == PYTHON_INTERPRETER_SOURCE

@@ -7,6 +7,7 @@ from .models import (
     TransportEndpoint,
     CommsConversation,
     CommsMessage,
+    RemoteApprovalTicket,
 )
 
 
@@ -50,3 +51,10 @@ class CommsMessageAdmin(admin.ModelAdmin):
     list_display = ("conversation", "direction", "created_at")
     list_filter = ("direction", "conversation__transport")
     search_fields = ("text",)
+
+@admin.register(RemoteApprovalTicket)
+class RemoteApprovalTicketAdmin(admin.ModelAdmin):
+    list_display = ("short_code", "transport", "tool_call", "status", "expires_at", "acted_by_label")
+    list_filter = ("transport", "status")
+    search_fields = ("short_code", "external_chat_id", "acted_by_label", "tool_call__tool_name")
+

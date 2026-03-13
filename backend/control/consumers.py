@@ -1,7 +1,7 @@
-from channels.generic.websocket import AsyncWebsocketConsumer
+from channels.generic.websocket import AsyncJsonWebsocketConsumer
 
 
-class ControlChatConsumer(AsyncWebsocketConsumer):
+class ControlChatConsumer(AsyncJsonWebsocketConsumer):
     async def connect(self):
         self.uuid = self.scope["url_route"]["kwargs"]["uuid"]
         self.group_name = f"control_chat_{self.uuid}"

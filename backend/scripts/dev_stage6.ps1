@@ -6,7 +6,7 @@ $commands = @(
     ".venv\Scripts\python.exe manage.py seed_tools",
     "redis-server --port 6379",
     ".venv\Scripts\python.exe manage.py runserver",
-    ".venv\Scripts\python.exe -m celery -A agentmaestro worker --loglevel=info --pool=solo"
+    ".venv\Scripts\python.exe -m celery -A agentmaestro worker --loglevel=info --pool=solo -Q tools,runs,comms,celery"
 )
 foreach ($cmd in $commands) {
     Write-Host "`n`e[36m$cmd`e[0m"

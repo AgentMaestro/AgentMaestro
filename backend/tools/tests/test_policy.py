@@ -114,3 +114,14 @@ class SeedWorkspaceToolsTests(TestCase):
         call_command("seed_workspace_tools", "--workspace", self.workspace.name, "--enable-all")
         definition = ToolDefinition.objects.get(workspace=self.workspace, tool=self.tool)
         self.assertTrue(definition.enabled)
+
+    def test_seed_workspace_tools_preserves_existing_enabled_flag(self):
+        definition = ToolDefinition.objects.create(
+            workspace=self.workspace,
+            tool=self.tool,
+            name=self.tool.name,
+            enabled=True,
+        )
+        call_command("seed_workspace_tools", "--workspace", self.workspace.name)
+        definition.refresh_from_db()
+        self.assertTrue(definition.enabled)

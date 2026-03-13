@@ -149,6 +149,16 @@
             {% endif %}
           </p>
         {% endif %}
+
+        {% if webhook_url %}
+          <div class="pending-card">
+            <h3 style="margin-top: 0;">Webhook-first setup</h3>
+            <p>Use this only when the backend is reachable from Telegram on an allowed public HTTPS port.</p>
+            <p><strong>Webhook URL</strong><br /><code>{{ webhook_url }}</code></p>
+            <p><strong>Secret token</strong><br /><code>{{ webhook_secret }}</code></p>
+            <p style="margin-bottom: 0;">For local development, prefer polling with <code>backend\scripts\setTelegramPolling.ps1</code> and <code>TELEGRAM_ENABLE_POLLING=1</code>.</p>
+          </div>
+        {% endif %}
       </section>
 
       {% if pairing and bot_info %}
@@ -159,7 +169,7 @@
         >
           <h2>Step 2 · Claim pairing</h2>
           <p>
-            Send <code>/pair {{ pairing.pair_code }}</code> to
+            Send <code>pair {{ pairing.pair_code }}</code> to
             {% if bot_info.username %}
               <strong>@{{ bot_info.username }}</strong>
             {% else %}

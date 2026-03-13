@@ -52,3 +52,27 @@ def test_python_file_traversal_rejected(tmp_path):
     args = PythonArgs(files=[file_item], entrypoint="../escape/run.py")
     with pytest.raises(ValueError):
         run_python(tmp_path, args, timeout_s=5, max_output_bytes=256)
+
+
+def test_python_repo_root_relative_files_with_policy(monkeypatch, tmp_path):
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+
+    def fake_run(*args, **kwargs):
+        return fake_subprocess(stdout="files")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    content = base64.b64encode(b"print('from repo root')").decode("utf-8")
+    file_item = PythonFileItem(path="scripts/run.py", content_b64=content)
+    args = PythonArgs(files=[file_item], entrypoint="scripts/run.py")
+    code, out, err = run_python(
+        tmp_path,
+        args,
+        timeout_s=5,
+        max_output_bytes=256,
+        policy={"repo_root": str(repo_root), "allowed_roots": [str(repo_root)]},
+    )
+    assert code == 0
+    assert "files" in out
+    assert err == ""
+    assert (repo_root / "scripts" / "run.py").exists()

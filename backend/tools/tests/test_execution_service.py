@@ -139,6 +139,44 @@ def test_execute_tool_call_success(monkeypatch, fake_result_bus):
     TOOLRUNNER_OUTPUT_LIMIT=128,
     TOOLRUNNER_HTTP_TIMEOUT=10,
 )
+def test_execute_tool_call_sanitizes_nul_bytes_before_save(monkeypatch, fake_result_bus):
+    tool_call = _build_test_run("nul-bytes")
+    response = httpx.Response(
+        200,
+        json={
+            "request_id": str(uuid.uuid4()),
+            "status": "COMPLETED",
+            "exit_code": 0,
+            "stdout": "done\x00now",
+            "stderr": "warn\x00later",
+            "result": {"digest": "abc\x00def", "nested": ["x\x00y"]},
+            "duration_ms": 10,
+        },
+    )
+    monkeypatch.setattr("tools.services.execution.httpx.Client", lambda *args, **kwargs: DummyClient(response))
+
+    execute_tool_call(str(tool_call.id))
+    tool_call.refresh_from_db()
+
+    assert tool_call.status == ToolCall.Status.COMPLETED
+    assert tool_call.stdout == "done\\u0000now"
+    assert tool_call.stderr == "warn\\u0000later"
+    assert tool_call.result == {"digest": "abc\\u0000def", "nested": ["x\\u0000y"]}
+
+    calls, _layer = fake_result_bus
+    payload = calls[0][2]
+    assert payload["stdout"] == "done\\u0000now"
+    assert payload["stderr"] == "warn\\u0000later"
+    assert payload["result"] == {"digest": "abc\\u0000def", "nested": ["x\\u0000y"]}
+
+
+@override_settings(
+    TOOLRUNNER_URL="http://example/v1/execute",
+    TOOLRUNNER_SECRET="test-secret",
+    TOOLRUNNER_TIMEOUT=5,
+    TOOLRUNNER_OUTPUT_LIMIT=128,
+    TOOLRUNNER_HTTP_TIMEOUT=10,
+)
 def test_execute_tool_call_failure(monkeypatch, fake_result_bus):
     tool_call = _build_test_run("failure")
     response = httpx.Response(500)

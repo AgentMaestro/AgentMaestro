@@ -1,65 +1,438 @@
-## Toolrunner patch handling
+# ToolRunner
 
-The toolrunner’s `file_patch` tool now uses an embedded parser built on top of `pypatch==1.0.2`. That dependency is installed inside `toolrunner/.venv` and listed in `toolrunner/requirements.txt`.
+`toolrunner.app.main` exposes a signed execution API for workspace-safe tool calls plus the local orchestration UI. This document is contract-first: the JSON shown here matches the current Pydantic request models and the result payloads returned by the handlers in `toolrunner/app/tools/`.
 
-### Highlights
+## Execute API
 
-- Requests are normalized by ensuring there is a `diff --git a/... b/...` header that matches the target path; the rest of the payload can stay in the legacy `--- a/...`/`+++ b/...` format.
-- The `pypatch` parser (`pypatch.patch.fromstring`) creates `PatchSet`/`Patch`/`Hunk` objects, and we convert each hunk into the existing hunk-by-hunk application loop. Context lines, additions, deletions, backup creation, and reject file paths still behave the same as before.
-- Partial applies (e.g., when `fail_on_reject=False`) emit `ok: true`, `applied_partially: true`, a `rejects_path`, `failed_hunks`, and keep the `backup_path` references that operators expect. Complete failures now return `tool_runner.PATCH_FAILED` with the same structured payload as before.
+Primary route:
 
-### Local verification / testing recipe
+- `POST /v1/run/tool`
 
-1. Ensure `toolrunner/.venv` has the dependency installed:
-   - `cd toolrunner && .venv\Scripts\pip install -r requirements.txt`
-2. Because Windows frequently denies access to `AppData\Local\Temp/pytest-*`, point pytest to a worktree directory that `toolrunner` owns:
-   ```powershell
-   $env:TMP='C:\Dev\AgentMaestro\temp'
-   $env:TEMP=$env:TMP
-   .\toolrunner\.venv\Scripts\python -m pytest --basetemp=C:\Dev\AgentMaestro\temp\pytest_basetemp toolrunner/app/tests/test_file_patch.py -vv
-   ```
-   If Pytest still cannot delete the basetemp, delete or re-ACL `C:\Dev\AgentMaestro\temp\pytest_basetemp` before rerunning.
-3. For quick manual validation, run the helper script that writes a diff, calls `apply_patch`, and prints the JSON response:
-   ```powershell
-   cd C:\Dev\AgentMaestro
-   @'
-   from pathlib import Path
-   from toolrunner.app.tools.file_patch import apply_patch
-   from toolrunner.app.models import FilePatchArgs
-   path = Path('toolrunner/tmp_manual_patch')
-   import shutil, hashlib
-   if path.exists():
-       shutil.rmtree(path)
-   path.mkdir(parents=True, exist_ok=True)
-   file = path / 'target.txt'
-   file.write_text('old\n')
-   args = FilePatchArgs(path='target.txt', patch_unified='''--- a/target.txt
-   +++ b/target.txt
-   @@ -1 +1 @@
--old
-+new
-   ''', expected_sha256=hashlib.sha256(file.read_bytes()).hexdigest())
-   response = apply_patch(path, args)
-   print(response.body)
-'@ | Set-Content debug_patch_manual.py
-   .\toolrunner\.venv\Scripts\python debug_patch_manual.py
-   ```
-   The printed JSON should include `ok: true`, the `backup_path`, and `sha256_before`/`sha256_after`.
+Legacy alias:
 
-### Notes
+- `POST /v1/execute`
 
-- Because `pypatch` looks for actual files on disk, the request path must match the file under the run directory. Encountering a patch without any hunks (e.g., `a/target.txt` but no `@@` header) will trigger `PATCH_FAILED`.
-- The reject buffer still writes the original diff to `.toolrunner_rejects/<path>.rej`, so operators can inspect partial failure causes.
+Requests must be JSON and signed with:
 
-## Repo tree tool
+- `X-AM-Timestamp`
+- `X-AM-Signature`
 
-The `repo_tree` tool returns a flat list of directories and files below a given root so that operators can quickly understand workspace layout without following nested recursion.
+The signature verifier currently expects the same HMAC flow covered by `toolrunner/app/tests/test_auth.py`.
 
-### Request structure
+### Execute request envelope
+
+Every tool call goes through the same outer request shape:
 
 ```json
 {
-  "root": ".",
+  "request_id": "req-123",
+  "workspace_id": "ws-1",
+  "run_id": "run-1",
+  "tool_name": "run_command",
+  "args": {
+    "cmd": ["python", "-c", "print('ok')"],
+    "cwd": "."
+  },
+  "policy": {
+    "allow_write": false,
+    "allowed_roots": []
+  },
+  "limits": {
+    "timeout_s": 30,
+    "max_output_bytes": 4096
+  }
+}
+```
+
+Field notes:
+
+- `request_id`, `workspace_id`, `run_id`, and `tool_name` are required non-empty strings.
+- `args` is tool-specific and is validated against the Pydantic args model for `tool_name`.
+- `policy` is optional and is passed through to handlers that enforce path/write policy.
+- `limits.timeout_s` and `limits.max_output_bytes` are part of the outer envelope, but only `shell_exec` and `python_exec` consume them directly.
+
+### Execute success envelope
+
+The outer response is always an `ExecuteResponse`:
+
+```json
+{
+  "request_id": "req-123",
+  "status": "COMPLETED",
+  "exit_code": 0,
+  "stdout": "ok\n",
+  "stderr": "",
+  "duration_ms": 18,
+  "result": {
+    "tool": "run_command",
+    "policy": {
+      "allow_write": false,
+      "allowed_roots": []
+    },
+    "tool_result": {
+      "ok": true,
+      "result": {
+        "exit_code": 0,
+        "duration_ms": 17,
+        "timed_out": false,
+        "stdout": "ok\n",
+        "stderr": "",
+        "stdout_truncated": false,
+        "stderr_truncated": false,
+        "timeout_ms": 300000,
+        "timeout_seconds": 300.0,
+        "timeout_source": "args.timeout_ms"
+      }
+    }
+  }
+}
+```
+
+Field notes:
+
+- `status` is `COMPLETED` or `FAILED`.
+- `result.tool_result` is the actual tool handler payload.
+- `stdout`, `stderr`, and `exit_code` on the outer envelope are mirrored from the nested tool result when the handler exposes them.
+- The outer status is computed from execution outcome, not just nested `tool_result.ok`.
+
+### Execute validation / request errors
+
+Invalid JSON or invalid outer request bodies return a plain error envelope instead of `ExecuteResponse`:
+
+```json
+{
+  "ok": false,
+  "error": {
+    "code": "tool_runner.INVALID_REQUEST",
+    "message": "request validation failed",
+    "details": {
+      "errors": [],
+      "tool": "run_command",
+      "request_id": "req-123"
+    }
+  }
+}
+```
+
+## Webhook Endpoint
+
+`webhook` is a dedicated signed endpoint and does not use the normal `/v1/run/tool` execute envelope.
+
+Primary route:
+
+- `POST /v1/run/tool/webhook`
+
+Legacy alias:
+
+- `POST /v1/webhook`
+
+Requests must still be JSON and signed with:
+
+- `X-AM-Timestamp`
+- `X-AM-Signature`
+
+Request body:
+
+```json
+{
+  "event": "smoke-webhook",
+  "run_id": "smoke-webhook-run",
+  "payload": {
+    "source": "smoke"
+  }
+}
+```
+
+Field notes:
+
+- `event` is required and must be a non-empty string.
+- `run_id` is optional and defaults to `"unknown"` when omitted.
+- `payload` is optional and, when present, must be a JSON object.
+
+Success response:
+
+```json
+{
+  "ok": true,
+  "result": {
+    "accepted": true,
+    "tool": "webhook",
+    "event": "smoke-webhook",
+    "run_id": "smoke-webhook-run",
+    "payload": {
+      "source": "smoke"
+    }
+  }
+}
+```
+
+Validation failures return normal FastAPI HTTP errors for this endpoint, for example:
+
+- `400 {"detail": "event required"}`
+- `400 {"detail": "payload must be an object"}`
+
+## Timeout And Output Limit Rules
+
+Timeouts and output caps are no longer uniform across all tools. The active source depends on the tool family.
+
+### 1. Outer execute limits
+
+The outer execute envelope contains:
+
+```json
+{
+  "limits": {
+    "timeout_s": 30,
+    "max_output_bytes": 4096
+  }
+}
+```
+
+These are used by:
+
+- `shell_exec`
+- `python_exec`
+
+They are not used by `run_command`, `test_runner`, `format_runner`, `coverage_runner`, `lint_runner`, `typecheck_runner`, `search_code`, or the git tools.
+
+### 2. Tool-level timeout fields
+
+These tools carry their own timeout and output fields inside `args`:
+
+- `search_code`: `timeout_ms`
+- `run_command`: `timeout_ms`, `max_output_bytes`
+- `test_runner`: `timeout_ms`, `max_output_bytes`
+- `format_runner`: `timeout_ms`, `max_output_bytes`
+- `coverage_runner`: `timeout_ms`, `max_output_bytes`
+- `lint_runner`: `timeout_ms`, `max_output_bytes`
+- `typecheck_runner`: `timeout_ms`, `max_output_bytes`
+- `git_status`: `timeout_ms`, `max_output_bytes`
+- `git_diff`: `timeout_ms`, `max_output_bytes`
+- `git_branch_create`: `timeout_ms`, `max_output_bytes`
+- `git_add`: `timeout_ms`, `max_output_bytes`
+- `git_push`: `timeout_ms`, `max_output_bytes`
+- `git_checkout`: `timeout_ms`, `max_output_bytes`
+- `git_commit`: `timeout_ms`, `max_output_bytes`
+- `git_apply`: `timeout_ms`, `max_output_bytes`
+
+`git_log` is the exception in the git family: its args model does not expose timeout or output fields, so it currently inherits the defaults from `RunCommandArgs` when it shells out internally.
+
+### 3. Model defaults
+
+If a tool-specific timeout/output field is omitted, the args model default applies. Current defaults in code include:
+
+- `search_code.timeout_ms = 3000`
+- `run_command.timeout_ms = 300000`, `max_output_bytes = 262144`
+- `test_runner.timeout_ms = 600000`, `max_output_bytes = 524288`
+- `format_runner.timeout_ms = 180000`, `max_output_bytes = 262144`
+- `coverage_runner.timeout_ms = 600000`, `max_output_bytes = 524288`
+- `lint_runner.timeout_ms = 180000`, `max_output_bytes = 262144`
+- `typecheck_runner.timeout_ms = 300000`, `max_output_bytes = 262144`
+- most configurable git tools default to `timeout_ms = 60000` or lower and `max_output_bytes = 262144`
+
+### 4. Orchestrator clamp precedence
+
+When the orchestrator sends a tool call, it can clamp tool args before the request reaches the API:
+
+1. If `ToolCall.timeout_ms_override` or `ToolCall.max_output_bytes_override` is present, that value is used as the requested value.
+2. Otherwise the orchestrator uses the tool args value already present on the call.
+3. Otherwise it falls back to the tool-call defaults.
+4. The final value is clamped to the global caps:
+   - `DEFAULT_CALL_TIMEOUT_MS = COMMAND_TIMEOUT * 1000`
+   - `DEFAULT_CALL_OUTPUT_BYTES = OUTPUT_LIMIT`
+
+This means the effective timeout/output for orchestrated tool calls is:
+
+- not greater than the orchestrator cap
+- optionally smaller if an override is provided
+- otherwise the smaller of the requested tool arg and the global cap
+
+Direct callers to `/v1/run/tool` bypass the orchestrator clamp.
+
+### 5. Timeout behavior by tool family
+
+- `run_command` returns `ok: true` with `result.timed_out: true`; the execute wrapper marks the outer status as `FAILED`.
+- `test_runner`, `format_runner`, and `coverage_runner` convert timeouts into `ok: false` error envelopes and include timeout metadata in `error.details`.
+- `search_code` does not return `tool_runner.TIMED_OUT`; when its deadline expires it returns `ok: true` with `result.truncated: true`.
+- `shell_exec` and `python_exec` return a normalized command result. A timeout produces `tool_runner.TIMED_OUT`.
+- For tools that call `run_command`, a `timeout_source` field is included in the result or error details. Today that source is usually `args.timeout_ms` or `limits.timeout_s`.
+
+### 6. Zero means "no timeout" only for `timeout_ms`
+
+- Tools with `timeout_ms` allow `0`, and the implementation treats that as no timeout.
+- `search_code.timeout_ms = 0` disables the scan deadline.
+- The outer `limits.timeout_s` field does not allow `0`; `shell_exec` and `python_exec` always require a positive timeout.
+
+## Tool Contracts
+
+Unless stated otherwise, the tool payload shown below is the nested `result.tool_result` value returned by the handler and embedded under the outer execute response.
+
+### `file_read`
+
+Request args:
+
+```json
+{
+  "path": "docs/toolrunner.md",
+  "mode": "text",
+  "encoding": "utf-8",
+  "start_line": 1,
+  "end_line": 40,
+  "max_bytes": 262144,
+  "absolute_root": null
+}
+```
+
+Success result:
+
+```json
+{
+  "ok": true,
+  "result": {
+    "path": "docs/toolrunner.md",
+    "mode": "text",
+    "encoding": "utf-8",
+    "content": "# ToolRunner\n",
+    "start_line": 1,
+    "end_line": 40,
+    "total_lines": 40,
+    "truncated": false
+  },
+  "meta": {
+    "policy": {}
+  }
+}
+```
+
+Binary mode returns `content_base64` and `byte_length` instead of text fields.
+
+### `file_write`
+
+Request args:
+
+```json
+{
+  "path": "tmp/output.txt",
+  "mode": "text",
+  "content": "hello\n",
+  "content_base64": null,
+  "encoding": "utf-8",
+  "overwrite": false,
+  "make_dirs": true,
+  "atomic": true,
+  "expected_sha256": null
+}
+```
+
+Success result:
+
+```json
+{
+  "ok": true,
+  "result": {
+    "path": "tmp/output.txt",
+    "bytes_written": 6,
+    "sha256": "abc123",
+    "resolved_path": "C:/Dev/AgentMaestro/toolrunner/sandbox/ws/run/tmp/output.txt",
+    "created": true,
+    "overwritten": false
+  },
+  "meta": {
+    "policy": {},
+    "sandbox": {
+      "workspace_dir": "C:/Dev/AgentMaestro/toolrunner/sandbox/ws/run",
+      "sandbox_root": "C:/Dev/AgentMaestro/toolrunner/sandbox",
+      "resolved_path": "C:/Dev/AgentMaestro/toolrunner/sandbox/ws/run/tmp/output.txt"
+    }
+  }
+}
+```
+
+### `file_delete`
+
+Request args:
+
+```json
+{
+  "path": "tmp/output.txt",
+  "recursive": false,
+  "missing_ok": false
+}
+```
+
+Success result:
+
+```json
+{
+  "ok": true,
+  "result": {
+    "path": "tmp/output.txt",
+    "resolved_path": "C:/Dev/AgentMaestro/toolrunner/sandbox/ws/run/tmp/output.txt",
+    "deleted": true,
+    "missing": false,
+    "deleted_type": "file"
+  },
+  "meta": {
+    "policy": {}
+  }
+}
+```
+
+When `missing_ok=true` and the target is absent, the tool still returns `ok: true` with `deleted: false` and `missing: true`.
+
+### `file_patch`
+
+Request args:
+
+```json
+{
+  "path": "app/example.py",
+  "patch_unified": "--- a/app/example.py\n+++ b/app/example.py\n@@ -1,1 +1,1 @@\n-print('old')\n+print('new')\n",
+  "strip_prefix": 0,
+  "fail_on_reject": true,
+  "expected_sha256": null,
+  "create_if_missing": false,
+  "backup": true
+}
+```
+
+Success result:
+
+```json
+{
+  "ok": true,
+  "result": {
+    "path": "app/example.py",
+    "applied": true,
+    "applied_partially": false,
+    "hunks_total": 1,
+    "hunks_applied": 1,
+    "hunks_failed": 0,
+    "failed_hunks": [],
+    "sha256_before": "before",
+    "sha256_after": "after",
+    "backup_path": "C:/Dev/AgentMaestro/.../.toolrunner_backups/app/example.py.20260311T120000Z.bak",
+    "rejects_path": null
+  },
+  "meta": {
+    "policy": {}
+  }
+}
+```
+
+Notes:
+
+- `strip_prefix=0` means "auto-detect when possible."
+- Partial applies keep `ok: true` and set `applied_partially: true` when `fail_on_reject=false`.
+- Patch parse or hunk failures return `tool_runner.PATCH_FAILED`.
+
+### `repo_tree`
+
+Request args:
+
+```json
+{
+  "path": ".",
   "max_depth": 6,
   "include_files": true,
   "include_dirs": true,
@@ -67,45 +440,57 @@ The `repo_tree` tool returns a flat list of directories and files below a given 
   "exclude_globs": ["**/.git/**", "**/.venv/**", "**/node_modules/**", "**/__pycache__/**"],
   "include_globs": null,
   "max_entries": 5000,
-  "include_metadata": true
+  "include_metadata": true,
+  "absolute_root": null
 }
 ```
 
-- `root` is relative to the run directory and defaults to `"."`.
-- `max_depth` bounds how many path segments below the root are emitted; directories beyond this depth are pruned.
-- `include_files` / `include_dirs` toggle whether files and directories appear in the results; traversal still descends through both to discover matches.
-- `follow_symlinks` controls whether symlinked directories are explored (security keeps symlinks that escape the sandbox inert).
-- `exclude_globs` defaults to common noise directories such as `.git`, `.venv`, `node_modules`, and `__pycache__`.
-- `include_globs` can narrow the tree to matches (patterns are matched against both the path relative to the root and the path relative to the workspace root).
-- `max_entries` has a hard ceiling of 5000 entries; exceeding the limit results in `truncated: true`.
-- `include_metadata` controls whether `size_bytes` and `mtime_epoch` return for each entry.
-
-### Response highlights
-
-- Entries are sorted lexicographically by `path`.
-- Each entry reports `type`, `path`, `depth`, and optional metadata when requested.
-- The `stats` block summarizes how many files/dirs were returned, and `truncated` flags when the result set hit `max_entries`.
-
-### Verification
-
-```powershell
-cd C:\Dev\AgentMaestro
-.\toolrunner\scripts\test.ps1 app/tests/test_repo_tree.py -vv
-```
-
-## Search code tool
-
-Searching for text or regex across the run workspace helps operators locate relevant files without opening every file manually. The tool honors include/exclude globs, limits, and timeouts so scans stay bounded.
-
-### Request structure
+Success result:
 
 ```json
 {
-  "query": "get_logger\\(",
-  "is_regex": true,
+  "ok": true,
+  "result": {
+    "root": ".",
+    "max_depth": 6,
+    "truncated": false,
+    "entries": [
+      {
+        "type": "file",
+        "path": "docs/toolrunner.md",
+        "depth": 1,
+        "size_bytes": 1234,
+        "mtime_epoch": 1773240000
+      }
+    ],
+    "stats": {
+      "files": 1,
+      "dirs": 0,
+      "entries": 1,
+      "excluded": 0,
+      "excluded_patterns": [],
+      "excluded_matches_by_pattern": {},
+      "allowed_roots": []
+    }
+  },
+  "meta": {
+    "policy": {}
+  }
+}
+```
+
+### `search_code`
+
+Request args:
+
+```json
+{
+  "query": "timeout_source",
+  "is_regex": false,
   "case_sensitive": false,
   "root": ".",
-  "include_globs": ["**/*.py", "**/*.js", "**/*.html"],
+  "absolute_root": null,
+  "include_globs": ["**/*.py"],
   "exclude_globs": ["**/.git/**", "**/.venv/**", "**/node_modules/**"],
   "max_results": 100,
   "max_matches_per_file": 20,
@@ -114,76 +499,154 @@ Searching for text or regex across the run workspace helps operators locate rele
 }
 ```
 
-- `query` is required; `is_regex` toggles whether it is interpreted as a regular expression. Defaults favor case-insensitive literal search.
-- `root` is relative to the run directory; globs are matched both against paths relative to that root and the workspace.
-- `include_globs` restrict the files that are read, while `exclude_globs` (defaulting to `.git`, `.venv`, `node_modules`) keep noisy directories out of the scan.
-- `max_results` caps the total matches reported; `max_matches_per_file` limits how many snippets appear per file. Hitting either limit marks `truncated` true.
-- `context_lines` controls how many lines before/after each match are returned, and `timeout_ms` bounds how long the search may run.
-
-### Response highlights
-
-- `matches` is a path-sorted list of files that contained results; each entry includes `match_count` and the snippet list (line number, column, line text, and surrounding context).
-- `stats` reports how many files were scanned, how many had matches, and the total matched occurrences counted.
-- `truncated` becomes `true` when timeouts or any of the max limits fire.
-
-### Verification
-
-```powershell
-cd C:\Dev\AgentMaestro
-.\toolrunner\scripts\test.ps1 app/tests/test_search_code.py -vv
-```
-
-## Run command tool
-
-The `run_command` tool is the Tier 2 primitive for executing deterministic processes (PowerShell, Python, node, etc.) inside a workspace-safe sandbox. It always captures `stdout`/`stderr`, enforces a timeout, honors working-directory constraints, and respects per-run output limits.
-
-### Request structure
+Success result:
 
 ```json
 {
-  "cmd": ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "scripts/test.ps1"],
+  "ok": true,
+  "result": {
+    "query": "timeout_source",
+    "is_regex": false,
+    "case_sensitive": false,
+    "truncated": false,
+    "matches": [
+      {
+        "path": "toolrunner/app/tools/run_command.py",
+        "match_count": 2,
+        "snippets": [
+          {
+            "line": 34,
+            "col": 20,
+            "line_text": "        return {\"timeout_ms\": None, \"timeout_seconds\": None, \"timeout_source\": source}",
+            "context_before": [],
+            "context_after": []
+          }
+        ]
+      }
+    ],
+    "stats": {
+      "files_scanned": 1,
+      "files_with_matches": 1,
+      "total_matches": 2,
+      "excluded": 0,
+      "excluded_patterns": [],
+      "excluded_matches_by_pattern": {},
+      "allowed_roots": []
+    }
+  },
+  "meta": {
+    "policy": {}
+  }
+}
+```
+
+## Command Execution Tools
+
+### `shell_exec`
+
+Request args:
+
+```json
+{
+  "cmd": ["powershell", "-NoProfile", "-Command", "Get-Location"],
   "cwd": ".",
-  "env": { "PYTHONNOUSERSITE": "1" },
+  "env": {}
+}
+```
+
+The handler uses the outer execute limits, not `args.timeout_ms`.
+
+Success result:
+
+```json
+{
+  "ok": true,
+  "result": {
+    "command": ["powershell", "-NoProfile", "-Command", "Get-Location"],
+    "cwd": "C:/Dev/AgentMaestro/toolrunner/sandbox/ws/run",
+    "exit_code": 0,
+    "timed_out": false,
+    "stdout": "Path\n----\n...",
+    "stderr": "",
+    "stdout_truncated": false,
+    "stderr_truncated": false,
+    "timeout_value": 30,
+    "timeout_unit": "seconds",
+    "timeout_source": "limits.timeout_s"
+  }
+}
+```
+
+### `python_exec`
+
+Request args:
+
+```json
+{
+  "code": "print('ok')",
+  "files": [],
+  "entrypoint": null
+}
+```
+
+Success result matches the same normalized command shape as `shell_exec`.
+
+If `entrypoint` is used, `files` must also be provided so the entrypoint exists under the run directory.
+
+### `run_command`
+
+Request args:
+
+```json
+{
+  "cmd": ["python", "-c", "print('ok')"],
+  "cwd": ".",
+  "env": {},
   "timeout_ms": 300000,
   "max_output_bytes": 262144,
   "stdin_text": null
 }
 ```
 
-- `cmd` is required and is always provided as an array of arguments; shell parsing is disallowed so the tool stays narrow and deterministic.
-- `cwd` is workspace-relative and is filtered through `safe_join` so escaping the run directory is rejected with `PATH_OUTSIDE_WORKSPACE`.
-- `env`, if supplied, is merged on top of `os.environ`.
-- `timeout_ms` and `max_output_bytes` bound how long the process may run and how much output is retained. Timeouts now kill the entire process tree (`taskkill /T /F` on Windows, `kill()` on POSIX) so long-running tests don’t leak subprocesses.
-- `stdin_text` feeds the process over stdin when provided.
-- Output is always decoded as UTF-8, truncated by bytes, and stable regardless of the host locale.
-- Errors include a `details` object (`{"cwd": <requested>}` when the working directory is missing, `{"cmd0": ...}` when the requested binary cannot be found) in addition to the `tool_runner.<code>` envelope.
+Direct handler success result:
 
-### Response highlights
-
-- The success envelope is `{ "ok": true, "result": { ... } }` with `exit_code`, `duration_ms`, `timed_out`, `stdout`, `stderr`, and the `_truncated` flags.
-- On timeout, `timed_out` flips to `true`, `exit_code` is `null`, and partial output is still returned so the caller can reason about what was captured.
-- Errors (bad cwd, missing binary, etc.) return `ok: false` plus the `tool_runner.<code>` envelope with `INVALID_ARGUMENT`, `NOT_FOUND`, `PERMISSION_DENIED`, or other standard Tier 2 codes.
-- Output text is truncated to `max_output_bytes`, and `stdout_truncated`/`stderr_truncated` indicate the truncation state.
-- Execution always merges the caller’s env with the host OS env, so built-in executables (e.g., `python`) still resolve when the tool runs inside a sandbox.
-
-### Verification
-
-```powershell
-cd C:\Dev\AgentMaestro
-.\toolrunner\scripts\test.ps1 app/tests/test_run_command.py -vv
+```json
+{
+  "ok": true,
+  "result": {
+    "exit_code": 0,
+    "duration_ms": 18,
+    "timed_out": false,
+    "stdout": "ok\n",
+    "stderr": "",
+    "stdout_truncated": false,
+    "stderr_truncated": false,
+    "timeout_ms": 300000,
+    "timeout_seconds": 300.0,
+    "timeout_source": "args.timeout_ms"
+  }
+}
 ```
 
-## Test runner tool
+Notes:
 
-`test_runner` wraps the approved test entrypoints (PowerShell scripts, Pytest, or an explicit command) and returns a structured summary with counts, failure details, and captured output.
+- `timeout_ms=0` disables the timeout.
+- On timeout, the tool still returns `ok: true` with `timed_out: true`; the outer execute response becomes `FAILED`.
+- On Windows, timeouts terminate the process tree with `taskkill /T /F`.
 
-### Request structure
+## Test And Quality Tools
+
+### `test_runner`
+
+Request args:
 
 ```json
 {
   "kind": "powershell_script",
   "script_path": "scripts/test.ps1",
   "script_args": ["-q"],
+  "pytest_args": null,
+  "cmd": null,
   "cwd": ".",
   "env": {},
   "timeout_ms": 600000,
@@ -192,141 +655,275 @@ cd C:\Dev\AgentMaestro
 }
 ```
 
-- `kind` selects `powershell_script`, `pytest`, or `command`.
-- `script_path`/`script_args` only apply to `powershell_script` and must live inside the workspace. Script arguments are appended after `--` so they reach the script rather than PowerShell itself.
-- `pytest_args` are required when running the `pytest` kind, while `cmd` is required for the `command` kind.
-- `parse` defaults to `pytest` and enables summary/failure extraction; set it to `none` to skip parsing and preserve raw output.
-- When `kind=pytest` the tool always runs `["python", "-m", "pytest", ...]` so the request uses the same interpreter as the agent and avoids PATH surprises.
-
-### Response highlights
-
-- A successful response includes `exit_code`, `duration_ms`, `timed_out`, parsed `summary`, `failed_tests`, and captured `stdout`/`stderr` with truncation flags.
-- The summary tracks `passed`, `failed`, `skipped`, `xfailed`, `xpassed`, and `errors`, while each failed test entry exposes the node id, file, message, and traceback snippet.
-- Responses now also include `parse_mode` so callers know how the stdout/stderr was interpreted (e.g., `"pytest"` vs `"none"`).
-- Errors (bad cwd, missing script, unsupported fields) propagate standard `tool_runner.<CODE>` envelopes just like other Tier 2 helpers.
-
-### Verification
-
-```powershell
-cd C:\Dev\AgentMaestro
-.\toolrunner\scripts\test.ps1 app/tests/test_test_runner.py -vv
-```
-
-## Lint runner tool
-
-`lint_runner` invokes approved linters (currently Ruff, Flake8, ESLint, Prettier, or an explicit command) and returns structured issues plus stdout/stderr.
-
-### Request structure
+Success result:
 
 ```json
 {
-  "tool": "ruff",
-  "cwd": ".",
-  "paths": ["app", "toolrunner"],
-  "args": ["check", "."],
-  "timeout_ms": 180000,
-  "max_output_bytes": 262144,
-  "parse": "ruff"
+  "ok": true,
+  "result": {
+    "exit_code": 0,
+    "duration_ms": 1200,
+    "timed_out": false,
+    "summary": {
+      "passed": 10,
+      "failed": 0,
+      "skipped": 0,
+      "xfailed": 0,
+      "xpassed": 0,
+      "errors": 0
+    },
+    "parse_mode": "pytest",
+    "failed_tests": [],
+    "stdout": "",
+    "stderr": "",
+    "stdout_truncated": false,
+    "stderr_truncated": false
+  }
 }
 ```
 
-- `paths` are workspace-relative directories that are appended to the linter command and are individually sandbox-checked.
-- Each supported tool has a default argument list (e.g., Ruff uses `["check"]` if you omit `args`), but you can override them via `args`.
-- `tool="command"` runs the provided `cmd` array and defaults to `parse="none"`.
-- When `parse="ruff"`, the tool adds `--output-format=json` and translates Ruff’s JSON into `issues`.
+Failure/timeouts return `ok: false` with a `result` object shaped like the success result plus `error.code` such as:
 
-### Response highlights
+- `tool_runner.TIMED_OUT`
+- `tool_runner.TESTS_FAILED`
 
-- `issues` is always returned (empty list when parsing is disabled) and includes `path`, `line`, `col`, `code`, `severity`, and `message`.
-- `parse_mode` mirrors the request so callers know how the output was interpreted.
-- Standard Tier 2 metadata (`exit_code`, `duration_ms`, `timed_out`, `stdout`, `stderr`, truncation flags) is included just as in other agents.
+### `format_runner`
 
-### Verification
-
-```powershell
-cd C:\Dev\AgentMaestro
-.\toolrunner\scripts\test.ps1 app/tests/test_lint_runner.py -vv
-```
-
-## Typecheck runner tool
-
-`typecheck_runner` supports Pyright, Mypy, TSC, or an explicit command and emits structured diagnostics along with stdout/stderr.
-
-### Request structure
-
-```json
-{
-  "tool": "pyright",
-  "cwd": ".",
-  "args": [],
-  "timeout_ms": 300000,
-  "max_output_bytes": 262144,
-  "parse": "pyright"
-}
-```
-
-- `args` override the default flag set (Pyright adds `--outputjson`, Mypy uses `--show-column-numbers --show-error-context`, TSC uses `--pretty false` unless you override).
-- `tool="command"` runs the provided `cmd` array and defaults to `parse="none"`.
-- Supported parse modes (`pyright`, `mypy`, `tsc`) convert the checkers’ output into structured diagnostics.
-
-### Response highlights
-
-- `diagnostics` is always present and contains entries with `path`, `line`, `col`, `severity`, `code`, and `message`.
-- Add `parse_mode` to see how the result was interpreted.
-- `parse_source` indicates whether the diagnostics were read from stdout/stderr (or `none` when parsing is disabled), and `parse_warning` surfaces any issues (like truncated/invalid output).
-- Standard Tier 2 metadata (`exit_code`, `duration_ms`, `timed_out`, `stdout`, `stderr`, truncation flags) mirrors other tools.
-
-### Verification
-
-```powershell
-cd C:\Dev\AgentMaestro
-.\toolrunner\scripts\test.ps1 app/tests/test_typecheck_runner.py -vv
-```
-
-## Format runner tool
-
-`format_runner` invokes Ruff Format (Black/Prettier/command placeholder) in `check` or `apply` mode and returns any changed paths plus stdout/stderr metadata.
-
-### Request structure
+Request args:
 
 ```json
 {
   "tool": "ruff_format",
   "mode": "check",
   "cwd": ".",
-  "paths": ["app", "toolrunner"],
+  "paths": ["toolrunner/app"],
+  "args": null,
+  "cmd": null,
   "timeout_ms": 180000,
   "max_output_bytes": 262144
 }
 ```
 
-- `mode` controls whether formatting is verified (`check`, adds `--check --diff`) or applied (`apply`, adds `--diff`).
-- `paths` are workspace-relative; they are sandbox-checked and appended to the formatter invocation.
-- `tool="command"` runs the user-supplied `cmd` array and skips the default Ruff invocation.
+Success result:
 
-### Response highlights
-
-- `changed_files` lists any files reported by the formatter (currently parsed from Ruff’s `+++ path` diff lines).
-- Includes `exit_code`, `duration_ms`, `timed_out`, `stdout`, `stderr`, and truncation flags like other Tier 2 tools.
-
-### Verification
-
-```powershell
-cd C:\Dev\AgentMaestro
-.\toolrunner\scripts\test.ps1 app/tests/test_format_runner.py -vv
+```json
+{
+  "ok": true,
+  "result": {
+    "exit_code": 0,
+    "duration_ms": 400,
+    "timed_out": false,
+    "changed_files": [],
+    "parse_mode": "ruff_format",
+    "parse_warning": null,
+    "stdout": "",
+    "stderr": "",
+    "stdout_truncated": false,
+    "stderr_truncated": false
+  }
+}
 ```
 
-## Git diff tool
+Notes:
 
-`git_diff` returns a unified diff from the workspace, supporting staged/unstaged and path filtering.
+- `tool="command"` requires `cmd` and bypasses the built-in formatter command construction.
+- For `ruff_format`, `mode=check` injects `--check --diff`; `mode=apply` injects `--diff`.
+- Timeout failures return `tool_runner.TIMED_OUT`.
 
-### Request structure
+### `coverage_runner`
+
+Request args:
+
+```json
+{
+  "kind": "pytest_coverage",
+  "cwd": ".",
+  "args": ["toolrunner/app/tests/test_run_command.py"],
+  "timeout_ms": 600000,
+  "max_output_bytes": 524288
+}
+```
+
+Success result:
+
+```json
+{
+  "ok": true,
+  "result": {
+    "exit_code": 0,
+    "duration_ms": 1200,
+    "timed_out": false,
+    "total_percent": 92.5,
+    "files": [
+      {
+        "path": "toolrunner/app/tools/run_command.py",
+        "percent": 95.0
+      }
+    ],
+    "stdout": "",
+    "stderr": "",
+    "stdout_truncated": false,
+    "stderr_truncated": false,
+    "coverage_stdout": "",
+    "coverage_stderr": "",
+    "coverage_duration_ms": 200,
+    "coverage_json_path": "C:/Dev/AgentMaestro/toolrunner/sandbox/ws/run/coverage.json"
+  }
+}
+```
+
+### `lint_runner`
+
+Request args:
+
+```json
+{
+  "tool": "ruff",
+  "cwd": ".",
+  "paths": ["toolrunner/app"],
+  "args": null,
+  "cmd": null,
+  "timeout_ms": 180000,
+  "max_output_bytes": 262144,
+  "parse": "ruff"
+}
+```
+
+Success result:
+
+```json
+{
+  "ok": true,
+  "result": {
+    "exit_code": 1,
+    "duration_ms": 350,
+    "timed_out": false,
+    "issues": [
+      {
+        "path": "toolrunner/app/main.py",
+        "line": 10,
+        "col": 1,
+        "code": "F401",
+        "severity": "error",
+        "message": "unused import"
+      }
+    ],
+    "stdout": "[]",
+    "stderr": "",
+    "stdout_truncated": false,
+    "stderr_truncated": false,
+    "parse_mode": "ruff",
+    "parse_source": "stdout",
+    "parse_warning": null
+  }
+}
+```
+
+The linter result stays `ok: true` even when the linter exits non-zero; callers should inspect `exit_code`, `issues`, and `timed_out`.
+
+### `typecheck_runner`
+
+Request args:
+
+```json
+{
+  "tool": "pyright",
+  "cwd": ".",
+  "args": null,
+  "cmd": null,
+  "timeout_ms": 300000,
+  "max_output_bytes": 262144,
+  "parse": "pyright"
+}
+```
+
+Success result:
+
+```json
+{
+  "ok": true,
+  "result": {
+    "exit_code": 1,
+    "duration_ms": 500,
+    "timed_out": false,
+    "diagnostics": [
+      {
+        "path": "toolrunner/app/main.py",
+        "line": 12,
+        "col": 4,
+        "severity": "error",
+        "code": "reportGeneralTypeIssues",
+        "message": "example diagnostic"
+      }
+    ],
+    "stdout": "{}",
+    "stderr": "",
+    "stdout_truncated": false,
+    "stderr_truncated": false,
+    "parse_mode": "pyright",
+    "parse_source": "stdout",
+    "parse_warning": null
+  }
+}
+```
+
+Like `lint_runner`, this tool keeps `ok: true` for normal checker failures and expects callers to inspect `exit_code`, `diagnostics`, and `timed_out`.
+
+## Git Tools
+
+### `git_status`
+
+Request args:
+
+```json
+{
+  "repo_dir": ".",
+  "porcelain": "v2",
+  "include_untracked": true,
+  "timeout_ms": 60000,
+  "max_output_bytes": 262144
+}
+```
+
+Success result:
+
+```json
+{
+  "ok": true,
+  "result": {
+    "repo_dir": ".",
+    "branch": {
+      "name": "main",
+      "head_oid": "abc123",
+      "upstream": "origin/main",
+      "ahead": 0,
+      "behind": 0,
+      "detached": false
+    },
+    "is_clean": true,
+    "staged": [],
+    "unstaged": [],
+    "untracked": [],
+    "conflicts": [],
+    "raw": {
+      "stdout": "",
+      "stderr": "",
+      "stdout_truncated": false,
+      "stderr_truncated": false
+    }
+  }
+}
+```
+
+### `git_diff`
+
+Request args:
 
 ```json
 {
   "repo_dir": ".",
   "staged": false,
-  "paths": ["toolrunner/app/file_patch.py"],
+  "paths": ["toolrunner/app/main.py"],
   "context_lines": 3,
   "detect_renames": true,
   "timeout_ms": 60000,
@@ -334,123 +931,92 @@ cd C:\Dev\AgentMaestro
 }
 ```
 
-- `repo_dir` is workspace-relative and must be inside the sandbox.
-- `staged` toggles `git diff --cached`.
-- `paths` limits the diff to the provided files; omit for full diff.
-- `context_lines` controls `-U`; `detect_renames` adds `--find-renames`.
+Success result:
 
-### Response highlights
-
-- Returns the normalized diff string plus the raw stdout/stderr and a `truncated` flag.
-- Standard Tier 2 metadata (`exit_code`, `duration_ms`, `timed_out`) is also returned.
-
-### Verification
-
-```powershell
-cd C:\Dev\AgentMaestro
-.\toolrunner\scripts\test.ps1 app/tests/test_git_diff.py -vv
+```json
+{
+  "ok": true,
+  "result": {
+    "repo_dir": ".",
+    "staged": false,
+    "paths": ["toolrunner/app/main.py"],
+    "diff": "diff --git ...",
+    "truncated": false,
+    "raw": {
+      "stdout": "diff --git ...",
+      "stderr": "",
+      "stdout_truncated": false,
+      "stderr_truncated": false
+    }
+  }
+}
 ```
 
-## Git branch create tool
+### `git_branch_create`
 
-`git_branch_create` creates a new branch and optionally checks it out.
-
-### Request structure
+Request args:
 
 ```json
 {
   "repo_dir": ".",
-  "name": "agent/2026-02-25-filepatch",
+  "name": "agent/docs-sync",
   "start_point": "HEAD",
   "checkout": true,
-  "force": false
-}
-```
-
-- `force` adds `-f` so you can recreate branches.
-- `checkout` switches to the new branch using `git switch`.
-
-### Response highlights
-
-- Returns the repo dir, the branch name, and whether it was checked out.
-
-### Verification
-
-```powershell
-cd C:\Dev\AgentMaestro
-.\toolrunner\scripts\test.ps1 app/tests/test_git_branch_create.py -vv
-```
-
-## Git add tool
-
-`git_add` stages files with optional `-A`/`-N`.
-
-### Request structure
-
-```json
-{
-  "repo_dir": ".",
-  "paths": ["toolrunner/app/file_patch.py", "toolrunner/app/file_read.py"],
-  "all": false,
-  "intent_to_add": false
-}
-```
-
-- `all` runs `git add -A`.
-- `intent_to_add` adds `-N`.
-
-### Response highlights
-
-- Returns the repo dir and normalized staged paths.
-- Includes raw `stdout`/`stderr` plus truncation flags for debugging.
-
-### Verification
-
-```powershell
-cd C:\Dev\AgentMaestro
-.\toolrunner\scripts\test.ps1 app/tests/test_git_add.py -vv
-```
-
-## Git status tool
-
-`git_status` inspects the current working tree via `git status --porcelain=v2 --branch`, returning structured branch metadata, staged/unstaged/untracked paths, conflicts, and a clean flag.
-
-### Request structure
-
-```json
-{
-  "repo_dir": ".",
-  "porcelain": "v2",
-  "include_untracked": true,
-  "timeout_ms": 30000,
+  "force": false,
+  "timeout_ms": 120000,
   "max_output_bytes": 262144
 }
 ```
 
-- `repo_dir` is relative to the workspace and must stay inside the sandbox.
-- `porcelain` accepts `v1` or `v2` (defaults to `v2`); we recommend `v2` for branch tracking.
-- `include_untracked` controls whether the command emits `--untracked-files=no` (set it to `false` to ignore untracked files).
-- `timeout_ms` and `max_output_bytes` bound how long the git status invocation may run and how much output is retained.
+Success result:
 
-### Response highlights
-
-- `branch` reports the current branch name, OID, upstream, ahead/behind counts, and a `detached` flag.
-- `staged`, `unstaged`, `untracked`, and `conflicts` are populated from the porcelain output; `is_clean` flips to `true` only when every list is empty (and untracked files are ignored when `include_untracked=false`).
-- `raw.stdout`/`raw.stderr` expose normalized output (`\n` only) plus `stdout_truncated`/`stderr_truncated`, keeping the same truncation metadata that `run_command` provides.
-- Non-repo errors return `tool_runner.NOT_FOUND` (or `tool_runner.INVALID_ARGUMENT` for other git failures) with the stderr details.
-
-### Verification
-
-```powershell
-cd C:\Dev\AgentMaestro
-.\toolrunner\scripts\test.ps1 app/tests/test_git_status.py -vv
+```json
+{
+  "ok": true,
+  "result": {
+    "repo_dir": ".",
+    "name": "agent/docs-sync",
+    "checked_out": true
+  }
+}
 ```
 
-## Git checkout tool
+### `git_add`
 
-`git_checkout` wraps `git checkout` so operators can switch branches, tags, or commits from inside the run workspace.
+Request args:
 
-### Request structure
+```json
+{
+  "repo_dir": ".",
+  "paths": ["docs/toolrunner.md"],
+  "all": false,
+  "intent_to_add": false,
+  "timeout_ms": 60000,
+  "max_output_bytes": 262144
+}
+```
+
+Success result:
+
+```json
+{
+  "ok": true,
+  "result": {
+    "repo_dir": ".",
+    "staged_paths": ["docs/toolrunner.md"],
+    "raw": {
+      "stdout": "",
+      "stderr": "",
+      "stdout_truncated": false,
+      "stderr_truncated": false
+    }
+  }
+}
+```
+
+### `git_checkout`
+
+Request args:
 
 ```json
 {
@@ -462,37 +1028,34 @@ cd C:\Dev\AgentMaestro
 }
 ```
 
-- `max_output_bytes` can be provided to bound the amount of stdout/stderr stored (defaults to 262144).
+Success result:
 
-- `repo_dir` stays inside the sandbox (default `.`).
-- `ref` is required and can be a branch, tag, or commit-ish.
-- `create` runs `git checkout -b <ref>` from the current HEAD.
-- `timeout_ms` bounds how long the checkout may run.
-
-### Response highlights
-
-- `repo_dir`, `ref`, and a `detached` boolean show the final state.
-- `raw.stdout`/`raw.stderr` contain normalized newline output plus truncation flags from `run_command`.
-- On checkout failures (bad ref, dirty worktree, missing repo) the error bubbles up as `tool_runner.INVALID_ARGUMENT` or `tool_runner.NOT_FOUND`.
-
-### Verification
-
-```powershell
-cd C:\Dev\AgentMaestro
-.\toolrunner\scripts\test.ps1 app/tests/test_git_checkout.py -vv
+```json
+{
+  "ok": true,
+  "result": {
+    "repo_dir": ".",
+    "ref": "main",
+    "detached": false,
+    "raw": {
+      "stdout": "Already on 'main'\n",
+      "stderr": "",
+      "stdout_truncated": false,
+      "stderr_truncated": false
+    }
+  }
+}
 ```
 
-## Git commit tool
+### `git_commit`
 
-`git_commit` stages files and creates commits inside the run workspace, exposing `--signoff`, `--amend`, and collection of changed-file metadata.
-
-### Request structure
+Request args:
 
 ```json
 {
   "repo_dir": ".",
-  "message": "Fix file_patch: strip_prefix + line ending normalization",
-  "paths_to_add": ["toolrunner/app/file_patch.py"],
+  "message": "Update ToolRunner docs",
+  "paths_to_add": ["docs/toolrunner.md"],
   "add_all": false,
   "signoff": false,
   "amend": false,
@@ -501,31 +1064,35 @@ cd C:\Dev\AgentMaestro
 }
 ```
 
-- `repo_dir` stays inside the sandbox.
-- `message` is required and becomes the commit message (the summary is the first line).
-- `paths_to_add` stages the listed paths before committing; it accepts `null` if nothing specific should be staged.
-- `add_all` runs `git add --all` to stage the entire working tree.
-- `signoff` and `amend` translate to `--signoff` and `--amend` on `git commit`.
-- `timeout_ms` and `max_output_bytes` bound git’s runtime and output capture.
+Success result:
 
-### Response highlights
-
-- `commit_oid` is `git rev-parse HEAD`, `summary` is your message’s first line, and `changed_files` counts `git diff-tree --name-only -r HEAD`.
-- `raw.stdout`/`raw.stderr` keep normalized output plus truncation flags so callers can diagnose commit failures.
-- When nothing to commit exists, the tool returns `tool_runner.CONFLICT` with message “nothing to commit.”
-
-### Verification
-
-```powershell
-cd C:\Dev\AgentMaestro
-.\toolrunner\scripts\test.ps1 app/tests/test_git_commit.py -vv
+```json
+{
+  "ok": true,
+  "result": {
+    "repo_dir": ".",
+    "commit_oid": "abc123",
+    "summary": "Update ToolRunner docs",
+    "changed_files": 1,
+    "changed_files_truncated": false,
+    "raw": {
+      "stdout": "[main abc123] Update ToolRunner docs\n",
+      "stderr": "",
+      "stdout_truncated": false,
+      "stderr_truncated": false
+    }
+  }
+}
 ```
 
-## Git log tool
+The commit handler performs additional validation and can return:
 
-`git_log` exposes recent commits (oid, author, timestamp, subject) via `git log --format=...`.
+- `tool_runner.CONFLICT` for "nothing to commit"
+- `tool_runner.INVALID_ARGUMENT` for invalid git output / add / commit failures
 
-### Request structure
+### `git_log`
+
+Request args:
 
 ```json
 {
@@ -535,130 +1102,193 @@ cd C:\Dev\AgentMaestro
 }
 ```
 
-- `max_count` bounds how many commits to read (defaults to 20).
-- `ref` selects the starting commit (defaults to `HEAD`).
-- The tool respects the sandboxed `repo_dir`.
-
-### Response highlights
-
-- `commits` is a list of `{oid, author_name, author_email, author_time_epoch, subject}` entries.
-- Includes `repo_dir`, `ref`, and `max_count` for easier caller bookkeeping.
-- `raw.stdout` holds the normalized git output so callers can reparse if needed.
-- Errors (bad repo, bad ref) surface via the usual `tool_runner.*` envelope.
-- If git truncates the stdout, the tool now reports `parse_warning`.
-
-### Verification
-
-```powershell
-cd C:\Dev\AgentMaestro
-.\toolrunner\scripts\test.ps1 app/tests/test_git_log.py -vv
-```
-
-## Coverage runner tool
-
-`coverage_runner` executes `coverage run -m pytest` followed by `coverage json` to emit overall coverage plus per-file percents.
-
-### Request structure
+Success result:
 
 ```json
 {
-  "kind": "pytest_coverage",
-  "cwd": ".",
-  "timeout_ms": 600000,
-  "max_output_bytes": 524288
+  "ok": true,
+  "result": {
+    "repo_dir": ".",
+    "ref": "HEAD",
+    "max_count": 20,
+    "commits": [
+      {
+        "oid": "abc123",
+        "author_name": "Scott",
+        "author_email": "scott@example.com",
+        "author_time_epoch": 1773240000,
+        "subject": "Update ToolRunner docs"
+      }
+    ],
+    "raw": {
+      "stdout": "abc123\u0000Scott\u0000scott@example.com\u00001773240000\u0000Update ToolRunner docs\n",
+      "stderr": "",
+      "stdout_truncated": false,
+      "stderr_truncated": false
+    }
+  }
 }
 ```
 
-- `kind=pytest_coverage` is currently the only supported scenario; it runs pytest under coverage.
-- You can supply extra pytest flags via `args` if needed.
-- The tool writes a temporary `coverage.json` in the working directory to read the report.
+`git_log` currently uses the internal `RunCommandArgs` defaults for timeout/output because its public args model does not expose those fields.
 
-### Response highlights
+### `git_apply`
 
-- Returns `total_percent` plus a list of `{path, percent}` entries from the coverage JSON.
-- Standard metadata (`exit_code`, `duration_ms`, `timed_out`, `stdout`, `stderr`, truncation flags) is still present.
+Request args:
 
-### Verification
+```json
+{
+  "repo_dir": ".",
+  "patch_unified": "--- a/docs/toolrunner.md\n+++ b/docs/toolrunner.md\n@@ -1,1 +1,1 @@\n-old\n+new\n",
+  "strip_prefix": 1,
+  "reject": true,
+  "check": false,
+  "include_untracked": true,
+  "timeout_ms": 30000,
+  "max_output_bytes": 262144
+}
+```
 
-```powershell
-cd C:\Dev\AgentMaestro
-.\toolrunner\scripts\test.ps1 app/tests/test_coverage_runner.py -vv
+Success result:
+
+```json
+{
+  "ok": true,
+  "result": {
+    "repo_dir": ".",
+    "strip_prefix": 1,
+    "check_passed": null,
+    "applied": true,
+    "rejects_created": false,
+    "reject_paths": [],
+    "raw": {
+      "stdout": "",
+      "stderr": "",
+      "stdout_truncated": false,
+      "stderr_truncated": false
+    }
+  }
+}
+```
+
+Note: `GitApplyArgs` currently defines `timeout_ms` and `max_output_bytes` twice in the model, and the later definitions win. The effective defaults are `timeout_ms = 30000` and `max_output_bytes = 262144`.
+
+### `git_push`
+
+Request args:
+
+```json
+{
+  "repo_dir": ".",
+  "remote": "origin",
+  "ref": "main",
+  "set_upstream": true,
+  "force": false,
+  "timeout_ms": 60000,
+  "max_output_bytes": 262144
+}
+```
+
+Success result:
+
+```json
+{
+  "ok": true,
+  "result": {
+    "repo_dir": ".",
+    "remote": "origin",
+    "ref": "main",
+    "pushed": true,
+    "raw": {
+      "stdout": "",
+      "stderr": "",
+      "stdout_truncated": false,
+      "stderr_truncated": false
+    }
+  }
+}
 ```
 
 ## Orchestrator UI Dashboard
 
-The FastAPI `toolrunner.app.main` module now serves a `/ui` dashboard that mirrors the Maestro/Apprentice workflow:
+The FastAPI `toolrunner.app.main` module also serves a `/ui` dashboard that mirrors the Maestro/Apprentice workflow:
 
-- **User tab:** A chat-first experience where Maestro poses clarifying questions, drafts sections, and locks them conversationally. Each turn is appended to `.agentmaestro/runs/<run_id>/chat/transcript.jsonl`, updates the preview/completeness widgets, and still flows through `SRS.md`/`SRS.lock.json` while emitting `CHAT_MESSAGE`, `SRS_UPDATED`, and `SRS_SECTION_LOCKED` events.
-- **Maestro tab:** Displays the latest synthesized plan summary, the new SRS readiness score/missing items, and raw JSON while letting you regenerate a schema-valid `plan.json` via the new `/v1/runs/{run_id}/plan/generate` endpoint (plan generation is gated until readiness ≥ 60 unless you override).
-- **Apprentice tab:** Shows start/stop controls plus an event feed that polls `/v1/runs/{run_id}/events`, reflecting SRS events, approvals, plan generation, and orchestrator activity.
+- User tab: A chat-first experience where Maestro asks clarifying questions, drafts sections, and locks them conversationally. Each turn is appended to `.agentmaestro/runs/<run_id>/chat/transcript.jsonl`, updates the preview/completeness widgets, and still flows through `SRS.md` and `SRS.lock.json` while emitting `CHAT_MESSAGE`, `SRS_UPDATED`, and `SRS_SECTION_LOCKED` events.
+- Maestro tab: Displays the latest synthesized plan summary, the SRS readiness score and missing items, and raw JSON while letting you regenerate a schema-valid `plan.json` via `/v1/runs/{run_id}/plan/generate`.
+- Apprentice tab: Shows start/stop controls plus an event feed that polls `/v1/runs/{run_id}/events`, reflecting SRS events, approvals, plan generation, and orchestrator activity.
 
 Run artifacts are persisted per run:
 
 - `charter.json`, `plans/<plan_id>.json`, `plans/latest.json`, `step_reports/<milestone_id>/<step_id>.json`
-- `events.jsonl` (append-only event log; use `events_meta.json` for the last event ID)
-- `chat/transcript.jsonl` (one JSON document per Maestro/User message maintaining the conversation history)
+- `events.jsonl`
+- `chat/transcript.jsonl`
 - `srs/SRS.md` and `srs/SRS.lock.json`
-- `srs/readiness.json` (cached gate report: score, checks, counts, missing items, and warnings)
-- `approvals.json` via the `/v1/runs/{run_id}/approve` endpoint
+- `srs/readiness.json`
+- `approvals.json`
 
-### Trivial Trial button & API
+### Trivial Trial button and API
 
-- The User tab now displays a **Trivial Trial (Seed + Plan + Run)** button above the chat area. Clicking it disables the button, shows the rolling status line (“Seeding SRS…”, “Generating plan…”, “Starting run…”), refreshes the User partial, updates the Run ID label, and jumps to the Apprentice tab so you can watch the generated events.
-- The button calls `POST /v1/trials/trivial` (accepting JSON or form data). Defaults: `repo_dir` is the workspace root, `slug` is normalized to start with `trial-` (default `trial-trivial`), `start=true`, `override_readiness=true`, and `template=todo_cli_v1`.
-- Request body example:
-  ```json
-  {
-    "repo_dir": ".",
-    "slug": "trivial-trial",
-    "start": true,
-    "override_readiness": true,
-    "template": "todo_cli_v1"
-  }
-  ```
-- The response highlights the new artifacts:
-  ```json
-  {
-    "ok": true,
-    "run_id": "trial-trivial-xxxxxxxx",
-    "paths": {
-      "run_dir": ".agentmaestro/runs/trial-trivial-xxxxxxxx",
-      "srs_md": ".agentmaestro/runs/trial-trivial-xxxxxxxx/srs/SRS.md",
-      "plan_latest": ".agentmaestro/runs/trial-trivial-xxxxxxxx/plans/latest.json"
-    },
-    "seeded_sections": ["project_summary", "goals_non_goals", "functional_requirements", "interfaces", "acceptance_criteria", "risks_assumptions"],
-    "plan_generated": true,
-    "run_started": true
-  }
-  ```
-- The trial run locks the required sections via `SRS_SECTION_LOCKED`, then emits `TRIAL_STARTED`, `TRIAL_SRS_SEEDED`, `PLAN_GENERATED`, `TRIAL_PLAN_GENERATED`, and (if `start=true`) `TRIAL_RUN_STARTED`. The Apprentice feed and stuck banner surface these signals so you can debug any blockers.
+- The User tab displays a `Trivial Trial (Seed + Plan + Run)` button above the chat area.
+- The button calls `POST /v1/trials/trivial` and can accept JSON or form data.
+- Defaults: `repo_dir="."`, a `slug` normalized to start with `trial-`, `start=true`, `override_readiness=true`, and `template="todo_cli_v1"`.
 
-Key API routes for the dashboard workflows:
+Request example:
 
-- `POST /v1/runs` – create a run (`slug`, optional `repo_dir`/`srs_path`)
-- `GET /v1/runs/{run_id}` – status snapshot
-- `POST /v1/runs/{run_id}/start` / `stop` – orchestrator control
-- `GET /v1/runs/{run_id}/events?since=<id>` – poll for new events
-- `GET /v1/runs/{run_id}/srs/...` – list sections, prompts, markdown, lock metadata
-- `GET /v1/runs/{run_id}/srs/readiness` – compute/read the readiness report (score, missing items, warnings, and counts)
-- `POST /v1/runs/{run_id}/srs/...` – save drafts or lock a section
-- `POST /v1/runs/{run_id}/plan/generate` and `GET .../plan` – synthesize and read plans
-- `POST /v1/runs/{run_id}/approve` – record Maestro approvals
-- `GET /v1/runs/{run_id}/step_reports` and `/step_reports/{milestone_id}/{step_id}` – surface step report metadata + payload for the Apprentice tab
-- `POST /v1/runs/{run_id}/chat` – chat with Maestro, receive structured replies, and surface any applied SRS updates/preview metadata
-- `GET /v1/runs/{run_id}/chat/history` – paginate the stored transcript (supports `?since=<event_id>`)
-- `POST /v1/runs/{run_id}/chat/reset` – truncate the chat log for a run and emit a `CHAT_RESET` event
+```json
+{
+  "repo_dir": ".",
+  "slug": "trivial-trial",
+  "start": true,
+  "override_readiness": true,
+  "template": "todo_cli_v1"
+}
+```
+
+Response example:
+
+```json
+{
+  "ok": true,
+  "run_id": "trial-trivial-xxxxxxxx",
+  "paths": {
+    "run_dir": ".agentmaestro/runs/trial-trivial-xxxxxxxx",
+    "srs_md": ".agentmaestro/runs/trial-trivial-xxxxxxxx/srs/SRS.md",
+    "plan_latest": ".agentmaestro/runs/trial-trivial-xxxxxxxx/plans/latest.json"
+  },
+  "seeded_sections": [
+    "project_summary",
+    "goals_non_goals",
+    "functional_requirements",
+    "interfaces",
+    "acceptance_criteria",
+    "risks_assumptions"
+  ],
+  "plan_generated": true,
+  "run_started": true
+}
+```
+
+Key API routes for dashboard workflows:
+
+- `POST /v1/runs`
+- `GET /v1/runs/{run_id}`
+- `POST /v1/runs/{run_id}/start`
+- `POST /v1/runs/{run_id}/stop`
+- `GET /v1/runs/{run_id}/events?since=<id>`
+- `GET /v1/runs/{run_id}/srs/...`
+- `GET /v1/runs/{run_id}/srs/readiness`
+- `POST /v1/runs/{run_id}/srs/...`
+- `POST /v1/runs/{run_id}/plan/generate`
+- `GET /v1/runs/{run_id}/plan`
+- `POST /v1/runs/{run_id}/approve`
+- `GET /v1/runs/{run_id}/step_reports`
+- `GET /v1/runs/{run_id}/step_reports/{milestone_id}/{step_id}`
+- `POST /v1/runs/{run_id}/chat`
+- `GET /v1/runs/{run_id}/chat/history`
+- `POST /v1/runs/{run_id}/chat/reset`
 
 ### Running the UI
 
-1. Ensure the FastAPI app is running (e.g., `uvicorn toolrunner.app.main:app --reload` from `toolrunner/`).
-2. Visit `http://localhost:8000/ui`. The default run created at startup powers the tabs and event feed.
-3. Use the User tab to draft/lock sections, the Maestro tab to generate plans, and the Apprentice tab for events.
-
-### Verification
-
-```powershell
-cd C:\Dev\AgentMaestro
-.\toolrunner\scripts\test.ps1 app/tests/test_ui_pages.py app/tests/test_srs_endpoints.py app/tests/test_events_feed.py app/tests/test_plan_generate.py app/tests/test_step_reports.py -vv
-```
-- `POST /v1/runs/{run_id}/plan/generate` – synthesize a schema-valid plan once at least one SRS section is locked (steps that touch the “Risks & Assumptions” section automatically flag approval requests and emit `PLAN_GENERATED` events).
+1. Ensure the FastAPI app is running, for example `uvicorn toolrunner.app.main:app --reload` from `toolrunner/`.
+2. Visit `http://localhost:8000/ui`.
+3. Use the User tab to draft or lock sections, the Maestro tab to generate plans, and the Apprentice tab to watch events.

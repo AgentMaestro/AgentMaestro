@@ -9,19 +9,35 @@ from typing import Any, Literal, Optional, Sequence
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Body
 from fastapi.responses import HTMLResponse, JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from .auth import verify_signature
 from .models import (
+    CoverageArgs,
     ExecuteRequest,
     ExecuteResponse,
+    FileDeleteArgs,
     FilePatchArgs,
     FileReadArgs,
     FileWriteArgs,
+    FormatArgs,
+    GitAddArgs,
+    GitApplyArgs,
+    GitBranchCreateArgs,
+    GitCheckoutArgs,
+    GitCommitArgs,
+    GitDiffArgs,
+    GitLogArgs,
+    GitPushArgs,
+    GitStatusArgs,
+    LintArgs,
     PythonArgs,
     RepoTreeArgs,
+    RunCommandArgs,
+    RunnerTestArgs,
     SearchCodeArgs,
     ShellArgs,
+    TypecheckArgs,
 )
 from .run_manager import REPO_ROOT, RunContext, RunManager
 from .schemas import SchemaValidationError
@@ -29,15 +45,30 @@ from .srs.readiness import compute_readiness, ensure_readiness, READINESS_SCORE_
 from .sandbox import get_run_dir
 from .tools import (
     apply_patch,
+    delete_file,
     create_webhook,
+    run_coverage,
+    run_formatter,
+    run_git_add,
+    run_git_apply,
+    run_git_branch_create,
+    run_git_checkout,
+    run_git_commit,
+    run_git_diff,
+    run_git_log,
+    run_git_push,
+    run_git_status,
+    run_linters,
     list_repo_tree,
     list_search_code,
     read_file,
+    run_command,
     run_python,
     run_shell,
+    run_tests,
+    run_typecheck,
     write_file,
 )
-from fastapi.responses import JSONResponse
 from .planning.plan_compiler import PlanCompilerError, compile_plan
 from .verify import read_run_metadata, run_post_run_verification
 
@@ -62,6 +93,219 @@ def _make_execute_response(
     )
 
 
+def _json_error_response(
+        code: str,
+        message: str,
+        details: dict[str, object] | None = None,
+        *,
+        status_code: int = 400,
+) -> JSONResponse:
+    return JSONResponse(
+        status_code=status_code,
+        content={
+            "ok": False,
+            "error": {
+                "code": f"tool_runner.{code}",
+                "message": message,
+                "details": details or {},
+            },
+        },
+    )
+
+
+def _json_safe(value: object) -> object:
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, dict):
+        return {str(key): _json_safe(sub_value) for key, sub_value in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_json_safe(item) for item in value]
+    return str(value)
+
+
+def _validation_error_details(exc: ValidationError) -> list[dict[str, object]]:
+    return _json_safe(exc.errors())  # type: ignore[return-value]
+
+
+def _normalize_command_result(
+        tool_name: str,
+        command: Sequence[str],
+        cwd: str,
+        exit_code: int | None,
+        stdout: str,
+        stderr: str,
+        *,
+        timed_out: bool,
+        timeout_value: float | int | None = None,
+        timeout_unit: str = "seconds",
+        timeout_source: str | None = None,
+) -> dict[str, object]:
+    result = {
+        "command": list(command),
+        "cwd": cwd,
+        "exit_code": exit_code,
+        "timed_out": timed_out,
+        "stdout": stdout,
+        "stderr": stderr,
+        "stdout_truncated": False,
+        "stderr_truncated": False,
+        "timeout_value": timeout_value,
+        "timeout_unit": timeout_unit,
+        "timeout_source": timeout_source,
+    }
+    if timed_out:
+        timeout_message = f"{tool_name} timed out"
+        if timeout_value is not None:
+            timeout_message = (
+                f"{tool_name} timed out after {timeout_value} {timeout_unit}"
+                f" (source={timeout_source or 'unknown'})"
+            )
+        return {
+            "ok": False,
+            "error": {
+                "code": "tool_runner.TIMED_OUT",
+                "message": timeout_message,
+                "details": {
+                    "tool": tool_name,
+                    "command": list(command),
+                    "cwd": cwd,
+                    "timeout_value": timeout_value,
+                    "timeout_unit": timeout_unit,
+                    "timeout_source": timeout_source,
+                },
+            },
+            "result": result,
+        }
+    if exit_code not in (0, None):
+        return {
+            "ok": False,
+            "error": {
+                "code": "tool_runner.COMMAND_FAILED",
+                "message": f"{tool_name} exited with code {exit_code}",
+                "details": {"tool": tool_name, "command": list(command), "cwd": cwd, "exit_code": exit_code},
+            },
+            "result": result,
+        }
+    return {"ok": True, "result": result}
+
+
+def _run_shell_exec_tool(run_dir: Path, parsed_args: ShellArgs, payload: ExecuteRequest) -> dict[str, object]:
+    exit_code, stdout, stderr, working_dir = run_shell(
+        run_dir,
+        parsed_args.cmd,
+        parsed_args.cwd,
+        payload.limits.timeout_s,
+        payload.limits.max_output_bytes,
+        env=parsed_args.env,
+        policy=payload.policy,
+    )
+    return _normalize_command_result(
+        "shell_exec",
+        parsed_args.cmd,
+        str(working_dir),
+        exit_code,
+        stdout,
+        stderr,
+        timed_out=exit_code is None,
+        timeout_value=payload.limits.timeout_s,
+        timeout_unit="seconds",
+        timeout_source="limits.timeout_s",
+    )
+
+
+def _run_python_exec_tool(run_dir: Path, parsed_args: PythonArgs, payload: ExecuteRequest) -> dict[str, object]:
+    exit_code, stdout, stderr = run_python(
+        run_dir,
+        parsed_args,
+        payload.limits.timeout_s,
+        payload.limits.max_output_bytes,
+        payload.policy,
+    )
+    command = [str(parsed_args.entrypoint)] if parsed_args.entrypoint else [payload.tool_name, "<inline_code>"]
+    return _normalize_command_result(
+        "python_exec",
+        command,
+        str(run_dir.resolve()),
+        exit_code,
+        stdout,
+        stderr,
+        timed_out=exit_code is None,
+        timeout_value=payload.limits.timeout_s,
+        timeout_unit="seconds",
+        timeout_source="limits.timeout_s",
+    )
+
+
+_TOOL_HANDLERS: dict[str, tuple[type[BaseModel], object]] = {
+    "file_read": (FileReadArgs, lambda run_dir, parsed_args, payload: read_file(run_dir, parsed_args, payload.policy)),
+    "file_write": (FileWriteArgs, lambda run_dir, parsed_args, payload: write_file(run_dir, parsed_args, payload.policy)),
+    "file_delete": (FileDeleteArgs, lambda run_dir, parsed_args, payload: delete_file(run_dir, parsed_args, payload.policy)),
+    "file_patch": (FilePatchArgs, lambda run_dir, parsed_args, payload: apply_patch(run_dir, parsed_args, payload.policy)),
+    "repo_tree": (RepoTreeArgs, lambda run_dir, parsed_args, payload: list_repo_tree(run_dir, parsed_args, payload.policy)),
+    "search_code": (SearchCodeArgs, lambda run_dir, parsed_args, payload: list_search_code(run_dir, parsed_args, payload.policy)),
+    "shell_exec": (ShellArgs, _run_shell_exec_tool),
+    "python_exec": (PythonArgs, _run_python_exec_tool),
+    "run_command": (RunCommandArgs, lambda run_dir, parsed_args, payload: run_command(run_dir, parsed_args, payload.policy)),
+    "test_runner": (RunnerTestArgs, lambda run_dir, parsed_args, payload: run_tests(run_dir, parsed_args, payload.policy)),
+    "format_runner": (FormatArgs, lambda run_dir, parsed_args, payload: run_formatter(run_dir, parsed_args, payload.policy)),
+    "coverage_runner": (CoverageArgs, lambda run_dir, parsed_args, payload: run_coverage(run_dir, parsed_args, payload.policy)),
+    "lint_runner": (LintArgs, lambda run_dir, parsed_args, payload: run_linters(run_dir, parsed_args, payload.policy)),
+    "typecheck_runner": (TypecheckArgs, lambda run_dir, parsed_args, payload: run_typecheck(run_dir, parsed_args, payload.policy)),
+    "git_status": (GitStatusArgs, lambda run_dir, parsed_args, payload: run_git_status(run_dir, parsed_args, payload.policy)),
+    "git_diff": (GitDiffArgs, lambda run_dir, parsed_args, payload: run_git_diff(run_dir, parsed_args, payload.policy)),
+    "git_log": (GitLogArgs, lambda run_dir, parsed_args, payload: run_git_log(run_dir, parsed_args, payload.policy)),
+    "git_apply": (GitApplyArgs, lambda run_dir, parsed_args, payload: run_git_apply(run_dir, parsed_args, payload.policy)),
+    "git_branch_create": (GitBranchCreateArgs, lambda run_dir, parsed_args, payload: run_git_branch_create(run_dir, parsed_args, payload.policy)),
+    "git_checkout": (GitCheckoutArgs, lambda run_dir, parsed_args, payload: run_git_checkout(run_dir, parsed_args, payload.policy)),
+    "git_commit": (GitCommitArgs, lambda run_dir, parsed_args, payload: run_git_commit(run_dir, parsed_args, payload.policy)),
+    "git_push": (GitPushArgs, lambda run_dir, parsed_args, payload: run_git_push(run_dir, parsed_args, payload.policy)),
+    "git_add": (GitAddArgs, lambda run_dir, parsed_args, payload: run_git_add(run_dir, parsed_args, payload.policy)),
+}
+
+
+def _tool_status(tool_result: dict[str, object]) -> tuple[bool, int | None, str, str]:
+    result = tool_result.get("result") if isinstance(tool_result, dict) else {}
+    result = result if isinstance(result, dict) else {}
+    error = tool_result.get("error") if isinstance(tool_result, dict) else {}
+    error = error if isinstance(error, dict) else {}
+    stdout = str(result.get("stdout") or "")
+    stderr = str(result.get("stderr") or "")
+    if not stderr and error.get("message"):
+        stderr = str(error.get("message"))
+    exit_code = result.get("exit_code")
+    timed_out = bool(result.get("timed_out"))
+    command_failed = timed_out or isinstance(exit_code, int) and exit_code != 0
+    success = bool(tool_result.get("ok")) and not command_failed
+    return success, exit_code if isinstance(exit_code, int) else None, stdout, stderr
+
+
+def _apply_execute_limits(parsed_args: BaseModel, payload: ExecuteRequest) -> BaseModel:
+    updates: dict[str, int] = {}
+    model_fields = type(parsed_args).model_fields
+    limit_timeout_ms = payload.limits.timeout_s * 1000
+
+    if "timeout_ms" in model_fields:
+        configured_timeout = getattr(parsed_args, "timeout_ms", None)
+        if not isinstance(configured_timeout, int) or configured_timeout <= 0:
+            updates["timeout_ms"] = limit_timeout_ms
+        else:
+            updates["timeout_ms"] = min(configured_timeout, limit_timeout_ms)
+
+    if "max_output_bytes" in model_fields:
+        configured_output_limit = getattr(parsed_args, "max_output_bytes", None)
+        limit_output_bytes = payload.limits.max_output_bytes
+        if not isinstance(configured_output_limit, int) or configured_output_limit <= 0:
+            updates["max_output_bytes"] = limit_output_bytes
+        else:
+            updates["max_output_bytes"] = min(configured_output_limit, limit_output_bytes)
+
+    if not updates:
+        return parsed_args
+    return parsed_args.model_copy(update=updates)
+
+
 async def _handle_execute(payload: ExecuteRequest) -> ExecuteResponse:
     run_dir = get_run_dir(payload.workspace_id, payload.run_id)
 
@@ -74,68 +318,63 @@ async def _handle_execute(payload: ExecuteRequest) -> ExecuteResponse:
         result["policy"] = payload.policy
     start = time.monotonic()
     success = False
-    tool_result: dict | None = None
+    tool_result: dict[str, object] | None = None
 
     try:
-        if payload.tool_name == "file_read":
-            tool_result = read_file(run_dir, FileReadArgs(**payload.args))
-            exit_code = 0
-            success = True
-        elif payload.tool_name == "file_write":
-            tool_result = write_file(run_dir, FileWriteArgs(**payload.args), payload.policy)
-            exit_code = 0
-            success = True
-        elif payload.tool_name == "file_patch":
-            tool_result = apply_patch(run_dir, FilePatchArgs(**payload.args), payload.policy)
-            exit_code = 0
-            success = True
-        elif payload.tool_name == "repo_tree":
-            tool_result = list_repo_tree(run_dir, RepoTreeArgs(**payload.args))
-            exit_code = 0
-            success = True
-        elif payload.tool_name == "search_code":
-            tool_result = list_search_code(run_dir, SearchCodeArgs(**payload.args))
-            exit_code = 0
-            success = True
-        elif payload.tool_name == "shell_exec":
-            shell = ShellArgs(**payload.args)
-            exit_code, stdout, stderr, working_dir = run_shell(
-                run_dir,
-                shell.cmd,
-                shell.cwd,
-                payload.limits.timeout_s,
-                payload.limits.max_output_bytes,
-                env=shell.env,
-            )
-            success = exit_code == 0
-            tool_result = {
-                "cmd": shell.cmd,
-                "cwd": str(working_dir),
-                "stdout": stdout,
-                "stderr": stderr,
-                "exit_code": exit_code,
-                "sandbox_root": str(run_dir.resolve()),
+        handler_spec = _TOOL_HANDLERS.get(payload.tool_name)
+        if handler_spec is None:
+            stderr = f"unsupported tool: {payload.tool_name}"
+            result["tool_result"] = {
+                "ok": False,
+                "error": {
+                    "code": "tool_runner.UNSUPPORTED_TOOL",
+                    "message": stderr,
+                    "details": {"tool": payload.tool_name},
+                },
             }
-        elif payload.tool_name == "python_exec":
-            python_args = PythonArgs(**payload.args)
-            exit_code, stdout, stderr = run_python(
-                run_dir,
-                python_args,
-                payload.limits.timeout_s,
-                payload.limits.max_output_bytes,
-            )
-            success = exit_code == 0
         else:
-            raise ValueError("invalid tool")
-    except (ValueError, FileNotFoundError) as exc:
-        stderr = str(exc)
+            args_model, handler = handler_spec
+            try:
+                parsed_args = args_model(**payload.args)
+                parsed_args = _apply_execute_limits(parsed_args, payload)
+                raw_tool_result = handler(run_dir, parsed_args, payload)
+                tool_result = _normalize_tool_result(raw_tool_result)
+                success, exit_code, stdout, stderr = _tool_status(tool_result)
+            except ValidationError as exc:
+                stderr = "tool argument validation failed"
+                tool_result = {
+                    "ok": False,
+                    "error": {
+                        "code": "tool_runner.INVALID_ARGUMENT",
+                        "message": stderr,
+                        "details": {"tool": payload.tool_name, "errors": _validation_error_details(exc)},
+                    },
+                }
+            except (ValueError, FileNotFoundError) as exc:
+                stderr = str(exc)
+                tool_result = {
+                    "ok": False,
+                    "error": {
+                        "code": "tool_runner.INVALID_ARGUMENT",
+                        "message": stderr,
+                        "details": {"tool": payload.tool_name},
+                    },
+                }
     except Exception as exc:  # pragma: no cover
         stderr = str(exc)
+        tool_result = {
+            "ok": False,
+            "error": {
+                "code": "tool_runner.INTERNAL",
+                "message": stderr or "unexpected toolrunner exception",
+                "details": {"tool": payload.tool_name},
+            },
+        }
     finally:
         duration_ms = int(round((time.monotonic() - start) * 1000))
 
     if tool_result is not None:
-        result["tool_result"] = _normalize_tool_result(tool_result)
+        result["tool_result"] = tool_result
     status_text = "COMPLETED" if success else "FAILED"
     if not success and stderr and "error" not in result:
         result["error"] = stderr
@@ -160,14 +399,28 @@ def _normalize_tool_result(tool_result: object) -> object:
 def _extract_json_response(response: JSONResponse) -> dict:
     content = response.body
     if content is None:
-        return {}
+        return {"ok": False, "error": {"code": "tool_runner.EMPTY_RESPONSE", "message": "handler returned empty JSONResponse", "details": {}}}
     if isinstance(content, bytes):
         try:
             decoded = content.decode(response.charset or "utf-8")
             return json.loads(decoded)
         except Exception:
-            return {"ok": False, "error": "failed to parse JSONResponse body"}
-    return {}
+            return {
+                "ok": False,
+                "error": {
+                    "code": "tool_runner.INVALID_TOOL_RESPONSE",
+                    "message": "failed to parse JSONResponse body",
+                    "details": {"status_code": response.status_code},
+                },
+            }
+    return {
+        "ok": False,
+        "error": {
+            "code": "tool_runner.INVALID_TOOL_RESPONSE",
+            "message": "unexpected JSONResponse body type",
+            "details": {"status_code": response.status_code},
+        },
+    }
 
 
 class RunCreateRequest(BaseModel):
@@ -270,7 +523,23 @@ async def read_body(request: Request, call_next):
 
 @app.post("/v1/run/tool")
 async def run_tool_endpoint(request: Request, raw=Depends(verify_signature)):
-    payload = ExecuteRequest(**json.loads(raw.decode("utf-8")))
+    try:
+        payload_data = json.loads(raw.decode("utf-8"))
+    except json.JSONDecodeError as exc:
+        return _json_error_response("INVALID_JSON", "request body is not valid JSON", {"error": str(exc)}, status_code=400)
+    try:
+        payload = ExecuteRequest(**payload_data)
+    except ValidationError as exc:
+        return _json_error_response(
+            "INVALID_REQUEST",
+            "request validation failed",
+            {
+                "errors": _validation_error_details(exc),
+                "tool": payload_data.get("tool_name"),
+                "request_id": payload_data.get("request_id"),
+            },
+            status_code=422,
+        )
     response = await _handle_execute(payload)
     return response
 

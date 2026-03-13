@@ -5,8 +5,8 @@ from pathlib import Path
 
 from fastapi.responses import JSONResponse
 
+from ..config import resolve_policy_path
 from ..models import GitCheckoutArgs, RunCommandArgs
-from ..sandbox import safe_join
 from .run_command import run_command
 
 
@@ -47,18 +47,19 @@ def _is_detached(stdout: str, exit_code: int | None) -> bool:
     )
 
 
-def run_git_checkout(run_dir: Path, args: GitCheckoutArgs):
+def run_git_checkout(run_dir: Path, args: GitCheckoutArgs, policy: dict | None = None):
     repo_dir = args.repo_dir or "."
     try:
-        repo_path = safe_join(run_dir, repo_dir)
+        repo_path = resolve_policy_path(run_dir, repo_dir, policy)
     except ValueError as exc:
-        return _error_response("PATH_OUTSIDE_WORKSPACE", str(exc))
+        error_code = "PATH_OUTSIDE_WORKSPACE" if "path traversal outside of workspace" in str(exc) else "PATH_NOT_ALLOWED"
+        return _error_response(error_code, str(exc))
 
     command = ["git", "checkout"]
     if args.create:
         command.extend(["-b", args.ref])
     else:
-        command.extend(["--", args.ref])
+        command.append(args.ref)
 
     run_response = run_command(
         repo_path,

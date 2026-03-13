@@ -61,7 +61,7 @@ def test_git_checkout_switch_branch(monkeypatch, tmp_path):
     assert payload["result"]["ref"] == "main"
     assert not payload["result"]["detached"]
     assert payload["result"]["repo_dir"] == "."
-    assert ["git", "checkout", "--", "main"] == captured["cmd"]
+    assert ["git", "checkout", "main"] == captured["cmd"]
     assert captured["cwd"] == "."
     assert captured["max_output_bytes"] == args.max_output_bytes
 

@@ -30,7 +30,17 @@ def test_git_apply_success(monkeypatch, tmp_path: Path):
         )
 
     monkeypatch.setattr(git_apply_module, "run_command", fake_run_command)
-    args = GitApplyArgs(patch_unified="diff", strip_prefix=2)
+    args = GitApplyArgs(
+        patch_unified=(
+            "diff --git a/src/app.py b/src/app.py\n"
+            "--- a/src/app.py\n"
+            "+++ b/src/app.py\n"
+            "@@ -1 +1 @@\n"
+            "-old\n"
+            "+new\n"
+        ),
+        strip_prefix=2,
+    )
     response = run_git_apply(tmp_path, args)
     payload = json.loads(response.body.decode("utf-8"))
     assert payload["ok"]
@@ -38,6 +48,7 @@ def test_git_apply_success(monkeypatch, tmp_path: Path):
     assert "--reject" in commands[0]
     result = payload["result"]
     assert result["applied"]
+    assert result["touched_paths"] == ["src/app.py"]
     assert result["rejects_created"] is False
     assert result["reject_paths"] == []
     assert result["repo_dir"] == "."
@@ -69,6 +80,7 @@ def test_git_apply_check_mode(monkeypatch, tmp_path: Path):
     result = payload["result"]
     assert "--check" in commands[0]
     assert result["applied"] is False
+    assert result["touched_paths"] == []
     assert result["check_passed"]
     assert result["rejects_created"] is False
     assert result["reject_paths"] == []
@@ -121,6 +133,38 @@ def test_git_apply_reject_without_files(monkeypatch, tmp_path: Path):
     assert payload["ok"]
     assert result["rejects_created"] is False
     assert result["reject_paths"] == []
+
+
+def test_git_apply_reports_touched_paths_for_rename(monkeypatch, tmp_path: Path):
+    def fake_run_command(run_dir, run_args):
+        return _response(
+            {
+                "exit_code": 0,
+                "duration_ms": 1,
+                "timed_out": False,
+                "stdout": "applied",
+                "stderr": "",
+                "stdout_truncated": False,
+                "stderr_truncated": False,
+            }
+        )
+
+    monkeypatch.setattr(git_apply_module, "run_command", fake_run_command)
+    args = GitApplyArgs(
+        patch_unified=(
+            "diff --git a/old_name.txt b/new_name.txt\n"
+            "similarity index 100%\n"
+            "rename from old_name.txt\n"
+            "rename to new_name.txt\n"
+            "--- a/old_name.txt\n"
+            "+++ b/new_name.txt\n"
+        )
+    )
+    response = run_git_apply(tmp_path, args)
+    payload = json.loads(response.body.decode("utf-8"))
+    result = payload["result"]
+    assert payload["ok"]
+    assert result["touched_paths"] == ["old_name.txt", "new_name.txt"]
 
 
 def test_git_apply_path_escape(tmp_path: Path):

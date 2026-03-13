@@ -48,7 +48,7 @@ class ExternalIdentity(models.Model):
         unique_together = ("transport", "external_user_id")
 
     def __str__(self) -> str:
-        return self.display_name or self.username or self.external_user_id
+        return self.role_hint or self.display_name or self.username or self.external_user_id
 
 
 class CommsConversation(models.Model):
@@ -114,6 +114,16 @@ def generate_pair_code(length: int = 8) -> str:
     return "".join(secrets.choice(alphabet) for _ in range(length))
 
 
+def generate_short_code(length: int = 4) -> str:
+    alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+    return "".join(secrets.choice(alphabet) for _ in range(length))
+
+
+def generate_callback_token(length: int = 12) -> str:
+    alphabet = "abcdefghijklmnopqrstuvwxyz0123456789"
+    return "".join(secrets.choice(alphabet) for _ in range(length))
+
+
 class PendingPairing(models.Model):
     STATUS_PENDING = "pending"
     STATUS_CLAIMED = "claimed"
@@ -164,3 +174,109 @@ class PendingPairing(models.Model):
         self.claimed_at = timezone.now()
         self.status = self.STATUS_CLAIMED
         self.save(update_fields=["claimed_chat_id", "claimed_at", "status"])
+
+
+class RemoteApprovalTicket(models.Model):
+    STATUS_PENDING = "pending"
+    STATUS_APPROVED = "approved"
+    STATUS_DENIED = "denied"
+    STATUS_EXPIRED = "expired"
+    STATUS_SUPERSEDED = "superseded"
+
+    STATUS_CHOICES = [
+        (STATUS_PENDING, "Pending"),
+        (STATUS_APPROVED, "Approved"),
+        (STATUS_DENIED, "Denied"),
+        (STATUS_EXPIRED, "Expired"),
+        (STATUS_SUPERSEDED, "Superseded"),
+    ]
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    workspace = models.ForeignKey(
+        "core.Workspace",
+        on_delete=models.CASCADE,
+        related_name="remote_approval_tickets",
+    )
+    run = models.ForeignKey(
+        "runs.AgentRun",
+        on_delete=models.CASCADE,
+        related_name="remote_approval_tickets",
+    )
+    tool_call = models.ForeignKey(
+        "tools.ToolCall",
+        on_delete=models.CASCADE,
+        related_name="remote_approval_tickets",
+    )
+    transport = models.ForeignKey(
+        Transport,
+        on_delete=models.CASCADE,
+        related_name="remote_approval_tickets",
+    )
+    endpoint = models.ForeignKey(
+        TransportEndpoint,
+        on_delete=models.CASCADE,
+        related_name="remote_approval_tickets",
+    )
+    conversation = models.ForeignKey(
+        CommsConversation,
+        on_delete=models.CASCADE,
+        related_name="remote_approval_tickets",
+    )
+    external_chat_id = models.CharField(max_length=255)
+    external_message_id = models.CharField(max_length=255, blank=True, default="")
+    short_code = models.CharField(max_length=8)
+    callback_token = models.CharField(max_length=32, unique=True, blank=True)
+    status = models.CharField(max_length=16, choices=STATUS_CHOICES, default=STATUS_PENDING)
+    summary = models.JSONField(default=dict, blank=True)
+    scope_options_snapshot = models.JSONField(default=list, blank=True)
+    web_url = models.TextField(blank=True, default="")
+    expires_at = models.DateTimeField()
+    acted_at = models.DateTimeField(null=True, blank=True)
+    acted_by_external_user_id = models.CharField(max_length=128, blank=True, default="")
+    acted_by_label = models.CharField(max_length=128, blank=True, default="")
+    action_error = models.TextField(blank=True, default="")
+    created_at = models.DateTimeField(default=timezone.now)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["conversation", "status", "expires_at"]),
+            models.Index(fields=["endpoint", "status", "expires_at"]),
+            models.Index(fields=["tool_call", "status"]),
+            models.Index(fields=["callback_token"]),
+        ]
+
+    def save(self, *args, **kwargs):
+        if not self.short_code:
+            self.short_code = generate_short_code()
+        if not self.callback_token:
+            self.callback_token = generate_callback_token()
+        super().save(*args, **kwargs)
+
+    def is_active(self) -> bool:
+        return self.status == self.STATUS_PENDING and self.expires_at > timezone.now()
+
+    def mark_terminal(
+        self,
+        *,
+        status: str,
+        acted_by_external_user_id: str = "",
+        acted_by_label: str = "",
+        action_error: str = "",
+    ) -> None:
+        self.status = status
+        self.acted_at = timezone.now()
+        self.acted_by_external_user_id = acted_by_external_user_id
+        self.acted_by_label = acted_by_label
+        self.action_error = action_error
+        self.save(
+            update_fields=[
+                "status",
+                "acted_at",
+                "acted_by_external_user_id",
+                "acted_by_label",
+                "action_error",
+                "updated_at",
+            ]
+        )

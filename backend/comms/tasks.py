@@ -12,12 +12,14 @@ from django.db import transaction
 
 from comms.models import TransportEndpoint
 from comms.services.ingest import ingest_normalized_event
+from comms.services.remote_ops import expire_remote_approval_tickets
 from comms.transports.base import NormalizedEvent
 from comms.transports.telegram import TelegramAdapter
 import httpx
 from httpcore import ReadTimeout as HttpcoreReadTimeout
 
 logger = logging.getLogger(__name__)
+_POLL_LOCK_BUSY = object()
 
 
 class _RedisLockHandle:
@@ -37,7 +39,7 @@ class _RedisLockHandle:
                 logger.debug("Failed to close redis client after releasing telegram lock: %s", exc)
 
 
-def _acquire_redis_lock(endpoint_id: int) -> Optional[_RedisLockHandle]:
+def _acquire_redis_lock(endpoint_id: int) -> Optional[_RedisLockHandle] | object:
     poll_lock_url = settings.TELEGRAM_POLL_LOCK_REDIS_URL
     if not poll_lock_url:
         return None
@@ -53,7 +55,7 @@ def _acquire_redis_lock(endpoint_id: int) -> Optional[_RedisLockHandle]:
         if not lock.acquire(blocking=False):
             client.close()
             logger.debug("Telegram poll lock is already held for endpoint %s.", endpoint_id)
-            return None
+            return _POLL_LOCK_BUSY
         logger.debug("Acquired redis lock %s for telegram endpoint %s.", lock_name, endpoint_id)
         return _RedisLockHandle(client, lock)
     except redis.RedisError as exc:
@@ -63,7 +65,7 @@ def _acquire_redis_lock(endpoint_id: int) -> Optional[_RedisLockHandle]:
 
 
 MAX_TELEGRAM_POLL_TIMEOUT_RETRIES = int(
-    os.getenv("TELEGRAM_POLL_TIMEOUT_RETRIES", getattr(settings, "TELEGRAM_POLL_TIMEOUT_RETRIES", 3))
+    os.getenv("TELEGRAM_POLL_TIMEOUT_RETRIES", getattr(settings, "TELEGRAM_POLL_TIMEOUT_RETRIES", 1))
 )
 
 
@@ -130,9 +132,52 @@ def _run_poll(endpoint: TransportEndpoint) -> None:
         endpoint.save(update_fields=["config"])
 
 
+def _telegram_endpoint_signature(endpoint: TransportEndpoint) -> str:
+    config = endpoint.config or {}
+    bot_id = str(config.get("bot_id") or "").strip()
+    if bot_id:
+        return f"bot_id:{bot_id}"
+    bot_username = str(config.get("bot_username") or "").strip().lower()
+    if bot_username:
+        return f"bot_username:{bot_username}"
+    bot_token_env = str(config.get("bot_token_env") or "").strip()
+    if bot_token_env:
+        return f"bot_token_env:{bot_token_env}"
+    return f"endpoint:{endpoint.id}"
+
+
+def _canonical_telegram_endpoint_ids() -> list[int]:
+    seen_signatures: set[str] = set()
+    endpoint_ids: list[int] = []
+    endpoints = (
+        TransportEndpoint.objects.filter(
+            transport__key="telegram",
+            transport__is_enabled=True,
+            kind="bot",
+        )
+        .select_related("transport")
+        .order_by("-id")
+    )
+    for endpoint in endpoints:
+        signature = _telegram_endpoint_signature(endpoint)
+        if signature in seen_signatures:
+            logger.debug(
+                "Skipping duplicate Telegram polling endpoint %s for signature %s.",
+                endpoint.id,
+                signature,
+            )
+            continue
+        seen_signatures.add(signature)
+        endpoint_ids.append(endpoint.id)
+    return endpoint_ids
+
+
 @shared_task
 def telegram_poll_once(endpoint_id: int) -> None:
     lock_handle = _acquire_redis_lock(endpoint_id)
+    if lock_handle is _POLL_LOCK_BUSY:
+        logger.debug("Skipping telegram poll for endpoint %s because another poll is already active.", endpoint_id)
+        return
     if lock_handle:
         try:
             try:
@@ -160,11 +205,14 @@ def telegram_poll_once(endpoint_id: int) -> None:
 
 @shared_task
 def telegram_poll_scheduler() -> None:
-    endpoint_ids = list(
-        TransportEndpoint.objects.filter(
-            transport__key="telegram", transport__is_enabled=True
-        )
-        .values_list("id", flat=True)
-    )
+    endpoint_ids = _canonical_telegram_endpoint_ids()
     for endpoint_id in endpoint_ids:
         telegram_poll_once.delay(endpoint_id)
+
+@shared_task
+def expire_remote_approval_tickets_task() -> int:
+    expired = expire_remote_approval_tickets()
+    if expired:
+        logger.info("Expired %s remote approval ticket(s).", expired)
+    return expired
+

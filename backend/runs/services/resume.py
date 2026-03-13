@@ -11,6 +11,7 @@ from runs.services.events import append_event
 from tools.models import ToolCall
 from tools.policy import get_effective_tools
 from tools.services.approvals import request_tool_call_approval
+from tools.services.command_guardrails import ToolCommandGuardrailError
 
 logger = logging.getLogger(__name__)
 
@@ -113,6 +114,15 @@ def handle_provider_tool_calls(
                 args=args,
                 requires_approval=False,
             )
+        except ToolCommandGuardrailError as exc:
+            logger.warning(
+                "Rejected resumed tool call run=%s tool=%s provider_call_id=%s reason=%s",
+                run_id,
+                tool_name,
+                provider_call_id,
+                exc,
+            )
+            continue
         except Exception:
             logger.exception(
                 "Failed to request approval for tool_call=%s run=%s", tool_name, run_id

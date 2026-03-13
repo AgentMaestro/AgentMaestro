@@ -6,8 +6,8 @@ from typing import List
 
 from fastapi.responses import JSONResponse
 
+from ..config import resolve_policy_path
 from ..models import GitApplyArgs, RunCommandArgs
-from ..sandbox import safe_join
 from .run_command import run_command
 
 
@@ -38,12 +38,47 @@ def _list_reject_files(repo_path: Path) -> set[str]:
     return rejects
 
 
-def run_git_apply(run_dir: Path, args: GitApplyArgs):
+def _patch_path(value: str) -> str | None:
+    candidate = value.strip()
+    if not candidate or candidate == "/dev/null":
+        return None
+    if candidate.startswith("a/") or candidate.startswith("b/"):
+        return candidate[2:]
+    return candidate
+
+
+def _extract_touched_paths(patch_unified: str) -> list[str]:
+    touched_paths: list[str] = []
+    seen: set[str] = set()
+
+    def _add(path_value: str | None) -> None:
+        if not path_value or path_value in seen:
+            return
+        seen.add(path_value)
+        touched_paths.append(path_value)
+
+    for line in patch_unified.splitlines():
+        if line.startswith("diff --git "):
+            parts = line.split()
+            if len(parts) >= 4:
+                _add(_patch_path(parts[2]))
+                _add(_patch_path(parts[3]))
+            continue
+        if line.startswith("rename to ") or line.startswith("copy to "):
+            _add(_patch_path(line.split(" ", 2)[2]))
+            continue
+        if line.startswith("+++ ") or line.startswith("--- "):
+            _add(_patch_path(line[4:]))
+    return touched_paths
+
+
+def run_git_apply(run_dir: Path, args: GitApplyArgs, policy: dict | None = None):
     try:
         repo_dir = args.repo_dir or "."
-        repo_path = safe_join(run_dir, repo_dir)
+        repo_path = resolve_policy_path(run_dir, repo_dir, policy)
     except ValueError as exc:
-        return _error_response("PATH_OUTSIDE_WORKSPACE", str(exc))
+        error_code = "PATH_OUTSIDE_WORKSPACE" if "path traversal outside of workspace" in str(exc) else "PATH_NOT_ALLOWED"
+        return _error_response(error_code, str(exc))
 
     command: List[str] = ["git", "apply"]
     command.append(f"-p{args.strip_prefix}")
@@ -76,6 +111,7 @@ def run_git_apply(run_dir: Path, args: GitApplyArgs):
     exit_code = result_payload.get("exit_code")
     check_passed = exit_code == 0 if args.check and exit_code is not None else None
     applied = (not args.check) and exit_code == 0
+    touched_paths = _extract_touched_paths(args.patch_unified)
     post_rejects = _list_reject_files(repo_path) if args.reject else set()
     new_rejects = sorted(post_rejects.difference(pre_rejects))
     rejects_created = bool(new_rejects)
@@ -88,6 +124,7 @@ def run_git_apply(run_dir: Path, args: GitApplyArgs):
                 "strip_prefix": args.strip_prefix,
                 "check_passed": check_passed,
                 "applied": applied,
+                "touched_paths": touched_paths,
                 "rejects_created": rejects_created,
                 "reject_paths": new_rejects,
                 "raw": {

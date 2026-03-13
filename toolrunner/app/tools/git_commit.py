@@ -5,8 +5,8 @@ from pathlib import Path
 
 from fastapi.responses import JSONResponse
 
+from ..config import resolve_path_from_base, resolve_policy_path
 from ..models import GitCommitArgs, RunCommandArgs
-from ..sandbox import safe_join
 from .run_command import run_command
 
 
@@ -74,12 +74,13 @@ def _normalize_newlines(text: str) -> str:
     return text.replace("\r\n", "\n")
 
 
-def run_git_commit(run_dir: Path, args: GitCommitArgs):
+def run_git_commit(run_dir: Path, args: GitCommitArgs, policy: dict | None = None):
     repo_dir = args.repo_dir or "."
     try:
-        repo_path = safe_join(run_dir, repo_dir)
+        repo_path = resolve_policy_path(run_dir, repo_dir, policy)
     except ValueError as exc:
-        return _error_response("PATH_OUTSIDE_WORKSPACE", str(exc))
+        error_code = "PATH_OUTSIDE_WORKSPACE" if "path traversal outside of workspace" in str(exc) else "PATH_NOT_ALLOWED"
+        return _error_response(error_code, str(exc))
 
     if not repo_path.exists():
         return _error_response("NOT_FOUND", f"repo_dir '{repo_dir}' does not exist")
@@ -94,9 +95,10 @@ def run_git_commit(run_dir: Path, args: GitCommitArgs):
     if args.paths_to_add:
         for rel_path in args.paths_to_add:
             try:
-                target = safe_join(repo_path, rel_path)
+                target = resolve_path_from_base(repo_path, rel_path, policy)
             except ValueError as exc:
-                return _error_response("PATH_OUTSIDE_WORKSPACE", str(exc))
+                error_code = "PATH_OUTSIDE_WORKSPACE" if "path traversal outside of workspace" in str(exc) else "PATH_NOT_ALLOWED"
+                return _error_response(error_code, str(exc))
             try:
                 relative = target.relative_to(repo_path).as_posix()
             except ValueError:

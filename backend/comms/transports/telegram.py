@@ -54,7 +54,12 @@ class TelegramAdapter(TransportAdapter):
         }
         if offset is not None:
             params["offset"] = offset
-        resp = await self._client.get(self._build_api_url(token, "getUpdates"), params=params)
+        request_timeout = httpx.Timeout(max(float(timeout) + 5.0, 10.0))
+        resp = await self._client.get(
+            self._build_api_url(token, "getUpdates"),
+            params=params,
+            timeout=request_timeout,
+        )
         resp.raise_for_status()
         payload = resp.json()
         return payload.get("result", [])
@@ -95,7 +100,8 @@ class TelegramAdapter(TransportAdapter):
         payload = resp.json()
         return payload.get("result", {})
 
-    def normalize_update(self, update: Mapping[str, Any]) -> Iterable[NormalizedEvent]:
+    @staticmethod
+    def normalize_update(update: Mapping[str, Any]) -> Iterable[NormalizedEvent]:
         events: list[NormalizedEvent] = []
         update_id = int(update.get("update_id", 0))
 

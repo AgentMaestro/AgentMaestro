@@ -14,11 +14,37 @@ from datetime import timedelta
 from pathlib import Path
 import os
 import dj_database_url
+from kombu import Queue
 
 from core.utils.redis_checks import validate_redis_db
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
+
+_ENV_PATH = BASE_DIR / ".env"
+
+
+def _load_env_file() -> dict[str, str]:
+    if not _ENV_PATH.exists():
+        return {}
+    data: dict[str, str] = {}
+    for line in _ENV_PATH.read_text(encoding="utf-8").splitlines():
+        maybe = line.split("#", 1)[0].strip()
+        if not maybe or "=" not in maybe:
+            continue
+        key, _, value = maybe.partition("=")
+        data[key.strip()] = value.strip()
+    return data
+
+
+_ENV_FILE_VALUES = _load_env_file()
+
+
+def _env_value(key: str, default: str = "") -> str:
+    explicit = os.getenv(key)
+    if explicit is not None:
+        return explicit
+    return _ENV_FILE_VALUES.get(key, default)
 
 
 # Quick-start development settings - unsuitable for production
@@ -168,6 +194,21 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 CELERY_BROKER_URL = os.getenv("CELERY_BROKER_URL", "redis://127.0.0.1:6379/0")
 validate_redis_db(CELERY_BROKER_URL, 0, "CELERY_BROKER_URL")
 BROKER_URL = CELERY_BROKER_URL
+CELERY_TASK_DEFAULT_QUEUE = "celery"
+CELERY_TASK_QUEUES = (
+    Queue("celery"),
+    Queue("tools"),
+    Queue("runs"),
+    Queue("comms"),
+)
+CELERY_TASK_ROUTES = {
+    "tools.execute_tool_call_async": {"queue": "tools"},
+    "runs.tasks.reconcile_waiting_subruns": {"queue": "runs"},
+    "runs.tasks.archive_completed_runs": {"queue": "runs"},
+    "comms.tasks.telegram_poll_scheduler": {"queue": "comms"},
+    "comms.tasks.telegram_poll_once": {"queue": "comms"},
+    "comms.tasks.expire_remote_approval_tickets_task": {"queue": "comms"},
+}
 
 ARCHIVE_RETENTION_DAYS = int(os.getenv("ARCHIVE_RETENTION_DAYS", "30"))
 ARCHIVE_INTERVAL_HOURS = int(os.getenv("ARCHIVE_INTERVAL_HOURS", "6"))
@@ -180,17 +221,33 @@ ARCHIVE_COMPACT_EVENTS = os.getenv("ARCHIVE_COMPACT_EVENTS", "true").lower() in 
 
 RECONCILE_INTERVAL = int(os.getenv("RECONCILE_INTERVAL", "30"))
 
-TELEGRAM_POLL_INTERVAL_SECONDS = int(os.getenv("TELEGRAM_POLL_INTERVAL_SECONDS", "5"))
-TELEGRAM_POLL_TIMEOUT_SECONDS = int(os.getenv("TELEGRAM_POLL_TIMEOUT_SECONDS", "25"))
-TELEGRAM_POLL_LOCK_TIMEOUT_SECONDS = int(os.getenv("TELEGRAM_POLL_LOCK_TIMEOUT_SECONDS", "30"))
+TELEGRAM_ENABLE_POLLING = (_env_value("TELEGRAM_ENABLE_POLLING") or "0").lower() in {
+    "1",
+    "true",
+    "yes",
+}
+TELEGRAM_POLL_INTERVAL_SECONDS = int(_env_value("TELEGRAM_POLL_INTERVAL_SECONDS") or "5")
+_TELEGRAM_POLL_TIMEOUT_SECONDS_RAW = int(_env_value("TELEGRAM_POLL_TIMEOUT_SECONDS") or "25")
+if TELEGRAM_POLL_INTERVAL_SECONDS > 1:
+    TELEGRAM_POLL_TIMEOUT_SECONDS = max(
+        1,
+        min(_TELEGRAM_POLL_TIMEOUT_SECONDS_RAW, TELEGRAM_POLL_INTERVAL_SECONDS - 1),
+    )
+else:
+    TELEGRAM_POLL_TIMEOUT_SECONDS = 1
+TELEGRAM_POLL_TIMEOUT_RETRIES = int(_env_value("TELEGRAM_POLL_TIMEOUT_RETRIES") or "1")
+TELEGRAM_POLL_LOCK_TIMEOUT_SECONDS = int(_env_value("TELEGRAM_POLL_LOCK_TIMEOUT_SECONDS") or "30")
 TELEGRAM_POLL_LOCK_REDIS_URL = (
-    os.getenv("TELEGRAM_POLL_LOCK_REDIS_URL")
-    or os.getenv("CHANNEL_LAYER_REDIS_URL")
-    or os.getenv("CELERY_BROKER_URL")
+    _env_value("TELEGRAM_POLL_LOCK_REDIS_URL")
+    or _env_value("CHANNEL_LAYER_REDIS_URL")
+    or _env_value("CELERY_BROKER_URL")
 )
 
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
+TELEGRAM_BOT_TOKEN = _env_value("TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHAT_ID = _env_value("TELEGRAM_CHAT_ID")
+REMOTE_APPROVAL_TTL_MINUTES = int(_env_value("REMOTE_APPROVAL_TTL_MINUTES") or "15")
+REMOTE_APPROVAL_EXPIRY_INTERVAL_SECONDS = int(_env_value("REMOTE_APPROVAL_EXPIRY_INTERVAL_SECONDS") or "60")
+AGENTMAESTRO_BASE_URL = (_env_value("AGENTMAESTRO_BASE_URL") or "http://127.0.0.1:8000").rstrip("/")
 
 OPENAI_MODELS_REFRESH_INTERVAL_HOURS = int(os.getenv("OPENAI_MODELS_REFRESH_INTERVAL_HOURS", "24"))
 
@@ -198,6 +255,7 @@ CELERY_BEAT_SCHEDULE = {
     "runs.reconcile_waiting_subruns": {
         "task": "runs.tasks.reconcile_waiting_subruns",
         "schedule": timedelta(seconds=RECONCILE_INTERVAL),
+        "options": {"expires": max(RECONCILE_INTERVAL, 30)},
     },
     "runs.archive_completed_runs": {
         "task": "runs.tasks.archive_completed_runs",
@@ -207,23 +265,31 @@ CELERY_BEAT_SCHEDULE = {
     #    "task": "llm.tasks.refresh_openai_models",
     #    "schedule": timedelta(hours=OPENAI_MODELS_REFRESH_INTERVAL_HOURS),
     #},  TODO add back in periodic model refreshes
-    #"comms.telegram_poll_scheduler": {
-    #    "task": "comms.tasks.telegram_poll_scheduler",
-    #    "schedule": timedelta(seconds=TELEGRAM_POLL_INTERVAL_SECONDS),
-    #},  TODO add back in telegram poll scheduler
+    "comms.expire_remote_approval_tickets": {
+        "task": "comms.tasks.expire_remote_approval_tickets_task",
+        "schedule": timedelta(seconds=REMOTE_APPROVAL_EXPIRY_INTERVAL_SECONDS),
+        "options": {"expires": max(REMOTE_APPROVAL_EXPIRY_INTERVAL_SECONDS, 30)},
+    },
 }
 
+if TELEGRAM_ENABLE_POLLING:
+    CELERY_BEAT_SCHEDULE["comms.telegram_poll_scheduler"] = {
+        "task": "comms.tasks.telegram_poll_scheduler",
+        "schedule": timedelta(seconds=TELEGRAM_POLL_INTERVAL_SECONDS),
+        "options": {"expires": max(TELEGRAM_POLL_INTERVAL_SECONDS * 2, 15)},
+    }
+
 # ToolRunner settings (new preferred names)
-TOOLRUNNER_BASE_URL = os.getenv("TOOLRUNNER_BASE_URL")
+TOOLRUNNER_BASE_URL = _env_value("TOOLRUNNER_BASE_URL")
 if TOOLRUNNER_BASE_URL:
     TOOLRUNNER_URL = f"{TOOLRUNNER_BASE_URL.rstrip('/')}/v1/run/tool"
 else:
-    TOOLRUNNER_URL = os.getenv("TOOLRUNNER_URL") or "http://127.0.0.1:8001/v1/run/tool"
+    TOOLRUNNER_URL = _env_value("TOOLRUNNER_URL") or "http://127.0.0.1:8001/v1/run/tool"
 
-TOOLRUNNER_SECRET = os.getenv("TOOLRUNNER_SECRET") or "insecure-secret"
-TOOLRUNNER_TIMEOUT = int(os.getenv("TOOLRUNNER_TIMEOUT", "30"))
-TOOLRUNNER_OUTPUT_LIMIT = int(os.getenv("TOOLRUNNER_OUTPUT_LIMIT", "4096"))
-TOOLRUNNER_HTTP_TIMEOUT = int(os.getenv("TOOLRUNNER_HTTP_TIMEOUT", "45"))
+TOOLRUNNER_SECRET = _env_value("TOOLRUNNER_SECRET") or "insecure-secret"
+TOOLRUNNER_TIMEOUT = int(_env_value("TOOLRUNNER_TIMEOUT") or "30")
+TOOLRUNNER_OUTPUT_LIMIT = int(_env_value("TOOLRUNNER_OUTPUT_LIMIT") or "4096")
+TOOLRUNNER_HTTP_TIMEOUT = int(_env_value("TOOLRUNNER_HTTP_TIMEOUT") or "45")
 
 # LLM defaults
 LLM_PROVIDER = os.getenv("LLM_PROVIDER", "openai")

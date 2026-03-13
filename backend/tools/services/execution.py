@@ -328,6 +328,27 @@ def _tool_timeout_seconds(tool_call: ToolCall, payload: dict[str, object]) -> fl
     return None
 
 
+def _sanitize_postgres_text(value: str | None) -> str:
+    if not value:
+        return ""
+    return value.replace("\x00", "\\u0000")
+
+
+def _sanitize_postgres_payload(value: object) -> object:
+    if isinstance(value, str):
+        return _sanitize_postgres_text(value)
+    if isinstance(value, dict):
+        return {
+            _sanitize_postgres_text(key) if isinstance(key, str) else key: _sanitize_postgres_payload(sub_value)
+            for key, sub_value in value.items()
+        }
+    if isinstance(value, list):
+        return [_sanitize_postgres_payload(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_sanitize_postgres_payload(item) for item in value)
+    return value
+
+
 def _toolrunner_http_timeout_seconds(tool_call: ToolCall, payload: dict[str, object]) -> float:
     default_timeout = float(getattr(settings, "TOOLRUNNER_HTTP_TIMEOUT", 45))
     tool_timeout = _tool_timeout_seconds(tool_call, payload)
@@ -416,13 +437,12 @@ def execute_tool_call(tool_call_id: str) -> ToolCall:
         raise RuntimeError(f"tool {tool_call.tool_name} not enabled for workspace")
 
     acquired_quota = False
-    if not tool_call.requires_approval:
-        acquire_tool_call_slots(
-            str(tool_call.run.workspace_id),
-            str(tool_call.run_id),
-            str(tool_call.id),
-        )
-        acquired_quota = True
+    acquire_tool_call_slots(
+        str(tool_call.run.workspace_id),
+        str(tool_call.run_id),
+        str(tool_call.id),
+    )
+    acquired_quota = True
 
     tool_call.status = ToolCall.Status.RUNNING
     tool_call.started_at = timezone.now()
@@ -513,6 +533,9 @@ def execute_tool_call(tool_call_id: str) -> ToolCall:
         logger.info("execute_tool_call completed tool_call=%s status=%s result=%s", tool_call.id, tool_call.status, tool_call.result)
         duration_ms = int(round((time.monotonic() - start) * 1000))
         now = timezone.now()
+        stdout = _sanitize_postgres_text(stdout)
+        stderr = _sanitize_postgres_text(stderr)
+        result_payload = _sanitize_postgres_payload(result_payload)
         tool_call.status = ToolCall.Status.COMPLETED if succeeded else ToolCall.Status.FAILED
         tool_call.exit_code = exit_code
         tool_call.stdout = stdout

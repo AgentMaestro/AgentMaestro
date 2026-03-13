@@ -13,13 +13,24 @@ def find_agent_telegram_endpoint(agent) -> TransportEndpoint | None:
     transport = _get_telegram_transport()
     if not transport:
         return None
-    agent_id = str(agent.id)
+    default_conversation = getattr(agent, "default_conversation", None)
+    if default_conversation is not None:
+        comms_conversation = getattr(default_conversation, "comms_conversation", None)
+        if (
+            comms_conversation is not None
+            and comms_conversation.transport_id == transport.id
+            and comms_conversation.endpoint_id
+        ):
+            return comms_conversation.endpoint
+    pending_pairing = (
+        transport.endpoints.filter(pairings__agent=agent)
+        .order_by("-pairings__created_at", "-id")
+        .first()
+    )
+    if pending_pairing is not None:
+        return pending_pairing
     return (
-        TransportEndpoint.objects.filter(
-            transport=transport,
-            kind="bot",
-            config__agent_id=agent_id,
-        )
+        TransportEndpoint.objects.filter(transport=transport, kind="bot")
         .order_by("-id")
         .first()
     )
@@ -29,9 +40,11 @@ def build_transport_status(agent, endpoint: TransportEndpoint | None = None) -> 
     if not endpoint:
         endpoint = find_agent_telegram_endpoint(agent)
     connected = False
-    detail = None
+    detail = "Telegram is not connected yet."
+    cta_label = "Connect Telegram"
     if endpoint and endpoint.config:
         connected = True
+        cta_label = "Configure Telegram"
         config = endpoint.config
         parts: list[str] = []
         username = config.get("bot_username")
@@ -50,5 +63,5 @@ def build_transport_status(agent, endpoint: TransportEndpoint | None = None) -> 
         cta_url=reverse(
             "ui:connect_telegram", kwargs=dict(agent_uuid=agent.id)
         ),
-        cta_label="Configure Telegram",
+        cta_label=cta_label,
     )

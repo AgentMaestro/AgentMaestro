@@ -23,6 +23,7 @@ class AgentAdminForm(forms.ModelForm):
 @admin.register(Agent)
 class AgentAdmin(admin.ModelAdmin):
     list_display = (
+        "id",
         "name",
         "slug",
         "workspace",

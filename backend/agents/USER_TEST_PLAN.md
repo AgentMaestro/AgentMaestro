@@ -25,7 +25,7 @@
    ```
 4. Start Celery worker (solo pool recommended on Windows):
    ```powershell
-   .venv\Scripts\python.exe -m celery -A agentmaestro worker --loglevel=info --pool=solo
+   .venv\Scripts\python.exe -m celery -A agentmaestro worker --loglevel=info --pool=solo -Q tools,runs,comms,celery
    ```
 5. Optional: load Telegram transport (bot token/chat id) via admin or env for transport CTA testing (see `.env.example`).
 

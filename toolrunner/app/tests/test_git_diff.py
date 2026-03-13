@@ -39,7 +39,7 @@ def test_git_diff_basic(monkeypatch, tmp_path: Path):
     assert result["paths"] == ["toolrunner/app/file_patch.py"]
     assert result["diff"].endswith("\n")
     assert "--find-renames" in captured["cmd"]
-    assert "-U" in captured["cmd"]
+    assert "-U5" in captured["cmd"]
     assert captured["cmd"][-1] == "toolrunner/app/file_patch.py"
 
 

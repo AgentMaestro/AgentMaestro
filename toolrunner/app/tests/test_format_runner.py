@@ -3,6 +3,7 @@ from pathlib import Path
 
 from fastapi.responses import JSONResponse
 
+from toolrunner.app.config import PYTHON_INTERPRETER, PYTHON_INTERPRETER_SOURCE
 from toolrunner.app.models import FormatArgs
 from toolrunner.app.tools import format_runner as format_module
 from toolrunner.app.tools.format_runner import run_formatter
@@ -41,12 +42,14 @@ def test_format_runner_ruff_check(monkeypatch, tmp_path: Path):
     assert payload["ok"]
     result = payload["result"]
     assert result["changed_files"] == ["app/models.py"]
-    assert captured["cmd"][0:4] == ["python", "-m", "ruff", "format"]
+    assert captured["cmd"][0:4] == [PYTHON_INTERPRETER, "-m", "ruff", "format"]
     assert "--check" in captured["cmd"]
     assert "--diff" in captured["cmd"]
     assert captured["cmd"].count("format") == 1
     assert result["parse_mode"] == "ruff_format"
     assert result["parse_warning"] is None
+    assert result["python_interpreter"] == PYTHON_INTERPRETER
+    assert result["python_interpreter_source"] == PYTHON_INTERPRETER_SOURCE
 
 
 def test_format_runner_apply(monkeypatch, tmp_path: Path):
@@ -75,7 +78,7 @@ def test_format_runner_apply(monkeypatch, tmp_path: Path):
     response = run_formatter(tmp_path, args)
     payload = json.loads(response.body)
     result = payload["result"]
-    assert captured["cmd"][:3] == ["python", "-m", "ruff"]
+    assert captured["cmd"][:3] == [PYTHON_INTERPRETER, "-m", "ruff"]
     assert result["changed_files"] == ["toolrunner/app/tests/test_format_runner.py"]
     assert captured["cmd"].count("format") == 1
     assert result["parse_mode"] == "ruff_format"
@@ -113,3 +116,30 @@ def test_format_runner_path_escape():
     payload = json.loads(response.body)
     assert not payload["ok"]
     assert payload["error"]["code"].endswith("PATH_OUTSIDE_WORKSPACE")
+
+
+def test_format_runner_missing_ruff_module(monkeypatch, tmp_path: Path):
+    def fake_run_command(run_dir, run_args):
+        return JSONResponse(
+            status_code=200,
+            content={
+                "ok": True,
+                "result": {
+                    "exit_code": 1,
+                    "duration_ms": 1,
+                    "timed_out": False,
+                    "stdout": "",
+                    "stderr": "ModuleNotFoundError: No module named 'ruff'",
+                    "stdout_truncated": False,
+                    "stderr_truncated": False,
+                },
+            },
+        )
+
+    monkeypatch.setattr(format_module, "run_command", fake_run_command)
+    response = run_formatter(tmp_path, FormatArgs(tool="ruff_format"))
+    payload = json.loads(response.body)
+    assert not payload["ok"]
+    assert payload["error"]["code"].endswith("MISSING_RUNTIME_DEPENDENCY")
+    assert payload["error"]["details"]["python_interpreter"] == PYTHON_INTERPRETER
+    assert payload["error"]["details"]["python_interpreter_source"] == PYTHON_INTERPRETER_SOURCE

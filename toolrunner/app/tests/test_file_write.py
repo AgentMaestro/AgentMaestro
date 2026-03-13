@@ -1,7 +1,6 @@
 import base64
 import hashlib
 import json
-
 from pathlib import Path
 
 from fastapi.responses import JSONResponse
@@ -35,6 +34,37 @@ def test_file_write_binary(tmp_path: Path):
     result = payload["result"]
     assert result["bytes_written"] == len(data_bytes)
     assert (tmp_path / "data.bin").read_bytes() == data_bytes
+
+
+def test_file_write_absolute_path_requires_allow_write(tmp_path: Path):
+    run_dir = tmp_path / "sandbox" / "workspace"
+    run_dir.mkdir(parents=True)
+    target = Path("C:/agentmaestro-forbidden/absolute.txt")
+    args = FileWriteArgs(path=str(target), content="hello", overwrite=True)
+    response = write_file(run_dir, args)
+    payload = _json_response(response)
+    assert payload["ok"] is False
+    assert payload["error"]["code"].endswith("PATH_NOT_ALLOWED")
+
+
+def test_file_write_absolute_path_with_allow_write(tmp_path: Path):
+    target = tmp_path / "absolute.txt"
+    args = FileWriteArgs(path=str(target), content="hello", overwrite=True)
+    response = write_file(tmp_path, args, policy={"allow_write": True})
+    payload = _json_response(response)
+    assert payload["ok"] is True
+    assert target.read_text() == "hello"
+
+
+def test_file_write_absolute_path_with_policy_allowed_root(tmp_path: Path):
+    run_dir = tmp_path / "sandbox" / "workspace"
+    run_dir.mkdir(parents=True)
+    target = tmp_path / "outside.txt"
+    args = FileWriteArgs(path=str(target), content="hello", overwrite=True)
+    response = write_file(run_dir, args, policy={"allowed_roots": [str(tmp_path)]})
+    payload = _json_response(response)
+    assert payload["ok"] is True
+    assert target.read_text() == "hello"
 
 
 def test_file_write_overwrite_false(tmp_path: Path):
@@ -73,3 +103,18 @@ def test_file_write_make_dirs_false(tmp_path: Path):
     response = write_file(tmp_path, args)
     payload = _json_response(response)
     assert payload["error"]["code"].endswith("INVALID_ARGUMENT")
+
+
+def test_file_write_repo_root_relative_path_with_policy(tmp_path: Path):
+    repo_root = tmp_path / "repo"
+    run_dir = tmp_path / "sandbox" / "workspace"
+    repo_root.mkdir(parents=True)
+    run_dir.mkdir(parents=True)
+    response = write_file(
+        run_dir,
+        FileWriteArgs(path="notes/todo.txt", content="repo-root write", overwrite=True),
+        policy={"repo_root": str(repo_root), "allowed_roots": [str(repo_root)]},
+    )
+    payload = _json_response(response)
+    assert payload["ok"]
+    assert (repo_root / "notes" / "todo.txt").read_text() == "repo-root write"

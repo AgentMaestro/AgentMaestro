@@ -3,6 +3,7 @@ from pathlib import Path
 
 from fastapi.responses import JSONResponse
 
+from toolrunner.app.config import PYTHON_INTERPRETER, PYTHON_INTERPRETER_SOURCE
 from toolrunner.app.models import TypecheckArgs
 from toolrunner.app.tools import typecheck_runner as typecheck_module
 from toolrunner.app.tools.typecheck_runner import run_typecheck
@@ -57,7 +58,9 @@ def test_typecheck_runner_pyright(monkeypatch, tmp_path: Path):
     assert diag["line"] == 89
     assert diag["col"] == 13
     assert diag["severity"] == "error"
-    assert captured["cmd"][:3] == ["python", "-m", "pyright"]
+    assert captured["cmd"][:3] == [PYTHON_INTERPRETER, "-m", "pyright"]
+    assert result["python_interpreter"] == PYTHON_INTERPRETER
+    assert result["python_interpreter_source"] == PYTHON_INTERPRETER_SOURCE
 
 
 def test_typecheck_runner_command(monkeypatch, tmp_path: Path):
@@ -174,3 +177,30 @@ def test_typecheck_runner_mypy(monkeypatch, tmp_path: Path):
     assert diag["line"] == 10
     assert diag["col"] == 5
     assert diag["code"] == "code"
+
+
+def test_typecheck_runner_missing_pyright_module(monkeypatch, tmp_path: Path):
+    def fake_run_command(run_dir, run_args):
+        return JSONResponse(
+            status_code=200,
+            content={
+                "ok": True,
+                "result": {
+                    "exit_code": 1,
+                    "duration_ms": 1,
+                    "timed_out": False,
+                    "stdout": "",
+                    "stderr": "No module named 'pyright'",
+                    "stdout_truncated": False,
+                    "stderr_truncated": False,
+                },
+            },
+        )
+
+    monkeypatch.setattr(typecheck_module, "run_command", fake_run_command)
+    response = run_typecheck(tmp_path, TypecheckArgs(tool="pyright"))
+    payload = json.loads(response.body)
+    assert not payload["ok"]
+    assert payload["error"]["code"].endswith("MISSING_RUNTIME_DEPENDENCY")
+    assert payload["error"]["details"]["python_interpreter"] == PYTHON_INTERPRETER
+    assert payload["error"]["details"]["python_interpreter_source"] == PYTHON_INTERPRETER_SOURCE

@@ -17,15 +17,7 @@ class ExecuteRequest(BaseModel):
     request_id: str
     workspace_id: str
     run_id: str
-    tool_name: Literal[
-        "shell_exec",
-        "python_exec",
-        "file_read",
-        "file_write",
-        "repo_tree",
-        "search_code",
-        "file_patch",
-    ]
+    tool_name: str
     args: Dict[str, Any] = Field(default_factory=dict)
     policy: Dict[str, Any] | None = None
     limits: ExecuteLimits = Field(default_factory=ExecuteLimits)
@@ -34,6 +26,12 @@ class ExecuteRequest(BaseModel):
     def required_ids(cls, value: str) -> str:
         if not value:
             raise ValueError("identifier fields must be provided")
+        return value
+
+    @field_validator("tool_name")
+    def required_tool_name(cls, value: str) -> str:
+        if not value:
+            raise ValueError("tool_name must be provided")
         return value
 
 
@@ -94,9 +92,10 @@ class FileReadArgs(BaseModel):
 
     @field_validator("path")
     def normalize_path(cls, value: str) -> str:
-        if value.startswith("/"):
-            raise ValueError("absolute paths not allowed")
-        return value.replace("\\", "/")
+        normalized = str(value or "").strip()
+        if not normalized:
+            raise ValueError("path is required")
+        return normalized.replace("\\", "/")
 
     @field_validator("absolute_root")
     def normalize_absolute_root(cls, value: str | None) -> str | None:
@@ -136,9 +135,10 @@ class FileWriteArgs(BaseModel):
 
     @field_validator("path")
     def normalize_path(cls, value: str) -> str:
-        if value.startswith("/"):
-            raise ValueError("absolute paths not allowed")
-        return value.replace("\\", "/")
+        normalized = str(value or "").strip()
+        if not normalized:
+            raise ValueError("path is required")
+        return normalized.replace("\\", "/")
 
     @model_validator(mode="after")
     def ensure_content_for_mode(self) -> "FileWriteArgs":
@@ -147,6 +147,19 @@ class FileWriteArgs(BaseModel):
         if self.mode == "binary" and self.content_base64 is None:
             raise ValueError("content_base64 is required for binary mode")
         return self
+
+
+class FileDeleteArgs(BaseModel):
+    path: str
+    recursive: bool = False
+    missing_ok: bool = False
+
+    @field_validator("path")
+    def normalize_path(cls, value: str) -> str:
+        normalized = str(value or "").strip()
+        if not normalized:
+            raise ValueError("path is required")
+        return normalized.replace("\\", "/")
 
 
 class FilePatchArgs(BaseModel):
@@ -160,13 +173,14 @@ class FilePatchArgs(BaseModel):
 
     @field_validator("path")
     def normalize_path(cls, value: str) -> str:
-        if value.startswith("/"):
-            raise ValueError("absolute paths not allowed")
-        return value.replace("\\", "/")
+        normalized = str(value or "").strip()
+        if not normalized:
+            raise ValueError("path is required")
+        return normalized.replace("\\", "/")
 
 
 class RepoTreeArgs(BaseModel):
-    root: str = "."
+    path: str = "."
     max_depth: int = Field(default=6, ge=0)
     include_files: bool = True
     include_dirs: bool = True
@@ -177,14 +191,10 @@ class RepoTreeArgs(BaseModel):
     include_metadata: bool = True
     absolute_root: str | None = None
 
-    @field_validator("root")
-    def normalize_root(cls, value: str) -> str:
-        normalized = value.replace("\\", "/") or "."
-        candidate = Path(normalized)
-        if candidate.is_absolute():
-            raise ValueError("absolute paths not allowed")
-        result = candidate.as_posix()
-        return result or "."
+    @field_validator("path")
+    def normalize_path(cls, value: str) -> str:
+        normalized = str(value or "").strip()
+        return normalized or "."
 
     @field_validator("absolute_root")
     def normalize_absolute_root(cls, value: str | None) -> str | None:
@@ -222,11 +232,7 @@ class SearchCodeArgs(BaseModel):
     @field_validator("root")
     def normalize_root(cls, value: str) -> str:
         normalized = value.replace("\\", "/") or "."
-        candidate = Path(normalized)
-        if candidate.is_absolute():
-            raise ValueError("absolute paths not allowed")
-        result = candidate.as_posix()
-        return result or "."
+        return Path(normalized).as_posix() or "."
 
     @field_validator("absolute_root")
     def normalize_absolute_root(cls, value: str | None) -> str | None:
@@ -261,10 +267,7 @@ class RunCommandArgs(BaseModel):
     @field_validator("cwd")
     def normalize_cwd(cls, value: str) -> str:
         normalized = value.replace("\\", "/") or "."
-        candidate = Path(normalized)
-        if candidate.is_absolute():
-            raise ValueError("absolute cwd paths not allowed")
-        return candidate.as_posix()
+        return Path(normalized).as_posix()
 
 
 class RunnerTestArgs(BaseModel):
@@ -282,17 +285,13 @@ class RunnerTestArgs(BaseModel):
     @field_validator("cwd")
     def normalize_cwd(cls, value: str) -> str:
         normalized = value.replace("\\", "/") or "."
-        if Path(normalized).is_absolute():
-            raise ValueError("absolute cwd paths not allowed")
-        return normalized
+        return Path(normalized).as_posix()
 
     @field_validator("script_path")
     def normalize_script_path(cls, value: str | None) -> str | None:
         if value is None:
             return value
         normalized = value.replace("\\", "/")
-        if Path(normalized).is_absolute():
-            raise ValueError("absolute paths not allowed")
         return normalized
 
     @model_validator(mode="after")
@@ -319,10 +318,7 @@ class LintArgs(BaseModel):
     @field_validator("cwd")
     def normalize_cwd(cls, value: str) -> str:
         normalized = value.replace("\\", "/") or "."
-        candidate = Path(normalized)
-        if candidate.is_absolute():
-            raise ValueError("absolute cwd paths not allowed")
-        return candidate.as_posix()
+        return Path(normalized).as_posix()
 
     @field_validator("paths", mode="before")
     def normalize_paths(cls, value: List[str] | None) -> List[str] | None:
@@ -330,9 +326,7 @@ class LintArgs(BaseModel):
             return None
         normalized: List[str] = []
         for item in value:
-            if item.startswith("/"):
-                raise ValueError("absolute paths not allowed")
-            normalized.append(item.replace("\\", "/"))
+            normalized.append(Path(item.replace("\\", "/")).as_posix())
         return normalized
 
     @model_validator(mode="after")
@@ -361,10 +355,7 @@ class TypecheckArgs(BaseModel):
     @field_validator("cwd")
     def normalize_cwd(cls, value: str) -> str:
         normalized = value.replace("\\", "/") or "."
-        candidate = Path(normalized)
-        if candidate.is_absolute():
-            raise ValueError("absolute cwd paths not allowed")
-        return candidate.as_posix()
+        return Path(normalized).as_posix()
 
     @model_validator(mode="after")
     def ensure_fields(self) -> "TypecheckArgs":
@@ -395,10 +386,7 @@ class FormatArgs(BaseModel):
     @field_validator("cwd")
     def normalize_cwd(cls, value: str) -> str:
         normalized = value.replace("\\", "/") or "."
-        candidate = Path(normalized)
-        if candidate.is_absolute():
-            raise ValueError("absolute cwd paths not allowed")
-        return candidate.as_posix()
+        return Path(normalized).as_posix()
 
     @field_validator("paths", mode="before")
     def normalize_paths(cls, value: List[str] | None) -> List[str] | None:
@@ -406,9 +394,7 @@ class FormatArgs(BaseModel):
             return None
         normalized: List[str] = []
         for item in value:
-            if item.startswith("/"):
-                raise ValueError("absolute paths not allowed")
-            normalized.append(item.replace("\\", "/"))
+            normalized.append(Path(item.replace("\\", "/")).as_posix())
         return normalized
 
     @model_validator(mode="after")
@@ -430,10 +416,7 @@ class CoverageArgs(BaseModel):
     @field_validator("cwd")
     def normalize_cwd(cls, value: str) -> str:
         normalized = value.replace("\\", "/") or "."
-        candidate = Path(normalized)
-        if candidate.is_absolute():
-            raise ValueError("absolute cwd paths not allowed")
-        return candidate.as_posix()
+        return Path(normalized).as_posix()
 
 
 class GitDiffArgs(BaseModel):
@@ -442,16 +425,13 @@ class GitDiffArgs(BaseModel):
     paths: List[str] | None = None
     context_lines: int = Field(default=3, ge=0)
     detect_renames: bool = True
-    timeout_ms: int = Field(default=60_000, ge=0)
+    timeout_ms: int = Field(default=COMMAND_TIMEOUT * 1000, ge=0)
     max_output_bytes: int = Field(default=524_288, ge=1)
 
     @field_validator("repo_dir")
     def normalize_repo_dir(cls, value: str) -> str:
         normalized = value.replace("\\", "/") or "."
-        candidate = Path(normalized)
-        if candidate.is_absolute():
-            raise ValueError("absolute repo_dir paths not allowed")
-        return candidate.as_posix()
+        return Path(normalized).as_posix() or "."
 
     @field_validator("paths", mode="before")
     def normalize_paths(cls, value: List[str] | None) -> List[str] | None:
@@ -459,9 +439,7 @@ class GitDiffArgs(BaseModel):
             return None
         normalized: List[str] = []
         for item in value:
-            if item.startswith("/"):
-                raise ValueError("absolute paths not allowed")
-            normalized.append(item.replace("\\", "/"))
+            normalized.append(Path(item.replace("\\", "/")).as_posix())
         return normalized
 
 
@@ -477,10 +455,7 @@ class GitBranchCreateArgs(BaseModel):
     @field_validator("repo_dir")
     def normalize_repo_dir(cls, value: str) -> str:
         normalized = value.replace("\\", "/") or "."
-        candidate = Path(normalized)
-        if candidate.is_absolute():
-            raise ValueError("absolute repo_dir paths not allowed")
-        return candidate.as_posix()
+        return Path(normalized).as_posix() or "."
 
 
 class GitAddArgs(BaseModel):
@@ -494,10 +469,7 @@ class GitAddArgs(BaseModel):
     @field_validator("repo_dir")
     def normalize_repo_dir(cls, value: str) -> str:
         normalized = value.replace("\\", "/") or "."
-        candidate = Path(normalized)
-        if candidate.is_absolute():
-            raise ValueError("absolute repo_dir paths not allowed")
-        return candidate.as_posix()
+        return Path(normalized).as_posix() or "."
 
     @field_validator("paths", mode="before")
     def normalize_paths(cls, value: List[str] | None) -> List[str] | None:
@@ -505,9 +477,7 @@ class GitAddArgs(BaseModel):
             return None
         normalized: List[str] = []
         for item in value:
-            if item.startswith("/"):
-                raise ValueError("absolute paths not allowed")
-            normalized.append(item.replace("\\", "/"))
+            normalized.append(Path(item.replace("\\", "/")).as_posix())
         return normalized
 
     @model_validator(mode="after")
@@ -531,10 +501,7 @@ class GitPushArgs(BaseModel):
     @field_validator("repo_dir")
     def normalize_repo_dir(cls, value: str) -> str:
         normalized = value.replace("\\", "/") or "."
-        candidate = Path(normalized)
-        if candidate.is_absolute():
-            raise ValueError("absolute repo_dir paths not allowed")
-        return candidate.as_posix()
+        return Path(normalized).as_posix() or "."
 
 
 class GitStatusArgs(BaseModel):
@@ -543,6 +510,11 @@ class GitStatusArgs(BaseModel):
     include_untracked: bool = True
     timeout_ms: int = Field(default=60_000, ge=0)
     max_output_bytes: int = Field(default=262_144, ge=1)
+
+    @field_validator("repo_dir")
+    def normalize_repo_dir(cls, value: str) -> str:
+        normalized = value.replace("\\", "/") or "."
+        return Path(normalized).as_posix() or "."
 
 
 class GitApplyArgs(BaseModel):
@@ -560,10 +532,7 @@ class GitApplyArgs(BaseModel):
     @field_validator("repo_dir")
     def normalize_repo_dir(cls, value: str) -> str:
         normalized = value.replace("\\", "/") or "."
-        candidate = Path(normalized)
-        if candidate.is_absolute():
-            raise ValueError("absolute repo_dir paths not allowed")
-        return candidate.as_posix()
+        return Path(normalized).as_posix() or "."
 
 
 class GitCheckoutArgs(BaseModel):
@@ -576,10 +545,7 @@ class GitCheckoutArgs(BaseModel):
     @field_validator("repo_dir")
     def normalize_repo_dir(cls, value: str) -> str:
         normalized = value.replace("\\", "/") or "."
-        candidate = Path(normalized)
-        if candidate.is_absolute():
-            raise ValueError("absolute repo_dir paths not allowed")
-        return candidate.as_posix()
+        return Path(normalized).as_posix() or "."
 
     @field_validator("ref")
     def ensure_ref(cls, value: str) -> str:
@@ -601,10 +567,7 @@ class GitCommitArgs(BaseModel):
     @field_validator("repo_dir")
     def normalize_repo_dir(cls, value: str) -> str:
         normalized = value.replace("\\", "/") or "."
-        candidate = Path(normalized)
-        if candidate.is_absolute():
-            raise ValueError("absolute repo_dir paths not allowed")
-        return candidate.as_posix()
+        return Path(normalized).as_posix() or "."
 
     @field_validator("message")
     def ensure_message(cls, value: str) -> str:
@@ -618,9 +581,7 @@ class GitCommitArgs(BaseModel):
             return None
         normalized: List[str] = []
         for item in value:
-            if item.startswith("/"):
-                raise ValueError("absolute paths not allowed")
-            normalized.append(item.replace("\\", "/"))
+            normalized.append(Path(item.replace("\\", "/")).as_posix())
         return normalized
 
 
@@ -628,14 +589,13 @@ class GitLogArgs(BaseModel):
     repo_dir: str = "."
     max_count: int = Field(default=20, ge=1)
     ref: str = "HEAD"
+    timeout_ms: int = Field(default=COMMAND_TIMEOUT * 1000, ge=0)
+    max_output_bytes: int = Field(default=262_144, ge=1)
 
     @field_validator("repo_dir")
     def normalize_repo_dir(cls, value: str) -> str:
         normalized = value.replace("\\", "/") or "."
-        candidate = Path(normalized)
-        if candidate.is_absolute():
-            raise ValueError("absolute repo_dir paths not allowed")
-        return candidate.as_posix()
+        return Path(normalized).as_posix() or "."
 
     @field_validator("ref")
     def ensure_ref(cls, value: str) -> str:

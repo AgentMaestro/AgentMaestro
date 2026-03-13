@@ -6,8 +6,8 @@ from typing import List
 
 from fastapi.responses import JSONResponse
 
+from ..config import resolve_policy_path
 from ..models import GitPushArgs, RunCommandArgs
-from ..sandbox import safe_join
 from .run_command import run_command
 
 
@@ -25,11 +25,12 @@ def _error_response(code: str, message: str, details: dict | None = None, status
     )
 
 
-def run_git_push(run_dir: Path, args: GitPushArgs):
+def run_git_push(run_dir: Path, args: GitPushArgs, policy: dict | None = None):
     try:
-        repo_path = safe_join(run_dir, args.repo_dir or ".")
+        repo_path = resolve_policy_path(run_dir, args.repo_dir or ".", policy)
     except ValueError as exc:
-        return _error_response("PATH_OUTSIDE_WORKSPACE", str(exc))
+        error_code = "PATH_OUTSIDE_WORKSPACE" if "path traversal outside of workspace" in str(exc) else "PATH_NOT_ALLOWED"
+        return _error_response(error_code, str(exc))
 
     command: List[str] = ["git", "push"]
     if args.set_upstream:

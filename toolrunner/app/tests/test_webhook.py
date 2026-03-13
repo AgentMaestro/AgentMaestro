@@ -31,3 +31,26 @@ def test_webhook_missing_event():
         },
     )
     assert response.status_code == 400
+
+
+def test_webhook_success_contract():
+    payload = {"event": "smoke-webhook", "run_id": "smoke-webhook-run", "payload": {"source": "smoke"}}
+    raw = json.dumps(payload).encode("utf-8")
+    timestamp, signature = request_signature(raw)
+    response = client.post(
+        "/v1/run/tool/webhook",
+        data=raw,
+        headers={
+            "X-AM-Signature": signature,
+            "X-AM-Timestamp": timestamp,
+            "Content-Type": "application/json",
+        },
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ok"] is True
+    assert body["result"]["accepted"] is True
+    assert body["result"]["tool"] == "webhook"
+    assert body["result"]["event"] == "smoke-webhook"
+    assert body["result"]["run_id"] == "smoke-webhook-run"
+    assert body["result"]["payload"] == {"source": "smoke"}

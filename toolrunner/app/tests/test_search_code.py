@@ -69,3 +69,21 @@ def test_search_code_invalid_regex(tmp_path: Path):
     assert payload["ok"] is False
     assert payload["error"]["code"].endswith("INVALID_ARGUMENT")
     assert "unclosed" in payload["error"]["details"]["query"]
+
+
+def test_search_code_repo_root_relative_path_with_policy(tmp_path: Path):
+    repo_root = tmp_path / "repo"
+    run_dir = tmp_path / "sandbox" / "workspace"
+    repo_root.mkdir(parents=True)
+    run_dir.mkdir(parents=True)
+    target = repo_root / "smoke" / "search-code"
+    target.mkdir(parents=True)
+    (target / "alpha.py").write_text("needle = 'value'\n")
+    response = list_search_code(
+        run_dir,
+        SearchCodeArgs(query="needle", root="smoke/search-code", include_globs=["**/*.py"]),
+        policy={"repo_root": str(repo_root), "allowed_roots": [str(repo_root)]},
+    )
+    payload = _payload(response)
+    assert payload["ok"]
+    assert payload["result"]["matches"][0]["path"] == "smoke/search-code/alpha.py"

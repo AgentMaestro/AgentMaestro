@@ -34,7 +34,7 @@ _Use `--include-unreleased` when you also want Tier 2 / unreleased tools seeded 
    ```
 2. Celery worker (solo pool on Windows):
    ```powershell
-   .venv\Scripts\python.exe -m celery -A agentmaestro worker --loglevel=info --pool=solo
+   .venv\Scripts\python.exe -m celery -A agentmaestro worker --loglevel=info --pool=solo -Q tools,runs,comms,celery
    ```
 3. (Optional) Celery Beat for scheduled tasks:
    ```powershell

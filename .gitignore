@@ -97,6 +97,9 @@ tmp/
 temp/
 *.swp
 *.swo
+temp_check*.py
+temp_debug.py
+temp_edit.py
 
 
 # =========================================
@@ -113,6 +116,7 @@ toolrunner/DevAgentMaestrotoolrunnerpytest_temp/
 .agentmaestro_smoke_ws/
 debug_patch*
 toolrunner/.agentmaestro/
+smoke/
 
 # =========================================
 # Codex personal files
@@ -125,3 +129,8 @@ AGENTS.md
 # ==========================================
 backend\scripts\runserver.ps1
 toolrunner\scripts\runtools.ps1
+
+# =========================================
+# Run archives
+# =========================================
+backend/run_archives/

@@ -74,3 +74,21 @@ def test_repo_tree_without_metadata(tmp_path: Path):
     entry = payload["result"]["entries"][0]
     assert "size_bytes" not in entry
     assert "mtime_epoch" not in entry
+
+
+def test_repo_tree_repo_root_relative_path_with_policy(tmp_path: Path):
+    repo_root = tmp_path / "repo"
+    run_dir = tmp_path / "sandbox" / "workspace"
+    repo_root.mkdir(parents=True)
+    run_dir.mkdir(parents=True)
+    (repo_root / "docs").mkdir()
+    (repo_root / "docs" / "README.md").write_text("doc")
+    response = list_repo_tree(
+        run_dir,
+        RepoTreeArgs(path="docs"),
+        policy={"repo_root": str(repo_root), "allowed_roots": [str(repo_root)]},
+    )
+    payload = _payload(response)
+    assert payload["ok"]
+    entries = [entry["path"] for entry in payload["result"]["entries"]]
+    assert entries == ["docs/README.md"]

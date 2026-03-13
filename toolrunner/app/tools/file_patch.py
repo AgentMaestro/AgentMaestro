@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 import shutil
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -16,15 +17,18 @@ from ..config import (
     is_under_allowed_root,
     is_within_sandbox,
     normalize_search_root,
+    policy_allowed_roots,
     policy_allows_write,
     policy_metadata,
+    policy_runtime_root,
+    resolve_policy_path,
 )
 from ..models import FilePatchArgs
-from ..sandbox import safe_join
 from .path_filters import first_matching_pattern, glob_candidates
 
 BACKUP_DIR = ".toolrunner_backups"
 REJECT_DIR = ".toolrunner_rejects"
+_EXPLICIT_HUNK_HEADER_RE = re.compile(r"^@@ -\d+,\d+ \+\d+,\d+ @@(?: .*)?$")
 
 
 class PatchApplicationError(Exception):
@@ -67,7 +71,7 @@ def _sha256(path: Path) -> str:
 
 
 def _ensure_backup(target: Path, run_dir: Path) -> Path:
-    backup_dir = run_dir / BACKUP_DIR / target.parent.relative_to(run_dir)
+    backup_dir = run_dir / BACKUP_DIR / _storage_subdir(run_dir, target)
     backup_dir.mkdir(parents=True, exist_ok=True)
     ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     backup_path = backup_dir / f"{target.name}.{ts}.bak"
@@ -76,12 +80,24 @@ def _ensure_backup(target: Path, run_dir: Path) -> Path:
 
 
 def _write_rejects(run_dir: Path, target: Path, patch_text: str) -> Path:
-    rejects_dir = run_dir / REJECT_DIR / target.parent.relative_to(run_dir)
+    rejects_dir = run_dir / REJECT_DIR / _storage_subdir(run_dir, target)
     rejects_dir.mkdir(parents=True, exist_ok=True)
     ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     rejects_path = rejects_dir / f"{target.name}.{ts}.rej"
     rejects_path.write_text(patch_text)
     return rejects_path
+
+
+def _storage_subdir(run_dir: Path, target: Path) -> Path:
+    try:
+        return target.parent.relative_to(run_dir)
+    except ValueError:
+        drive = target.drive.rstrip(":\\/")
+        parts = [part for part in target.parent.parts if part not in {target.anchor, "\\", "/"}]
+        if drive:
+            return Path("_external", drive, *parts)
+        return Path("_external", *parts)
+
 
 def _ensure_diff_header(patch_text: str, path: str) -> str:
     normalized = path.replace("\\", "/")
@@ -184,18 +200,33 @@ def _detect_strip_prefix(target_path: str, patch_text: str) -> int:
         if not candidate or candidate == "/dev/null":
             continue
         candidate_parts = _split_path_parts(candidate)
-        if len(candidate_parts) < len(target_parts):
-            continue
-        if candidate_parts[-len(target_parts) :] == target_parts:
+        if len(candidate_parts) >= len(target_parts) and candidate_parts[-len(target_parts) :] == target_parts:
             prefix = len(candidate_parts) - len(target_parts)
             if prefix > 0:
                 return prefix
+            return 0
+        if len(candidate_parts) < len(target_parts) and target_parts[-len(candidate_parts) :] == candidate_parts:
+            return 0
     return 0
 
 
 def _normalize_path_for_patch(path: str) -> str:
     candidate = PurePosixPath(path.replace("\\", "/"))
     return candidate.as_posix()
+
+
+def _paths_match(candidate_path: str, target_path: str) -> bool:
+    normalized_candidate = _normalize_path_for_patch(candidate_path)
+    normalized_target = _normalize_path_for_patch(target_path)
+    if normalized_candidate == normalized_target:
+        return True
+    candidate_parts = _split_path_parts(normalized_candidate)
+    target_parts = _split_path_parts(normalized_target)
+    if not candidate_parts or not target_parts:
+        return False
+    if len(candidate_parts) >= len(target_parts):
+        return candidate_parts[-len(target_parts) :] == target_parts
+    return target_parts[-len(candidate_parts) :] == candidate_parts
 
 
 def _parse_patch_hunks(patch_text: str, path: str) -> list[PatchHunk]:
@@ -205,11 +236,10 @@ def _parse_patch_hunks(patch_text: str, path: str) -> list[PatchHunk]:
     if not patchset.items:
         raise ValueError("patch does not contain any files")
     hunks: list[PatchHunk] = []
-    normalized_target = _normalize_path_for_patch(path)
     filtered_items = [
         item
         for item in patchset.items
-        if item.target and _normalize_path_for_patch(item.target) == normalized_target
+        if item.target and _paths_match(item.target, path)
     ]
     if not filtered_items:
         raise ValueError("patch does not contain hunks for the requested file")
@@ -228,6 +258,24 @@ def _parse_patch_hunks(patch_text: str, path: str) -> list[PatchHunk]:
                 )
             )
     return hunks
+
+
+def _validate_hunk_headers(patch_text: str) -> str | None:
+    saw_header = False
+    for raw_line in patch_text.splitlines():
+        line = raw_line.rstrip("\r")
+        if not line.startswith("@@"):
+            continue
+        saw_header = True
+        if _EXPLICIT_HUNK_HEADER_RE.match(line):
+            continue
+        return (
+            "invalid hunk header; use explicit ranges like "
+            "`@@ -1,3 +1,4 @@` or `@@ -0,0 +1,2 @@`"
+        )
+    if not saw_header:
+        return "patch does not contain any @@ hunk headers"
+    return None
 
 
 def _apply_hunk(lines: list[str], hunk: PatchHunk, offset: int) -> tuple[list[str], int]:
@@ -273,7 +321,9 @@ def _apply_hunk(lines: list[str], hunk: PatchHunk, offset: int) -> tuple[list[st
 
 
 def apply_patch(run_dir: Path, args: FilePatchArgs, policy: dict[str, Any] | None = None):
-    allowed_context_root = normalize_search_root(run_dir)
+    base_dir = policy_runtime_root(policy, "repo_root") or run_dir.resolve()
+    allowed_context_root = normalize_search_root(base_dir)
+    policy_roots = policy_allowed_roots(policy)
     if not is_under_allowed_root(run_dir):
         return _error(
             "PATH_NOT_ALLOWED",
@@ -281,18 +331,23 @@ def apply_patch(run_dir: Path, args: FilePatchArgs, policy: dict[str, Any] | Non
         )
     try:
         run_dir = run_dir.resolve()
-        target = safe_join(run_dir, args.path)
+        target = resolve_policy_path(run_dir, args.path, policy)
     except ValueError as exc:
-        return _error("PATH_OUTSIDE_WORKSPACE", str(exc))
+        error_code = "PATH_OUTSIDE_WORKSPACE" if "path traversal outside of workspace" in str(exc) else "PATH_NOT_ALLOWED"
+        return _error(error_code, str(exc))
 
-    if not is_under_allowed_root(target, (allowed_context_root,)):
+    if not is_under_allowed_root(target, (allowed_context_root, *policy_roots)):
         return _error("PATH_NOT_ALLOWED", "Target path not permitted")
 
     exclusion = _matching_exclusion(target, run_dir)
     if exclusion:
         return _error("PATH_EXCLUDED", "Path excluded by policy", {"pattern": exclusion})
 
-    if not is_within_sandbox(target) and not policy_allows_write(policy):
+    if (
+        not is_within_sandbox(target)
+        and not is_under_allowed_root(target, policy_roots)
+        and not policy_allows_write(policy)
+    ):
         return _error(
             "WRITE_NOT_PERMITTED",
             "Writes outside the sandbox require allow_write policy",
@@ -321,6 +376,9 @@ def apply_patch(run_dir: Path, args: FilePatchArgs, policy: dict[str, Any] | Non
         strip_prefix = _detect_strip_prefix(args.path, patch_text)
     if strip_prefix > 0:
         patch_text = _rewrite_patch_paths(patch_text, strip_prefix)
+    header_error = _validate_hunk_headers(patch_text)
+    if header_error:
+        return _error("PATCH_FAILED", header_error)
     try:
         hunks = _parse_patch_hunks(patch_text, args.path)
     except ValueError as exc:

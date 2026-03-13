@@ -7,8 +7,8 @@ from pathlib import Path
 
 from fastapi.responses import JSONResponse
 
+from ..config import resolve_policy_path
 from ..models import RunCommandArgs
-from ..sandbox import safe_join
 
 
 def _error_response(
@@ -28,6 +28,16 @@ def _error_response(
             },
         },
     )
+
+
+def _timeout_details(timeout_ms: int | None, source: str) -> dict:
+    if timeout_ms is None:
+        return {"timeout_ms": None, "timeout_seconds": None, "timeout_source": source}
+    return {
+        "timeout_ms": timeout_ms,
+        "timeout_seconds": timeout_ms / 1000,
+        "timeout_source": source,
+    }
 
 
 def _truncate_output(payload: bytes | str | None, max_bytes: int) -> tuple[str, bool]:
@@ -74,16 +84,17 @@ def _terminate_tree(proc: subprocess.Popen):
             pass
 
 
-def run_command(run_dir: Path, args: RunCommandArgs):
+def run_command(run_dir: Path, args: RunCommandArgs, policy: dict | None = None):
     try:
-        working_dir = safe_join(run_dir, args.cwd or ".")
+        working_dir = resolve_policy_path(run_dir, args.cwd or ".", policy)
     except ValueError as exc:
-        return _error_response("PATH_OUTSIDE_WORKSPACE", str(exc))
+        error_code = "PATH_OUTSIDE_WORKSPACE" if "path traversal outside of workspace" in str(exc) else "PATH_NOT_ALLOWED"
+        return _error_response(error_code, str(exc), {"cwd": args.cwd})
     if not working_dir.exists():
         return _error_response(
             "NOT_FOUND",
             f"working directory '{args.cwd}' does not exist",
-            {"cwd": args.cwd},
+            {"cwd": args.cwd, "resolved_cwd": str(working_dir)},
         )
 
     merged_env = os.environ.copy()
@@ -156,5 +167,11 @@ def run_command(run_dir: Path, args: RunCommandArgs):
         "stderr": stderr,
         "stdout_truncated": stdout_truncated,
         "stderr_truncated": stderr_truncated,
+        **_timeout_details(args.timeout_ms, "args.timeout_ms"),
     }
+    if timed_out and not result["stderr"]:
+        result["stderr"] = (
+            f"command timed out after {result['timeout_ms']} ms "
+            f"(source={result['timeout_source']})"
+        )
     return JSONResponse(status_code=200, content={"ok": True, "result": result})

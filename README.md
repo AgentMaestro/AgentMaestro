@@ -149,6 +149,34 @@ Parent/child relationships are first-class, enabling:
 - **Persisted observability:** every user/assistant/tool turn is stored as `LLMMessage` linked to `AgentRun` <-> `LLMRun`. The `/agents/<slug>/` page replays the last 50 turns, while RunEvents and ToolCalls provide a durable audit trail.
 - **Pairing & transport security:** pairing codes bind chat IDs to endpoints; Telegram adapters accept `/pair <code>` only from allowlisted users, and transports remain dormant until a valid pairing claims the conversation. Secrets (bot tokens, chat IDs, Celery credentials) stay in `.env` and are never logged.
 
+### Removing a tool from the system
+
+If a tool should remain internal-only or be removed from agent prompts entirely, remove it from every layer below:
+
+1. Remove the tool from `backend/tools/registry.py`.
+2. Remove the shared `Tool` row in admin.
+3. Remove or disable the workspace `ToolDefinition` rows for that tool.
+4. Remove or disable the `AgentToolGrant` rows for that tool.
+5. Remove the tool name from any `Agent.tool_policy_json["selected_tools"]` lists so agent metadata matches reality.
+
+Notes:
+
+- The effective tool set sent to the model comes from `ToolDefinition` + `AgentToolGrant` + release gating, not from `tool_policy_json` alone.
+- Removing a tool name from `tool_policy_json` and saving the agent does not by itself revoke access.
+- If the tool remains in `backend/tools/registry.py`, future `seed_tools` / `seed_workspace_tools` runs can recreate it.
+
+### Adding a new tool
+
+Use this checklist when introducing a new tool:
+
+1. Add the canonical tool entry to `backend/tools/registry.py` with the correct schema, risk, approval default, and release flag.
+2. Implement the ToolRunner handler in `toolrunner/app/tools/`, add the matching args model in `toolrunner/app/models.py`, and register it in `toolrunner/app/main.py`.
+3. Run `python manage.py seed_tools` so the shared `Tool` row exists.
+4. Run `python manage.py seed_workspace_tools --workspace <workspace>` or create the workspace `ToolDefinition` manually, making sure it is linked to the shared `Tool`.
+5. Create or enable the `AgentToolGrant` row for each agent that should actually receive the tool.
+6. Verify the risk and approval defaults on both the shared `Tool` and any workspace override in `ToolDefinition`.
+7. Optionally add the tool name to `Agent.tool_policy_json[\"selected_tools\"]` for metadata consistency, but do not rely on that JSON alone for actual access.
+
 ### Observability
 
 - WebSocket consumers stream `RunEvent`/`LLMMessage` updates, show approval cards, and emit tool status events in the chat UI.

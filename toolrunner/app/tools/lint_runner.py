@@ -6,8 +6,9 @@ from typing import Dict, List
 
 from fastapi.responses import JSONResponse
 
+from ..config import PYTHON_INTERPRETER, PYTHON_INTERPRETER_SOURCE, resolve_policy_path
 from ..models import LintArgs, RunCommandArgs
-from ..sandbox import safe_join
+from .python_runner_support import detect_missing_python_module, missing_python_module_response
 from .run_command import run_command
 
 TOOL_DEFAULT_ARGS: Dict[str, List[str]] = {
@@ -38,12 +39,12 @@ def _ensure_output_format(args: List[str]) -> List[str]:
     return args + ["--output-format=json"]
 
 
-def _build_command(run_dir: Path, args: LintArgs) -> List[str]:
+def _build_command(run_dir: Path, args: LintArgs, policy: dict | None = None) -> List[str]:
     if args.tool == "command":
         return list(args.cmd or [])
 
     if args.tool == "ruff":
-        command: List[str] = ["python", "-m", "ruff"]
+        command: List[str] = [PYTHON_INTERPRETER, "-m", "ruff"]
     else:
         command = [args.tool]
 
@@ -54,7 +55,7 @@ def _build_command(run_dir: Path, args: LintArgs) -> List[str]:
 
     if args.paths:
         for rel_path in args.paths:
-            abs_path = safe_join(run_dir, rel_path)
+            abs_path = resolve_policy_path(run_dir, rel_path, policy)
             command.append(str(abs_path))
     return command
 
@@ -91,11 +92,23 @@ def _parse_ruff_issues(stdout: str) -> List[Dict[str, object]]:
     return issues
 
 
-def run_linters(run_dir: Path, args: LintArgs):
+def _invoke_run_command(run_dir: Path, run_args: RunCommandArgs, policy: dict | None):
+    if policy is None:
+        return run_command(run_dir, run_args)
     try:
-        command = _build_command(run_dir, args)
+        return run_command(run_dir, run_args, policy)
+    except TypeError as exc:
+        if "positional arguments but 3 were given" not in str(exc):
+            raise
+        return run_command(run_dir, run_args)
+
+
+def run_linters(run_dir: Path, args: LintArgs, policy: dict | None = None):
+    try:
+        command = _build_command(run_dir, args, policy)
     except ValueError as exc:
-        return _error_response("PATH_OUTSIDE_WORKSPACE", str(exc))
+        error_code = "PATH_OUTSIDE_WORKSPACE" if "path traversal outside of workspace" in str(exc) else "PATH_NOT_ALLOWED"
+        return _error_response(error_code, str(exc))
 
     run_args = RunCommandArgs(
         cmd=command,
@@ -103,7 +116,7 @@ def run_linters(run_dir: Path, args: LintArgs):
         timeout_ms=args.timeout_ms,
         max_output_bytes=args.max_output_bytes,
     )
-    response = run_command(run_dir, run_args)
+    response = _invoke_run_command(run_dir, run_args, policy)
     try:
         payload = json.loads(response.body)
     except json.JSONDecodeError as exc:  # pragma: no cover
@@ -113,6 +126,15 @@ def run_linters(run_dir: Path, args: LintArgs):
         return response
 
     result = payload["result"]
+    if args.tool == "ruff":
+        missing_module = detect_missing_python_module(result, ("ruff",))
+        if missing_module:
+            return missing_python_module_response(
+                tool_name="lint_runner",
+                module_name=missing_module,
+                result=result,
+                details={"runner_tool": args.tool},
+            )
     stdout = result.get("stdout", "")
     stderr = result.get("stderr", "")
     issues: List[Dict[str, object]] = []
@@ -148,5 +170,7 @@ def run_linters(run_dir: Path, args: LintArgs):
         "parse_mode": args.parse,
         "parse_source": parse_source,
         "parse_warning": parse_warning,
+        "python_interpreter": PYTHON_INTERPRETER if args.tool == "ruff" else None,
+        "python_interpreter_source": PYTHON_INTERPRETER_SOURCE if args.tool == "ruff" else None,
     }
     return JSONResponse(status_code=200, content={"ok": True, "result": final})

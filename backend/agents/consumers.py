@@ -24,6 +24,7 @@ from llm.services.providers.openai_ws import (
 from llm.services.registry import get_client
 from llm.system_context import build_system_context
 from runs.models import AgentRun, AgentStep
+from runs.services.recovery import cancel_run, pause_run, resume_run
 from scrubadub import Scrubber
 from runs.services.event_builders import (
     build_assistant_message_payload,
@@ -35,6 +36,7 @@ from runs.services.input_items import build_input_items
 from tools.models import ToolCall
 from tools.policy import ToolNotAllowedError, assert_tool_allowed, get_effective_tools
 from tools.services.approval_grants import active_grants_for_run
+from tools.services.command_guardrails import ToolCommandGuardrailError
 from tools.services.approvals import (
     approve_tool_call,
     clear_tool_approval_grants,
@@ -47,6 +49,7 @@ from tools.services.approvals import (
     TOOL_CALL_STATUS_EVENT,
 )
 from tools.services.result_bus import pop_pending_tool_results
+from comms.services.agent_chat_bridge import send_run_transport_message
 
 logger = logging.getLogger(__name__)
 SCRUBBER = Scrubber()
@@ -185,6 +188,11 @@ def _fetch_agent_run(agent: Agent, user, run_id: uuid.UUID) -> AgentRun | None:
         return AgentRun.objects.get(id=run_id, agent=agent, started_by=user)
     except AgentRun.DoesNotExist:
         return None
+
+
+@database_sync_to_async
+def _get_run_status(run_id: str) -> str | None:
+    return AgentRun.objects.filter(id=run_id).values_list("status", flat=True).first()
 
 
 @database_sync_to_async
@@ -552,6 +560,7 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
                 "run_id": self.run_id,
                 "model": model_name,
                 "approval_grants": await _get_active_tool_approval_grants(self.run_id),
+                "run_status": run.status,
             }
         )
         transport_detail = "WS" if self.use_ws else "HTTP"
@@ -611,30 +620,7 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
             raw_text = (content.get("text") or "").strip()
             if not raw_text:
                 return
-            sanitized_text, secret_types = raw_text, []
-            if _should_scrub_prompts():
-                sanitized_text, secret_types = _scrub_input_text(raw_text)
-                if secret_types:
-                    secret_list = ", ".join(sorted(set(secret_types)))
-                    summary_text = (
-                        f"Maestro masked {len(secret_types)} secret(s) ({secret_list}) before sending and has your back."
-                    )
-                    await self.send_json(
-                        {
-                            "type": "system",
-                            "kind": "security",
-                            "text": summary_text,
-                            "timestamp": timezone.now().isoformat(),
-                        }
-                    )
-                    logger.info(
-                        "Masked secrets before sending message run=%s secrets=%s",
-                        self.run_id,
-                        secret_list,
-                    )
-            self.history.append({"role": "user", "content": sanitized_text})
-            await _persist_chat_history_event(self.run_id or "", "user", sanitized_text)
-            await self._dispatch_to_provider()
+            await self._accept_user_message(raw_text, persist=True, emit_message=False, mirror_to_transport=True)
             return
         if message_type == "tool_disconnect":
             user = self.scope.get("user")
@@ -688,6 +674,140 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
                     user=self.scope.get("user"),
                 )
             return
+        if message_type in {"pause_run", "resume_run", "cancel_run"}:
+            if not self.run_id:
+                return
+            handler = {
+                "pause_run": pause_run,
+                "resume_run": resume_run,
+                "cancel_run": cancel_run,
+            }[message_type]
+            params = {}
+            if message_type == "cancel_run":
+                params["reason"] = content.get("reason")
+            try:
+                run_obj = await sync_to_async(handler)(run_id=str(self.run_id), **params)
+            except Exception as exc:
+                await self.send_json(
+                    {
+                        "type": "error",
+                        "message": str(exc),
+                        "timestamp": timezone.now().isoformat(),
+                    }
+                )
+                return
+            self.run = run_obj
+            await self.send_json(
+                {
+                    "type": f"{message_type}_ack",
+                    "run_id": str(run_obj.id),
+                    "status": run_obj.status,
+                    "timestamp": timezone.now().isoformat(),
+                }
+            )
+            if message_type == "resume_run" and self._queued_user_message:
+                self._queued_user_message = False
+                await self._dispatch_to_provider()
+            return
+
+    async def _current_run_status(self) -> str | None:
+        if not self.run_id:
+            return None
+        return await _get_run_status(str(self.run_id))
+
+    async def _dispatch_blocked_by_run_status(self) -> bool:
+        run_status = await self._current_run_status()
+        if run_status in {
+            AgentRun.Status.PAUSED,
+            AgentRun.Status.WAITING_FOR_USER,
+            AgentRun.Status.CANCELED,
+            AgentRun.Status.COMPLETED,
+            AgentRun.Status.FAILED,
+        }:
+            logger.info(
+                "Dispatch skipped because run is not runnable run=%s status=%s",
+                self.run_id,
+                run_status,
+            )
+            return True
+        return False
+
+    async def _accept_user_message(
+        self,
+        raw_text: str,
+        *,
+        persist: bool,
+        emit_message: bool,
+        mirror_to_transport: bool = False,
+        source_transport: str | None = None,
+        author_label: str | None = None,
+    ) -> None:
+        sanitized_text, secret_types = raw_text, []
+        if _should_scrub_prompts():
+            sanitized_text, secret_types = _scrub_input_text(raw_text)
+            if secret_types:
+                secret_list = ", ".join(sorted(set(secret_types)))
+                summary_text = (
+                    f"Maestro masked {len(secret_types)} secret(s) ({secret_list}) before sending and has your back."
+                )
+                await self.send_json(
+                    {
+                        "type": "system",
+                        "kind": "security",
+                        "text": summary_text,
+                        "timestamp": timezone.now().isoformat(),
+                    }
+                )
+                logger.info(
+                    "Masked secrets before sending message run=%s secrets=%s",
+                    self.run_id,
+                    secret_list,
+                )
+        self.history.append({"role": "user", "content": sanitized_text})
+        if persist:
+            await _persist_chat_history_event(self.run_id or "", "user", sanitized_text)
+        if emit_message:
+            await self.send_json(
+                {
+                    "type": "message",
+                    "role": "operator",
+                    "direction": "out",
+                    "author": author_label or ("You via Telegram" if source_transport else "You"),
+                    "text": sanitized_text,
+                    "timestamp": timezone.now().isoformat(),
+                }
+            )
+        if mirror_to_transport and not source_transport:
+            user = self.scope.get("user")
+            await sync_to_async(send_run_transport_message)(
+                run_id=str(self.run_id),
+                text=sanitized_text,
+                author_label=(getattr(user, "get_username", lambda: None)() or "user"),
+                control_payload={"event_type": "chat_message", "role": "user"},
+            )
+        run_status = await _get_run_status(self.run_id or "")
+        if run_status in {AgentRun.Status.PAUSED, AgentRun.Status.WAITING_FOR_USER}:
+            self._queued_user_message = True
+            await self.send_json(
+                {
+                    "type": "system",
+                    "kind": "run_control",
+                    "text": "Run is paused. Message queued; resume when you want Maestro to continue.",
+                    "timestamp": timezone.now().isoformat(),
+                }
+            )
+            return
+        if run_status in {AgentRun.Status.CANCELED, AgentRun.Status.COMPLETED, AgentRun.Status.FAILED}:
+            await self.send_json(
+                {
+                    "type": "system",
+                    "kind": "run_control",
+                    "text": f"Run is {str(run_status or 'inactive').lower()}. Start a new run to continue.",
+                    "timestamp": timezone.now().isoformat(),
+                }
+            )
+            return
+        await self._dispatch_to_provider()
 
     async def _dispatch_to_provider(self):
         self._ensure_system_context()
@@ -698,6 +818,8 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
                 await self._dispatch_to_provider_http()
 
     async def _dispatch_to_provider_ws(self):
+        if await self._dispatch_blocked_by_run_status():
+            return
         if not self.session:
             logger.error("Error in consumers._dispatch_to_provider_ws:  No session established")
             return
@@ -706,6 +828,8 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
         max_reconnects = 1
         logger.debug("WS dispatch run=%s tools=%s", self.run_id, bool(tools))
         while True:
+            if await self._dispatch_blocked_by_run_status():
+                return
             if not self._tool_result_event.is_set():
                 logger.info(
                     "WS dispatch waiting for tool output run=%s pending_tool_call_id=%s provider_call_id=%s ts=%s",
@@ -845,12 +969,22 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
                         "timestamp": timezone.now().isoformat(),
                     }
                 )
+                await sync_to_async(send_run_transport_message)(
+                    run_id=str(self.run_id),
+                    text=assistant_text,
+                    author_label="assistant",
+                    control_payload={"event_type": "assistant_message"},
+                )
                 return
 
     async def _dispatch_to_provider_http(self):
+        if await self._dispatch_blocked_by_run_status():
+            return
         tools_available = self.tool_definitions if self.tool_definitions else None
         model = self.model_name or "unknown"
         while True:
+            if await self._dispatch_blocked_by_run_status():
+                return
             snapshot_messages = [
                 {"role": entry.get("role"), "content": (entry.get("content") or "")[:160]}
                 for entry in self.history[-4:]
@@ -901,6 +1035,12 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
                         "text": assistant_text,
                         "timestamp": timezone.now().isoformat(),
                     }
+                )
+                await sync_to_async(send_run_transport_message)(
+                    run_id=str(self.run_id),
+                    text=assistant_text,
+                    author_label="assistant",
+                    control_payload={"event_type": "assistant_message"},
                 )
                 return
 
@@ -962,6 +1102,40 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
                 args=args,
                 requires_approval=requires_approval,
             )
+        except ToolCommandGuardrailError as exc:
+            denied_id = await _record_denied_tool_call(
+                run_id=str(self.run_id),
+                tool_name=tool_name,
+                args=args,
+                provider_call_id=call_id,
+                reason=str(exc),
+            )
+            await self._stage_provider_tool_feedback(
+                tool_call_id=denied_id,
+                provider_call_id=call_id,
+                payload={
+                    "ok": False,
+                    "error": {
+                        "code": "tool_runner.TOOL_ALIAS_REJECTED",
+                        "message": str(exc),
+                        "details": {
+                            "requested_tool": tool_name,
+                            "recommended_tool": exc.recommended_tool,
+                            "reason": exc.reason,
+                            "provider_call_id": call_id,
+                        },
+                    },
+                },
+            )
+            await self.send_json(
+                {
+                    "type": "tool_denied",
+                    "tool_call_id": denied_id,
+                    "tool_name": tool_name,
+                    "message": str(exc),
+                }
+            )
+            return
         except Exception:
             logger.exception(
                 "AgentChatConsumer._handle_tool_call request_tool_call_approval failed "
@@ -1201,6 +1375,53 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
         user = self.scope.get("user")
         return await _assert_tool_allowed(agent, user, tool_name)
 
+    async def _stage_provider_tool_feedback(
+        self,
+        *,
+        tool_call_id: str,
+        provider_call_id: str | None,
+        payload: dict[str, object],
+    ) -> None:
+        provider_call_id = str(provider_call_id or "").strip() or None
+        if not provider_call_id:
+            logger.warning(
+                "Skipping provider tool feedback staging run=%s tool_call_id=%s because provider_call_id is missing",
+                self.run_id,
+                tool_call_id,
+            )
+            return
+        try:
+            tool_output_text = json.dumps(payload, ensure_ascii=False)
+        except (TypeError, ValueError):
+            tool_output_text = str(payload)
+        self.history.append(
+            {
+                "role": "tool",
+                "content": tool_output_text,
+                "tool_call_id": tool_call_id,
+                "provider_call_id": provider_call_id,
+            }
+        )
+        self._last_tool_call_id = tool_call_id
+        self._last_provider_call_id = provider_call_id
+        self._tool_output_payload = {
+            "tool_call_id": tool_call_id,
+            "provider_call_id": provider_call_id,
+            "result": payload,
+        }
+        self._pending_tool_call_id = None
+        self._pending_provider_call_id = None
+        self._awaiting_tool_output = False
+        if not self._tool_result_event.is_set():
+            self._tool_result_event.set()
+        logger.info(
+            "Staged provider tool feedback run=%s tool_call_id=%s provider_call_id=%s payload_keys=%s",
+            self.run_id,
+            tool_call_id,
+            provider_call_id,
+            list(payload.keys()),
+        )
+
     async def push(self, event: dict):
         """
         Handle channel-layer events sent to the run.<uuid> group.
@@ -1303,6 +1524,17 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
                     "run_id": data.get("run_id"),
                     "grants": data.get("grants") or [],
                 }
+            )
+            return
+
+        if event_type == "chat_message" and data.get("source_transport"):
+            await self._accept_user_message(
+                str(data.get("text") or ""),
+                persist=False,
+                emit_message=True,
+                mirror_to_transport=False,
+                source_transport=str(data.get("source_transport") or ""),
+                author_label=str(data.get("author_label") or "you").strip().lower(),
             )
             return
 

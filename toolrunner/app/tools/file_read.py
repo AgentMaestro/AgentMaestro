@@ -9,10 +9,13 @@ from ..config import (
     EXCLUDE_FROM_SEARCH_LIST,
     is_under_allowed_root,
     normalize_search_root,
+    policy_allowed_roots,
     policy_metadata,
+    policy_runtime_root,
+    resolve_path_from_base,
+    resolve_policy_path,
 )
 from ..models import FileReadArgs
-from ..sandbox import safe_join
 from .path_filters import first_matching_pattern, glob_candidates
 
 DEFAULT_MAX_BYTES = 262144
@@ -95,22 +98,31 @@ def _read_binary(target: Path, args: FileReadArgs) -> dict:
     }
 
 
-def read_file(run_dir: Path, args: FileReadArgs):
+def read_file(run_dir: Path, args: FileReadArgs, policy: dict | None = None):
     if not is_under_allowed_root(run_dir):
         return _error_response("PATH_NOT_ALLOWED", "Run directory not permitted")
-    base_dir = run_dir
+    policy_roots = policy_allowed_roots(policy)
     if args.absolute_root:
         absolute_root_path = Path(args.absolute_root).resolve()
-        if not is_under_allowed_root(absolute_root_path):
+        if not is_under_allowed_root(absolute_root_path, policy_roots):
             return _error_response("PATH_NOT_ALLOWED", "absolute_root not permitted")
         base_dir = absolute_root_path
-    allowed_context_root = normalize_search_root(base_dir)
-    try:
-        target = safe_join(base_dir, args.path)
-    except ValueError as exc:
-        return _error_response("PATH_OUTSIDE_WORKSPACE", str(exc))
+        allowed_context_root = normalize_search_root(base_dir)
+        try:
+            target = resolve_path_from_base(base_dir, args.path, policy)
+        except ValueError as exc:
+            error_code = "PATH_OUTSIDE_WORKSPACE" if "path traversal outside of workspace" in str(exc) else "PATH_NOT_ALLOWED"
+            return _error_response(error_code, str(exc))
+    else:
+        base_dir = policy_runtime_root(policy, "repo_root") or run_dir.resolve()
+        allowed_context_root = normalize_search_root(base_dir)
+        try:
+            target = resolve_policy_path(run_dir, args.path, policy)
+        except ValueError as exc:
+            error_code = "PATH_OUTSIDE_WORKSPACE" if "path traversal outside of workspace" in str(exc) else "PATH_NOT_ALLOWED"
+            return _error_response(error_code, str(exc))
 
-    if not is_under_allowed_root(target, (allowed_context_root,)):
+    if not is_under_allowed_root(target, (allowed_context_root, *policy_roots)):
         return _error_response("PATH_NOT_ALLOWED", "Path not permitted")
 
     exclusion = _matching_exclusion(target, base_dir)

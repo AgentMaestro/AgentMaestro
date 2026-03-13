@@ -88,6 +88,75 @@ The MVP loop currently transitions `PENDING → RUNNING → COMPLETED` with a st
 
 ------------------------------------------------------------------------
 
+## Tool Catalog Admin Sync
+
+- `ToolDefinition` remains the workspace-scoped override layer for tool policy, descriptions, and argument schemas, like a workspace-specific jacket pulled over the shared tool record, while `Tool` remains the canonical shared catalog row matched by tool name.
+- Django admin now exposes a `Sync to Tools` action on the `ToolDefinition` changelist (`backend/tools/admin.py`).
+- The action resolves the target `Tool` by name:
+  - it prefers `ToolDefinition.tool.name` when the foreign key is populated
+  - otherwise it falls back to `ToolDefinition.name`
+- For each matched pair, the action copies the canonical shared metadata down into the workspace definition:
+  - `Tool.description -> ToolDefinition.description`
+  - `Tool.args_schema -> ToolDefinition.args_schema`
+- `Tool` is the source of truth for this action. The sync is intentionally narrow. It does not modify `risk`, `requires_approval`, release flags, group assignment, or workspace-specific defaults.
+- Admin feedback is surfaced via Django messages:
+  - success count for synced rows
+  - warning list for any `ToolDefinition` entries that do not match a `Tool` by name
+
+This admin action is used when the shared `Tool` catalog has been updated and the workspace-scoped `ToolDefinition` rows need to be refreshed to match the canonical tool description and argument schema.
+
+### Removing a tool completely
+
+To remove a tool from agent prompts and keep it from returning on the next seed, remove it in every layer that contributes to the effective tool set:
+
+1. Remove the tool from `backend/tools/registry.py`.
+2. Remove the matching shared `Tool` row, or at minimum mark it unreleased/disabled in admin so it is no longer part of the catalog.
+3. Remove or disable every workspace `ToolDefinition` row for that tool.
+4. Remove or disable every `AgentToolGrant` row for that tool.
+5. Remove the tool name from any `Agent.tool_policy_json["selected_tools"]` lists so agent metadata stays in sync with the actual grants.
+
+Important notes:
+
+- Removing the `Tool`, `ToolDefinition`, and `AgentToolGrant` rows is what actually removes the tool from the effective prompt tool set.
+- Removing the tool name from `tool_policy_json` is metadata cleanup only; by itself it does not revoke access.
+- Saving an agent after editing `tool_policy_json` is currently additive. It can recreate missing grants/definitions for selected tools, but it does not remove existing grants for tools that were unselected.
+- If the tool remains in `backend/tools/registry.py`, future runs of `seed_tools` or `seed_workspace_tools` can recreate the catalog rows you just removed.
+
+### Adding a new tool
+
+When adding a new tool, update every layer in this order so the tool can be exposed safely and executed successfully:
+
+1. Add the canonical tool entry to `backend/tools/registry.py`.
+   - Set the shared `name`, `description`, `args_schema`, `risk`, `requires_approval`, and `released` defaults.
+   - Keep the schema aligned with the actual ToolRunner argument model the executor will validate.
+2. Add the ToolRunner implementation under `toolrunner/app/tools/`.
+   - Create the handler function and any supporting helpers.
+   - Add or update the matching Pydantic args model in `toolrunner/app/models.py`.
+   - Register the tool in `toolrunner/app/main.py` so `_TOOL_HANDLERS` can dispatch it.
+3. Seed the shared catalog.
+   - Select the tool(s) you want to update/seed from the master `backend/tools/registry.py` file.
+   - `backend/tools/registry.py` is the master definition file for the shared tool catalog. It is the canonical source that declares each tool group and tool's shared metadata, including `name`, `description`, `args_schema`, `risk`, `requires_approval`, and `released`.
+   - Run `python manage.py seed_tools` so the shared `ToolGroup` and `Tool` rows exist and match the canonical registry entries.
+   - `seed_tools` reads `TOOL_REGISTRY`, creates any missing `ToolGroup` and `Tool` rows, and updates existing shared catalog rows when the registry metadata changes. In practice, this is the command that pushes the Python registry definition into the database-backed shared catalog.
+   - `seed_tools` is designed to be rerun safely. It updates matching rows by tool name instead of creating duplicates, so it works both for first-time seeding and for refreshing existing catalog metadata after registry changes.
+4. Seed or create the workspace definition.
+   - Run `python manage.py seed_workspace_tools --workspace <workspace>` or create the `ToolDefinition` manually in admin.
+   - `seed_workspace_tools` reads from the shared `Tool` catalog, not directly from `registry.py`, and creates or updates workspace-scoped `ToolDefinition` rows for the selected workspace.
+   - The command copies shared catalog fields down into each workspace definition, including `name`, `description`, `args_schema`, `default_risk_level`, and `default_requires_approval`, so the workspace starts from the current shared baseline.
+   - By default, `seed_workspace_tools` seeds released tools only and leaves definitions disabled unless `--enable-all` is passed. Use `--include-unreleased` only when you intentionally want unreleased shared tools to appear in that workspace.
+   - Ensure the workspace `ToolDefinition.tool` foreign key is linked to the shared `Tool` row and `enabled=True` if the tool should be selectable.
+5. Grant the tool to the agent.
+   - Create or enable the `AgentToolGrant` row for the target agent and tool.
+   - The effective prompt tool set is built from `ToolDefinition` + `AgentToolGrant` + release gating, so seeding alone is not enough.
+6. Confirm approval and risk defaults.
+   - Verify the shared catalog defaults (`Tool.risk`, `Tool.requires_approval`) and any workspace overrides (`ToolDefinition.default_risk_level`, `ToolDefinition.default_requires_approval`).
+   - Make sure dangerous or write-capable tools require approval unless there is a deliberate reason not to.
+7. Keep agent metadata in sync.
+   - If you use `Agent.tool_policy_json["selected_tools"]` for admin metadata, add the tool name there as well.
+   - Treat that JSON as metadata only; it does not replace the real `ToolDefinition` / `AgentToolGrant` permission rows.
+
+------------------------------------------------------------------------
+
 ## Run Lifecycle & Snapshotting
 
 Runs advance through a deterministic sequence:

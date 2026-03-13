@@ -7,8 +7,9 @@ from typing import Dict, List
 
 from fastapi.responses import JSONResponse
 
+from ..config import PYTHON_INTERPRETER, PYTHON_INTERPRETER_SOURCE
 from ..models import RunCommandArgs, TypecheckArgs
-from ..sandbox import safe_join
+from .python_runner_support import detect_missing_python_module, missing_python_module_response
 from .run_command import run_command
 
 TYPECHECK_DEFAULT_ARGS: Dict[str, List[str]] = {
@@ -43,9 +44,9 @@ def _build_command(run_dir: Path, args: TypecheckArgs) -> List[str]:
         return list(args.cmd or [])
 
     if args.tool == "pyright":
-        command = ["python", "-m", "pyright"]
+        command = [PYTHON_INTERPRETER, "-m", "pyright"]
     elif args.tool == "mypy":
-        command = ["python", "-m", "mypy"]
+        command = [PYTHON_INTERPRETER, "-m", "mypy"]
     elif args.tool == "tsc":
         command = ["npx", "tsc"]
     else:
@@ -134,7 +135,18 @@ def _parse_tsc(stdout: str) -> List[Dict[str, object]]:
     return diagnostics
 
 
-def run_typecheck(run_dir: Path, args: TypecheckArgs):
+def _invoke_run_command(run_dir: Path, run_args: RunCommandArgs, policy: dict | None):
+    if policy is None:
+        return run_command(run_dir, run_args)
+    try:
+        return run_command(run_dir, run_args, policy)
+    except TypeError as exc:
+        if "positional arguments but 3 were given" not in str(exc):
+            raise
+        return run_command(run_dir, run_args)
+
+
+def run_typecheck(run_dir: Path, args: TypecheckArgs, policy: dict | None = None):
     try:
         command = _build_command(run_dir, args)
     except ValueError as exc:
@@ -146,7 +158,7 @@ def run_typecheck(run_dir: Path, args: TypecheckArgs):
         timeout_ms=args.timeout_ms,
         max_output_bytes=args.max_output_bytes,
     )
-    response = run_command(run_dir, run_args)
+    response = _invoke_run_command(run_dir, run_args, policy)
     try:
         payload = json.loads(response.body)
     except json.JSONDecodeError as exc:  # pragma: no cover
@@ -156,6 +168,17 @@ def run_typecheck(run_dir: Path, args: TypecheckArgs):
         return response
 
     result = payload["result"]
+    expected_module = None
+    if args.tool in {"pyright", "mypy"}:
+        expected_module = args.tool
+        missing_module = detect_missing_python_module(result, (expected_module,))
+        if missing_module:
+            return missing_python_module_response(
+                tool_name="typecheck_runner",
+                module_name=missing_module,
+                result=result,
+                details={"runner_tool": args.tool},
+            )
     stdout = result.get("stdout", "")
     stderr = result.get("stderr", "")
     diagnostics: List[Dict[str, object]] = []
@@ -200,5 +223,7 @@ def run_typecheck(run_dir: Path, args: TypecheckArgs):
         "parse_mode": parse_mode,
         "parse_source": parse_source,
         "parse_warning": parse_warning,
+        "python_interpreter": PYTHON_INTERPRETER if args.tool in {"pyright", "mypy"} else None,
+        "python_interpreter_source": PYTHON_INTERPRETER_SOURCE if args.tool in {"pyright", "mypy"} else None,
     }
     return JSONResponse(status_code=200, content={"ok": True, "result": final})

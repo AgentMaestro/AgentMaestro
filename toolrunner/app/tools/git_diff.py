@@ -6,8 +6,8 @@ from typing import List
 
 from fastapi.responses import JSONResponse
 
+from ..config import resolve_path_from_base, resolve_policy_path
 from ..models import GitDiffArgs, RunCommandArgs
-from ..sandbox import safe_join
 from .run_command import run_command
 
 
@@ -29,11 +29,12 @@ def _normalize_newlines(text: str) -> str:
     return text.replace("\r\n", "\n").replace("\r", "\n")
 
 
-def run_git_diff(run_dir: Path, args: GitDiffArgs):
+def run_git_diff(run_dir: Path, args: GitDiffArgs, policy: dict | None = None):
     try:
-        repo_path = safe_join(run_dir, args.repo_dir or ".")
+        repo_path = resolve_policy_path(run_dir, args.repo_dir or ".", policy)
     except ValueError as exc:
-        return _error_response("PATH_OUTSIDE_WORKSPACE", str(exc))
+        error_code = "PATH_OUTSIDE_WORKSPACE" if "path traversal outside of workspace" in str(exc) else "PATH_NOT_ALLOWED"
+        return _error_response(error_code, str(exc))
 
     command: List[str] = ["git", "diff"]
     if args.staged:
@@ -41,14 +42,15 @@ def run_git_diff(run_dir: Path, args: GitDiffArgs):
     if args.detect_renames:
         command.append("--find-renames")
     if args.context_lines is not None:
-        command.extend(["-U", str(args.context_lines)])
+        command.append(f"-U{args.context_lines}")
     normalized_paths: List[str] = []
     if args.paths:
         for rel_path in args.paths:
             try:
-                target = safe_join(repo_path, rel_path)
+                target = resolve_path_from_base(repo_path, rel_path, policy)
             except ValueError as exc:
-                return _error_response("PATH_OUTSIDE_WORKSPACE", str(exc))
+                error_code = "PATH_OUTSIDE_WORKSPACE" if "path traversal outside of workspace" in str(exc) else "PATH_NOT_ALLOWED"
+                return _error_response(error_code, str(exc))
             try:
                 rel = target.relative_to(repo_path).as_posix()
             except ValueError:

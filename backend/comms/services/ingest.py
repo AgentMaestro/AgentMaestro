@@ -19,9 +19,15 @@ from comms.models import (
 from control.models import ControlConversation, ControlMessage, IngestEvent
 from control.services.messaging import broadcast_control_message
 from comms.transports.base import NormalizedEvent
+from comms.services.agent_chat_bridge import forward_transport_user_message
 from comms.services.outbound import send_telegram_message
 
 logger = logging.getLogger(__name__)
+
+
+def _identity_label(identity: ExternalIdentity, event_username: Optional[str] = None) -> str:
+    candidate = (identity.role_hint or event_username or identity.username or identity.display_name or identity.external_user_id or '').strip()
+    return candidate or str(identity.external_user_id)
 
 
 def _normalize_user_id(value: Optional[str]) -> Optional[str]:
@@ -178,6 +184,26 @@ def ingest_normalized_event(
             ingest_event.save(update_fields=["result_meta"])
             return str(control_conversation.uuid), pairing_message.id
 
+    if not restricted and event.kind == "message":
+        from comms.services.remote_ops import handle_remote_text_command
+
+        remote_message = handle_remote_text_command(
+            conversation=conversation,
+            control_conversation=control_conversation,
+            text=message_text,
+            transport_key=transport.key,
+            source_message_id=source_message_id,
+            performed_by=_identity_label(identity, event.from_username),
+            external_user_id=incoming_user_id,
+        )
+        if remote_message:
+            ingest_event.result_meta = {
+                "conversation_uuid": str(control_conversation.uuid),
+                "control_message_id": remote_message.id,
+            }
+            ingest_event.save(update_fields=["result_meta"])
+            return str(control_conversation.uuid), remote_message.id
+
     if restricted:
         unauthorized_payload = dict(payload)
         unauthorized_payload["unauthorized_user_id"] = incoming_user_id
@@ -197,11 +223,39 @@ def ingest_normalized_event(
         ingest_event.save(update_fields=["result_meta"])
         return str(control_conversation.uuid), control_message.id
 
+    if event.kind == "message":
+        forwarded_run_id, forward_error = forward_transport_user_message(
+            conversation=conversation,
+            text=message_text,
+            author_label=_identity_label(identity, event.from_username),
+            source_transport=transport.key,
+            source_message_id=source_message_id,
+        )
+        if forwarded_run_id:
+            ingest_event.result_meta = {
+                "run_id": forwarded_run_id,
+                "forwarded_to_agent_chat": True,
+            }
+            ingest_event.save(update_fields=["result_meta"])
+            return None, None
+        if forward_error:
+            _send_pairing_notification(
+                endpoint,
+                conversation.external_conversation_id,
+                forward_error,
+            )
+            ingest_event.result_meta = {
+                "forwarded_to_agent_chat": False,
+                "forward_error": forward_error,
+            }
+            ingest_event.save(update_fields=["result_meta"])
+            return None, None
+
     control_message = ControlMessage.objects.create(
         conversation=control_conversation,
         direction="in",
         author_type="transport_user",
-        author_label=str(identity),
+        author_label=_identity_label(identity, event.from_username),
         text=message_text,
         payload=payload,
         source_transport=transport.key,
@@ -216,16 +270,30 @@ def ingest_normalized_event(
     ingest_event.save(update_fields=["result_meta"])
 
     if event.kind == "callback":
+        from comms.services.remote_ops import handle_remote_callback
         from control.handlers import handle_approval_callback
 
-        handle_approval_callback(
+        callback_message = handle_remote_callback(
             conversation=control_conversation,
             event=event,
             transport_key=transport.key,
-            performed_by=event.from_username
-            or identity.display_name
-            or identity.external_user_id,
+            performed_by=_identity_label(identity, event.from_username),
+            external_user_id=incoming_user_id,
         )
+        if callback_message is None:
+            callback_message = handle_approval_callback(
+                conversation=control_conversation,
+                event=event,
+                transport_key=transport.key,
+                performed_by=_identity_label(identity, event.from_username),
+            )
+        if callback_message is not None:
+            ingest_event.result_meta = {
+                "conversation_uuid": str(control_conversation.uuid),
+                "control_message_id": callback_message.id,
+            }
+            ingest_event.save(update_fields=["result_meta"])
+            return str(control_conversation.uuid), callback_message.id
 
     return str(control_conversation.uuid), control_message.id
 
@@ -297,7 +365,6 @@ def _maybe_handle_pairing_command(
     now = timezone.now()
     pairing = (
         PendingPairing.objects.select_for_update()
-        .select_related("agent")
         .filter(
             endpoint=endpoint,
             status=PendingPairing.STATUS_PENDING,
@@ -329,7 +396,15 @@ def _maybe_handle_pairing_command(
 
     pairing.mark_claimed(conversation.external_conversation_id)
     agent = pairing.agent
+    identity = ExternalIdentity.objects.filter(
+        transport=endpoint.transport,
+        external_user_id=str(event.from_user_id),
+    ).first()
     if agent:
+        owner_label = (getattr(agent.owner, "username", "") or "").strip().lower()
+        if identity and owner_label and identity.role_hint != owner_label:
+            identity.role_hint = owner_label
+            identity.save(update_fields=["role_hint"])
         agent.default_conversation = control_conversation
         agent.save(update_fields=["default_conversation"])
 

@@ -4,8 +4,8 @@ import os
 import subprocess
 from pathlib import Path
 
+from ..config import resolve_policy_path
 from ..limits import truncate_output, validate_command
-from ..sandbox import safe_join
 
 
 def run_shell(
@@ -15,11 +15,12 @@ def run_shell(
     timeout_s: int,
     max_output_bytes: int,
     env: dict[str, str] | None = None,
+    policy: dict | None = None,
 ) -> tuple[int | None, str, str, Path]:
     if not cmd:
         raise ValueError("cmd is required")
     validate_command(cmd[0])
-    working_dir = safe_join(run_dir, cwd or ".")
+    working_dir = resolve_policy_path(run_dir, cwd or ".", policy)
     merged_env = os.environ.copy()
     if env:
         merged_env.update(env)

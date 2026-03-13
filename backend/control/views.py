@@ -4,6 +4,7 @@ from typing import Iterable, Optional
 
 import logging
 
+from django.conf import settings
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
 from django.http import JsonResponse
@@ -15,7 +16,7 @@ from django.views.decorators.http import require_http_methods
 import httpx
 
 from agents.models import Agent
-from comms.models import PendingPairing, Transport, TransportEndpoint
+from comms.models import PendingPairing, Transport, TransportEndpoint, generate_callback_token
 from comms.services.outbound import get_telegram_bot_info, send_telegram_text
 from control.models import ControlConversation, ControlMessage
 from control.services.messaging import broadcast_control_message
@@ -115,13 +116,15 @@ def chat_send(request, uuid):
 def connect_telegram(request, agent_uuid):
     agent = get_object_or_404(Agent, id=agent_uuid)
     transport, _ = Transport.objects.get_or_create(
-        key="telegram", defaults={"display_name": "Telegram"}
+        key="telegram", defaults={"display_name": "Telegram", "mode": "both"}
     )
     endpoint = _find_agent_endpoint(agent, transport)
     bot_info = _bot_info_from_config(endpoint)
     allow_user_value = _allow_user_ids_value(endpoint)
     pairing = None
     pairing_status_url = None
+    webhook_url = _telegram_webhook_url(endpoint) if endpoint else None
+    webhook_secret = _telegram_webhook_secret(endpoint) if endpoint else ""
 
     if bot_info and endpoint:
         pairing = _pending_pairing_for_agent(agent, endpoint)
@@ -132,26 +135,24 @@ def connect_telegram(request, agent_uuid):
         raw_token = (request.POST.get("bot_token") or "").strip()
         allow_user_input = request.POST.get("allow_user_ids", "")
         allow_user_ids = _parse_allow_user_ids(allow_user_input)
-        allow_user_value = ", ".join(allow_user_ids)
 
-        if not endpoint:
-            endpoint = TransportEndpoint(transport=transport, kind="bot")
-        config = dict(endpoint.config or {})
-        config.update(
+        draft_endpoint = endpoint or TransportEndpoint(transport=transport, kind="bot")
+        draft_config = dict(draft_endpoint.config or {})
+        draft_config.update(
             {
                 "bot_token_env": bot_token_env,
                 "allow_user_ids": allow_user_ids,
-                "agent_id": str(agent.id),
+                "webhook_secret": str(draft_config.get("webhook_secret") or generate_callback_token(20)),
             }
         )
+        draft_config.pop("agent_id", None)
         if raw_token:
-            config["bot_token"] = raw_token
-        endpoint.config = config
-        endpoint.kind = "bot"
-        endpoint.save()
+            draft_config["bot_token"] = raw_token
+        draft_endpoint.config = draft_config
+        draft_endpoint.kind = "bot"
 
         try:
-            bot_data = get_telegram_bot_info(endpoint)
+            bot_data = get_telegram_bot_info(draft_endpoint)
         except httpx.HTTPStatusError as exc:
             detail = _format_telegram_error(exc)
             messages.error(request, f"Unable to validate Telegram token: {detail}")
@@ -165,17 +166,32 @@ def connect_telegram(request, agent_uuid):
                         bot_data.get("last_name"),
                     ],
                 )
-            ).strip()
-            bot_display_name = bot_display_name or bot_username
+            ).strip() or bot_username
+            endpoint = _find_shared_endpoint_for_bot(
+                transport=transport,
+                bot_id=str(bot_data.get("id") or ""),
+                bot_username=bot_username,
+                bot_token_env=bot_token_env,
+            ) or (endpoint if endpoint and endpoint.pk else TransportEndpoint(transport=transport, kind="bot"))
+            config = dict(endpoint.config or {})
+            merged_allowed_ids = sorted({*map(str, config.get("allow_user_ids") or []), *allow_user_ids})
             config.update(
                 {
+                    "bot_token_env": bot_token_env,
+                    "allow_user_ids": merged_allowed_ids,
                     "bot_id": bot_data.get("id"),
                     "bot_username": bot_username,
                     "bot_name": bot_display_name,
+                    "webhook_secret": str(config.get("webhook_secret") or draft_config.get("webhook_secret") or generate_callback_token(20)),
                 }
             )
+            config.pop("agent_id", None)
+            if raw_token:
+                config["bot_token"] = raw_token
+            endpoint.kind = "bot"
             endpoint.config = config
-            endpoint.save(update_fields=["config"])
+            endpoint.save()
+            allow_user_value = ", ".join(merged_allowed_ids)
             messages.success(
                 request,
                 f"Connected to @{bot_username}" if bot_username else "Connected to Telegram bot",
@@ -188,10 +204,14 @@ def connect_telegram(request, agent_uuid):
             pairing_status_url = reverse(
                 "ui:pairing_status", kwargs={"pairing_uuid": pairing.uuid}
             )
+            webhook_url = _telegram_webhook_url(endpoint)
+            webhook_secret = _telegram_webhook_secret(endpoint)
 
     if bot_info and endpoint and not pairing:
         pairing = _pending_pairing_for_agent(agent, endpoint)
         pairing_status_url = reverse("ui:pairing_status", kwargs={"pairing_uuid": pairing.uuid})
+        webhook_url = _telegram_webhook_url(endpoint)
+        webhook_secret = _telegram_webhook_secret(endpoint)
 
     context = {
         "agent": agent,
@@ -199,6 +219,8 @@ def connect_telegram(request, agent_uuid):
         "pairing": pairing,
         "pairing_status_url": pairing_status_url,
         "allow_user_ids": allow_user_value,
+        "webhook_url": webhook_url,
+        "webhook_secret": webhook_secret,
     }
     return render(request, "control/connect_telegram.html", context)
 
@@ -228,9 +250,49 @@ def pairing_status(request, pairing_uuid):
 
 
 def _find_agent_endpoint(agent: Agent, transport: Transport) -> Optional[TransportEndpoint]:
-    for endpoint in TransportEndpoint.objects.filter(transport=transport, kind="bot"):
+    default_conversation = getattr(agent, "default_conversation", None)
+    if default_conversation is not None:
+        comms_conversation = getattr(default_conversation, "comms_conversation", None)
+        if (
+            comms_conversation is not None
+            and comms_conversation.transport_id == transport.id
+            and comms_conversation.endpoint_id
+        ):
+            return comms_conversation.endpoint
+    pairing = (
+        PendingPairing.objects.filter(agent=agent, endpoint__transport=transport)
+        .select_related("endpoint")
+        .order_by("-created_at")
+        .first()
+    )
+    if pairing is not None:
+        return pairing.endpoint
+    return (
+        TransportEndpoint.objects.filter(transport=transport, kind="bot")
+        .order_by("-id")
+        .first()
+    )
+
+
+def _find_shared_endpoint_for_bot(
+    *,
+    transport: Transport,
+    bot_id: str,
+    bot_username: str,
+    bot_token_env: str,
+) -> Optional[TransportEndpoint]:
+    endpoints = TransportEndpoint.objects.filter(transport=transport, kind="bot").order_by("-id")
+    for endpoint in endpoints:
         config = endpoint.config or {}
-        if str(config.get("agent_id")) == str(agent.id):
+        if bot_id and str(config.get("bot_id") or "") == bot_id:
+            return endpoint
+    for endpoint in endpoints:
+        config = endpoint.config or {}
+        if bot_username and str(config.get("bot_username") or "") == bot_username:
+            return endpoint
+    for endpoint in endpoints:
+        config = endpoint.config or {}
+        if bot_token_env and str(config.get("bot_token_env") or "") == bot_token_env:
             return endpoint
     return None
 
@@ -273,3 +335,16 @@ def _bot_info_from_config(endpoint: Optional[TransportEndpoint]) -> Optional[dic
     if username or name:
         return {"username": username or "", "name": name or username or ""}
     return None
+
+
+def _telegram_webhook_url(endpoint: Optional[TransportEndpoint]) -> Optional[str]:
+    if not endpoint:
+        return None
+    base_url = getattr(settings, "AGENTMAESTRO_BASE_URL", "http://127.0.0.1:8000").rstrip("/")
+    return f"{base_url}{reverse('comms:telegram_webhook', kwargs={'endpoint_id': endpoint.id})}"
+
+
+def _telegram_webhook_secret(endpoint: Optional[TransportEndpoint]) -> str:
+    if not endpoint or not endpoint.config:
+        return ""
+    return str(endpoint.config.get("webhook_secret") or "")

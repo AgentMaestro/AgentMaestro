@@ -7,6 +7,7 @@ from core.models import Workspace, WorkspaceMembership
 from runs.models import AgentRun, AgentStep
 from tools.models import Tool, ToolDefinition, ToolGroup, ToolRisk, ToolCall
 from tools.services.approval_grants import GRANT_MODE_PATH_PREFIX
+from tools.services.command_guardrails import ToolCommandGuardrailError
 from tools.services.approvals import (
     approve_tool_call,
     clear_tool_approval_grants,
@@ -46,6 +47,27 @@ def _build_tool_environment(suffix: str):
     )
     AgentStep.objects.create(run=run, step_index=0, kind=AgentStep.Kind.TOOL_CALL, payload={})
     return run, tool, user
+
+
+@pytest.mark.django_db(transaction=True)
+def test_request_tool_call_rejects_run_command_alias_before_creation():
+    run, tool, user = _build_tool_environment("guardrail")
+    tool.name = "run_command"
+    tool.save(update_fields=["name", "slug", "updated_at"])
+    ToolDefinition.objects.filter(workspace=run.workspace, tool=tool).update(name=tool.name)
+
+    with pytest.raises(ToolCommandGuardrailError):
+        request_tool_call_approval(
+            run_id=str(run.id),
+            tool_name=tool.name,
+            args={"cmd": ["cmd", "/C", "cd", r"smoke\git-wave2\repo", "&&", "git", "add", "notes.txt"], "cwd": "."},
+            requires_approval=True,
+        )
+
+    run.refresh_from_db()
+    assert run.status == AgentRun.Status.RUNNING
+    assert ToolCall.objects.filter(run=run).count() == 0
+
 
 
 @pytest.mark.django_db(transaction=True)

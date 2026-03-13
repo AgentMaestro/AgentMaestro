@@ -7,3 +7,7 @@ Security is a top priority for AgentMaestro. If you believe you have discovered 
 3. **Respect policies:** Avoid any actions that could unintentionally disrupt production systems, compromise customer data, or violate laws. We appreciate reports from researchers who prioritize safe, ethical disclosure.
 
 We aim to respond promptly and appreciate your help keeping AgentMaestro secure.
+
+### Prompt Secret Scrubbing
+
+All agent chat prompts are automatically passed through a server-side secret scrubber before they ever reach the LLM. If the scrubber detects high-confidence secrets (API keys, auth tokens, etc.), the values are masked, the submission is still delivered, and a system message reassures the user that Maestro has their back. This ensures no accidental secrets propagate beyond the chat UI.

@@ -121,3 +121,20 @@ def test_git_status_not_git_repo(monkeypatch, tmp_path: Path):
 
     assert not payload["ok"]
     assert payload["error"]["code"].endswith("NOT_FOUND")
+
+
+def test_git_status_absolute_repo_dir(monkeypatch, tmp_path: Path):
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    captured: dict[str, object] = {}
+
+    def fake_run_command(run_dir, run_args):
+        captured["run_dir"] = run_dir
+        return _fake_success_response(stdout="")
+
+    monkeypatch.setattr(git_status_module, "run_command", fake_run_command)
+    response = run_git_status(tmp_path, GitStatusArgs(repo_dir=str(repo_root)))
+    payload = _payload(response)
+
+    assert payload["ok"]
+    assert captured["run_dir"] == repo_root.resolve()

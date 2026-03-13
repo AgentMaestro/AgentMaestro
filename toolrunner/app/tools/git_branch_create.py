@@ -6,8 +6,8 @@ from typing import List
 
 from fastapi.responses import JSONResponse
 
+from ..config import resolve_policy_path
 from ..models import GitBranchCreateArgs, RunCommandArgs
-from ..sandbox import safe_join
 from .run_command import run_command
 
 
@@ -25,11 +25,40 @@ def _error_response(code: str, message: str, details: dict | None = None, status
     )
 
 
-def run_git_branch_create(run_dir: Path, args: GitBranchCreateArgs):
+def _decode_response(response: JSONResponse, phase: str) -> tuple[dict | None, JSONResponse | None]:
     try:
-        repo_path = safe_join(run_dir, args.repo_dir or ".")
+        payload = json.loads(response.body.decode("utf-8"))
+    except json.JSONDecodeError:
+        return None, _error_response(
+            "INTERNAL",
+            f"failed to parse {phase} response",
+            {"phase": phase},
+        )
+    if not payload.get("ok"):
+        return None, response
+    result = payload.get("result") or {}
+    if result.get("timed_out"):
+        timeout_ms = result.get("timeout_ms")
+        timeout_source = result.get("timeout_source") or "args.timeout_ms"
+        return None, _error_response(
+            "TIMED_OUT",
+            f"git_branch_create timed out during {phase} after {timeout_ms} ms (source={timeout_source})",
+            {
+                "phase": phase,
+                "timed_out": True,
+                "timeout_ms": timeout_ms,
+                "timeout_source": timeout_source,
+            },
+        )
+    return result, None
+
+
+def run_git_branch_create(run_dir: Path, args: GitBranchCreateArgs, policy: dict | None = None):
+    try:
+        repo_path = resolve_policy_path(run_dir, args.repo_dir or ".", policy)
     except ValueError as exc:
-        return _error_response("PATH_OUTSIDE_WORKSPACE", str(exc))
+        error_code = "PATH_OUTSIDE_WORKSPACE" if "path traversal outside of workspace" in str(exc) else "PATH_NOT_ALLOWED"
+        return _error_response(error_code, str(exc))
 
     command: List[str] = ["git", "branch"]
     if args.force:
@@ -45,16 +74,9 @@ def run_git_branch_create(run_dir: Path, args: GitBranchCreateArgs):
             max_output_bytes=args.max_output_bytes,
         ),
     )
-    try:
-        payload = json.loads(branch_result.body.decode("utf-8"))
-    except json.JSONDecodeError:
-        return _error_response(
-            "INTERNAL",
-            "failed to parse branch response",
-            {"phase": "branch"},
-        )
-    if not payload.get("ok"):
-        return branch_result
+    _branch_payload, branch_error = _decode_response(branch_result, "branch")
+    if branch_error:
+        return branch_error
 
     did_checkout = False
     if args.checkout:
@@ -67,16 +89,9 @@ def run_git_branch_create(run_dir: Path, args: GitBranchCreateArgs):
                 max_output_bytes=args.max_output_bytes,
             ),
         )
-        try:
-            checkout_payload = json.loads(checkout_result.body.decode("utf-8"))
-        except json.JSONDecodeError:
-            return _error_response(
-                "INTERNAL",
-                "failed to parse checkout response",
-                {"phase": "checkout"},
-            )
-        if not checkout_payload.get("ok"):
-            return checkout_result
+        _checkout_payload, checkout_error = _decode_response(checkout_result, "checkout")
+        if checkout_error:
+            return checkout_error
         did_checkout = True
 
     return JSONResponse(

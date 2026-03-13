@@ -11,10 +11,13 @@ from ..config import (
     combine_exclude_patterns,
     is_under_allowed_root,
     normalize_search_root,
+    policy_allowed_roots,
     policy_metadata,
+    policy_runtime_root,
+    resolve_policy_path,
 )
 from ..models import RepoTreeArgs
-from ..sandbox import is_safe_path, safe_join
+from ..sandbox import is_safe_path
 from .path_filters import first_matching_pattern, glob_candidates, matches_patterns
 
 
@@ -59,28 +62,31 @@ def _path_under_allowed_root(path: Path, extra_roots: tuple[Path, ...] | None = 
     return is_under_allowed_root(path, extra_roots)
 
 
-def list_repo_tree(run_dir: Path, args: RepoTreeArgs):
+def list_repo_tree(run_dir: Path, args: RepoTreeArgs, policy: dict | None = None):
+    requested_path = args.path or "."
+    policy_roots = policy_allowed_roots(policy)
     if args.absolute_root:
         root_path = Path(args.absolute_root).resolve()
-        if not _path_under_allowed_root(root_path):
+        if not _path_under_allowed_root(root_path, policy_roots):
             return _error(
                 "PATH_NOT_ALLOWED",
                 "absolute_root not permitted",
                 extra_patterns=args.exclude_globs,
             )
-        run_dir = root_path
+        workspace_context = root_path
     else:
+        candidate = Path(requested_path)
         try:
-            root_path = safe_join(run_dir, args.root)
+            root_path = resolve_policy_path(run_dir, requested_path, policy)
         except ValueError as exc:
-            return _error(
-                "PATH_OUTSIDE_WORKSPACE",
-                str(exc),
-                extra_patterns=args.exclude_globs,
-            )
-        root_path = root_path.resolve()
+            error_code = "PATH_OUTSIDE_WORKSPACE" if "path traversal outside of workspace" in str(exc) else "PATH_NOT_ALLOWED"
+            return _error(error_code, str(exc), extra_patterns=args.exclude_globs)
+        if candidate.is_absolute():
+            workspace_context = root_path
+        else:
+            workspace_context = policy_runtime_root(policy, "repo_root") or run_dir.resolve()
 
-    allowed_context_roots = (normalize_search_root(run_dir),)
+    allowed_context_roots = (normalize_search_root(workspace_context), *policy_roots)
     if not _path_under_allowed_root(root_path, allowed_context_roots):
         return _error(
             "PATH_NOT_ALLOWED",
@@ -113,7 +119,7 @@ def list_repo_tree(run_dir: Path, args: RepoTreeArgs):
             truncated = True
             return False
         try:
-            actual = path.relative_to(run_dir).as_posix()
+            actual = path.relative_to(workspace_context).as_posix()
         except ValueError:
             return True
         entry: dict[str, object] = {
@@ -133,7 +139,7 @@ def list_repo_tree(run_dir: Path, args: RepoTreeArgs):
     def _should_exclude(path: Path, is_dir: bool) -> bool:
         if not combined_patterns:
             return False
-        candidates = glob_candidates(path, root_path, run_dir, is_dir)
+        candidates = glob_candidates(path, root_path, workspace_context, is_dir)
         pattern = first_matching_pattern(candidates, combined_patterns)
         if not pattern:
             return False
@@ -144,7 +150,7 @@ def list_repo_tree(run_dir: Path, args: RepoTreeArgs):
     def _passes_include(path: Path, is_dir: bool) -> bool:
         if not args.include_globs:
             return True
-        candidates = glob_candidates(path, root_path, run_dir, is_dir)
+        candidates = glob_candidates(path, root_path, workspace_context, is_dir)
         return bool(candidates) and matches_patterns(candidates, args.include_globs)
 
     def _depth_for_entry(path: Path) -> int:
@@ -170,7 +176,7 @@ def list_repo_tree(run_dir: Path, args: RepoTreeArgs):
             depth = _depth_for_entry(root_path)
             _append_entry(root_path, "file", depth)
         result = {
-            "root": args.root,
+            "root": args.path,
             "max_depth": args.max_depth,
             "truncated": truncated,
             "entries": sorted(entries, key=lambda entry: entry["path"]),
@@ -196,7 +202,7 @@ def list_repo_tree(run_dir: Path, args: RepoTreeArgs):
         next_dirs: list[str] = []
         for directory in dirs:
             dir_path = current_root_path / directory
-            if not is_safe_path(run_dir, dir_path):
+            if not is_safe_path(root_path, dir_path):
                 continue
             dir_depth = _depth_for_entry(dir_path)
             if args.max_depth >= 0 and dir_depth > args.max_depth:
@@ -218,7 +224,7 @@ def list_repo_tree(run_dir: Path, args: RepoTreeArgs):
                 continue
             if _should_exclude(file_path, False):
                 continue
-            if not is_safe_path(run_dir, file_path):
+            if not is_safe_path(root_path, file_path):
                 continue
             if args.include_files and _passes_include(file_path, False):
                 if not _append_entry(file_path, "file", file_depth):
@@ -228,7 +234,7 @@ def list_repo_tree(run_dir: Path, args: RepoTreeArgs):
             break
 
     result = {
-        "root": args.root,
+        "root": args.path,
         "max_depth": args.max_depth,
         "truncated": truncated,
         "entries": sorted(entries, key=lambda entry: entry["path"]),

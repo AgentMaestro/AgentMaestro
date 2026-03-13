@@ -157,6 +157,18 @@ class QuotaManager:
             raise KeyError(f"Unknown quota key {limit_key}")
         return LIMIT_CONFIGS[limit_key]
 
+    def _set_contains(self, key: str, member: str) -> bool:
+        if hasattr(self.redis, "sismember"):
+            return bool(self.redis.sismember(key, member))
+        if hasattr(self.redis, "smembers"):
+            return member in set(self.redis.smembers(key))
+        storage = getattr(self.redis, "storage", None)
+        if isinstance(storage, dict):
+            value = storage.get(key)
+            if isinstance(value, set):
+                return member in value
+        return False
+
     def record_request(self, workspace_id: str, limit_key: str) -> int:
         limit = self._get_limit(limit_key)
         if limit.limit_type != LimitType.RATE:
@@ -196,6 +208,9 @@ class QuotaManager:
             raise ValueError(f"{limit_key} is not a concurrency limit")
         key = self._concurrency_key(scope_id, limit_key)
         current = self.redis.scard(key)
+        if self._set_contains(key, member):
+            self.redis.expire(key, limit.window_seconds)
+            return current
         if current >= limit.max_concurrency:
             raise LimitExceeded(limit=limit, current=current)
         added = self.redis.sadd(key, member)

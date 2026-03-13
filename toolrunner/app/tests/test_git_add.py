@@ -105,3 +105,32 @@ def test_git_add_invalid_all_with_paths():
 def test_git_add_intent_requires_paths():
     with pytest.raises(Exception) as excinfo:
         GitAddArgs(intent_to_add=True)
+
+
+def test_git_add_absolute_repo_dir_and_path(monkeypatch, tmp_path: Path):
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    target = repo_root / "tracked.py"
+    target.write_text("print('x')\n")
+    commands: list[list[str]] = []
+
+    def fake_run_command(run_dir, run_args):
+        commands.append(run_args.cmd)
+        return _response(
+            {
+                "exit_code": 0,
+                "duration_ms": 1,
+                "timed_out": False,
+                "stdout": "ok",
+                "stderr": "",
+                "stdout_truncated": False,
+                "stderr_truncated": False,
+            }
+        )
+
+    monkeypatch.setattr(git_add_module, "run_command", fake_run_command)
+    response = run_git_add(tmp_path, GitAddArgs(repo_dir=str(repo_root), paths=[str(target)]))
+    payload = json.loads(response.body.decode("utf-8"))
+    assert payload["ok"]
+    assert payload["result"]["staged_paths"] == ["tracked.py"]
+    assert commands[0][-1] == "tracked.py"
