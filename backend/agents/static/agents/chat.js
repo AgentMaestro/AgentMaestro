@@ -703,7 +703,11 @@
     };
 
     const handleToolStatus = (payload) => {
-        updateToolCardStatus(payload.tool_call_id, payload.status || "Queued", payload.error);
+        updateToolCardStatus(
+            payload.tool_call_id,
+            payload.status || "Queued",
+            payload.error || payload.detail || payload.approval_note,
+        );
     };
 
     const handleToolResult = (payload) => {
@@ -734,12 +738,10 @@
         let payload;
         try {
             payload = JSON.parse(event.data);
-            console.log("[WS RCV] ****************  START WS MESSAGE ******************");
             console.log("[WS RCV] type=", payload?.type, "activeRunId=", activeRunId);
 
         } catch (error) {
             console.warn("Unable to parse agent chat payload", error);
-            console.log("[WS RCV] ****************  END WS MESSAGE ******************");
             return;
         }
         const isTransportLog =
@@ -763,7 +765,6 @@
                 if (textarea) {
                     textarea.removeAttribute("disabled");
                 }
-                console.log("[WS RCV] ****************  END WS MESSAGE ******************");
                 return;
             case "message":
                 appendMessage({
@@ -774,62 +775,51 @@
                     timestamp: payload.timestamp,
                 });
                 console.log("[WS MESSAGE] Message appended");
-                console.log("[WS RCV] ****************  END WS MESSAGE ******************");
                 return;
             case "tool_request":
                 handleToolRequest(payload);
                 setStatus("Tool requested");
                 console.log("[WS TOOL_REQUEST] tool_request run_id=", activeRunId, payload);
-                console.log("[WS RCV] ****************  END WS MESSAGE ******************");
                 return;
 
             case "debug_group_echo":
                 console.log("[WS] debug_group_echo received:", payload);
-                console.log("[WS RCV] ****************  END WS MESSAGE ******************");
                 return;
             case "tool_call_completed":
                 console.log("[WS] tool_call_completed DIAG:", payload);
-                console.log("[WS RCV] ****************  END WS MESSAGE ******************");
                 return;
             case "tool_status":
                 handleToolStatus(payload.data || payload);
                 console.log("[WS] tool_status run_id=", activeRunId, payload);
-                console.log("[WS RCV] ****************  END WS MESSAGE ******************");
                 return;
             case "tool_result":
                 handleToolResult(payload);
                 setStatus("Connected");
                 console.log("[WS] tool_result run_id=", activeRunId, payload);
-                console.log("[WS RCV] ****************  END WS MESSAGE ******************");
                 return;
             case "tool_denied":
                 handleToolDenied(payload);
                 setStatus("Connected");
                 console.log("[WS] tool_denied run_id=", activeRunId, payload);
-                console.log("[WS RCV] ****************  END WS MESSAGE ******************");
                 return;
             case "approval_grants":
                 setApprovalGrants(payload.grants || []);
                 console.log("[WS] approval_grants run_id=", activeRunId, payload);
-                console.log("[WS RCV] ****************  END WS MESSAGE ******************");
                 return;
             case "pause_run_ack":
                 setRunStatus(payload.status || "PAUSED");
                 appendSystemMessage("Run paused. Messages will queue until you resume.", "run_control");
                 console.log("[WS] pause_run_ack run_id=", activeRunId, payload);
-                console.log("[WS RCV] ****************  END WS MESSAGE ******************");
                 return;
             case "resume_run_ack":
                 setRunStatus(payload.status || "RUNNING");
                 appendSystemMessage("Run resumed.", "run_control");
                 console.log("[WS] resume_run_ack run_id=", activeRunId, payload);
-                console.log("[WS RCV] ****************  END WS MESSAGE ******************");
                 return;
             case "cancel_run_ack":
                 setRunStatus(payload.status || "CANCELED");
                 appendSystemMessage("Run canceled.", "run_control");
                 console.log("[WS] cancel_run_ack run_id=", activeRunId, payload);
-                console.log("[WS RCV] ****************  END WS MESSAGE ******************");
                 return;
             case ["error", "tool_error"]:
                 appendMessage({
@@ -841,7 +831,6 @@
                 });
                 setStatus("Error");
                 console.log("[WS ERROR] Payload = ", payload);
-                console.log("[WS RCV] ****************  END WS MESSAGE ******************");
                 return;
             case "system":
                 appendMessage(
@@ -854,11 +843,9 @@
                     {keepThinking: isTransportLog}
                 );
                 console.log("[WS] System Payload = ", payload);
-                console.log("[WS RCV] ****************  END WS MESSAGE ******************");
                 return;
             default:
                 console.log("[WS] Unhandled WS message:", payload);
-                console.log("[WS RCV] ****************  END WS MESSAGE ******************");
                 return;
         }
     };

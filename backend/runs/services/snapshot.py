@@ -27,6 +27,7 @@ RUN_FIELDS = [
     "started_at",
     "ended_at",
     "error_summary",
+    "previous_response_id",
     "correlation_id",
     "created_at",
     "updated_at",

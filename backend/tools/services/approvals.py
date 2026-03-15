@@ -42,7 +42,7 @@ def _schedule_approvals_push(*, workspace_id: str, event: str, data: Dict[str, A
     transaction.on_commit(_do_broadcast)
 
 
-def _broadcast_tool_call_status(tool_call: ToolCall, *, status: Optional[str] = None, reason: Optional[str] = None) -> None:
+def _broadcast_tool_call_status(tool_call: ToolCall, *, status: Optional[str] = None, reason: Optional[str] = None, detail: Optional[str] = None) -> None:
     payload = {
         "tool_call_id": str(tool_call.id),
         "tool_name": tool_call.tool_name,
@@ -55,11 +55,42 @@ def _broadcast_tool_call_status(tool_call: ToolCall, *, status: Optional[str] = 
     }
     if reason:
         payload["error"] = reason
+    if detail:
+        payload["detail"] = detail
     append_event(
         run_id=str(tool_call.run_id),
         event_type=TOOL_CALL_STATUS_EVENT,
         payload=payload,
         correlation_id=tool_call.correlation_id,
+    )
+
+
+def _publish_terminal_tool_feedback(tool_call: ToolCall, *, payload: dict[str, Any]) -> None:
+    from tools.services.execution import _publish_tool_result_ready
+    from tools.services.result_bus import store_tool_result
+
+    tool_call.refresh_from_db(fields=["provider_call_id"])
+    provider_call_id = str(tool_call.provider_call_id or "").strip() or None
+    result_payload = {
+        "tool_call_id": str(tool_call.id),
+        "status": tool_call.status,
+        "tool_name": tool_call.tool_name,
+        "stdout": tool_call.stdout or "",
+        "stderr": tool_call.stderr or "",
+        "result": payload,
+        "run_id": str(tool_call.run_id),
+        "correlation_id": str(tool_call.correlation_id),
+        "provider_call_id": provider_call_id,
+    }
+    store_tool_result(
+        run_id=str(tool_call.run_id),
+        tool_call_id=str(tool_call.id),
+        payload=result_payload,
+    )
+    _publish_tool_result_ready(
+        str(tool_call.run_id),
+        str(tool_call.id),
+        provider_call_id=provider_call_id,
     )
 
 
@@ -315,6 +346,12 @@ def approve_tool_call(*, tool_call_id: str, user, grant_mode: str = GRANT_MODE_O
         },
     )
 
+    _broadcast_tool_call_status(
+        tool_call,
+        status=ToolCall.Status.QUEUED,
+        detail=(f"Approved by {getattr(user, 'username', None) or actor_label}." if (getattr(user, 'username', None) or actor_label) else "Approved."),
+    )
+
     _schedule_execution_after_commit(str(tool_call.id))
 
     return tool_call
@@ -369,6 +406,24 @@ def deny_tool_call(*, tool_call_id: str, user, reason: Optional[str] = None, act
     )
 
     _broadcast_tool_call_status(tool_call, status=ToolCall.Status.DENIED, reason=reason)
+
+    transaction.on_commit(
+        lambda: _publish_terminal_tool_feedback(
+            tool_call,
+            payload={
+                "ok": False,
+                "error": {
+                    "code": "tool_runner.DENIED",
+                    "message": reason or "Denied",
+                    "details": {
+                        "tool_call_id": str(tool_call.id),
+                        "tool_name": tool_call.tool_name,
+                        "denied_by": getattr(user, "username", None) or actor_label,
+                    },
+                },
+            },
+        )
+    )
 
     return tool_call
 

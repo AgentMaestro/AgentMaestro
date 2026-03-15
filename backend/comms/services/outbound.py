@@ -41,6 +41,19 @@ def send_transport_message(
     return asyncio.run(_inner())
 
 
+def edit_transport_message(
+    endpoint: TransportEndpoint, chat_id: str, message_id: str, text: str, **kwargs: object
+) -> Mapping[str, object]:
+    if endpoint.transport.key != "telegram":
+        raise RuntimeError(f"Transport {endpoint.transport.key} does not support outbound edits yet")
+
+    async def _inner() -> Mapping[str, object]:
+        async with TelegramAdapter() as adapter:
+            return await adapter.edit_message(endpoint, chat_id, message_id, text, **kwargs)
+
+    return asyncio.run(_inner())
+
+
 def send_conversation_message(
     conversation: CommsConversation,
     text: str,
@@ -110,6 +123,40 @@ def send_conversation_message(
         "comms_message_id": comms_message.id,
         "control_message_id": control_message_id,
     }
+
+
+def edit_conversation_message(
+    conversation: CommsConversation,
+    message_id: str,
+    text: str,
+    **kwargs: object,
+) -> Mapping[str, object]:
+    if not conversation.external_conversation_id:
+        raise ValueError("Conversation is missing an external chat ID")
+    endpoint = _find_bot_endpoint(conversation)
+    response = edit_transport_message(
+        endpoint,
+        conversation.external_conversation_id,
+        message_id,
+        text,
+        **kwargs,
+    )
+    result = (response or {}).get("result") or {}
+    CommsMessage.objects.filter(
+        conversation=conversation,
+        external_message_id=str(message_id or ""),
+    ).update(
+        text=text,
+        payload={
+            "edited_at": timezone.now().isoformat(),
+            "response": result,
+            "request": kwargs or {},
+        },
+        created_at=timezone.now(),
+    )
+    conversation.updated_at = timezone.now()
+    conversation.save(update_fields=["updated_at"])
+    return {"response": response}
 
 
 def send_telegram_message(

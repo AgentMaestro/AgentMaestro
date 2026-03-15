@@ -9,6 +9,7 @@ from django.urls import reverse
 from core.models import Workspace
 
 from .admin import AgentAdmin
+from .consumers import _scrub_input_text
 from agents.current import agent_creation_context
 from agents.tooling import TOOL_REGISTRY
 from tools.models import AgentToolGrant, Tool, ToolDefinition, ToolGroup, ToolRisk
@@ -91,6 +92,12 @@ class AgentModelTests(TestCase):
                 soul="Context soul",
             )
         self.assertEqual(agent.owner, other_user)
+
+    def test_scrub_input_text_preserves_normal_urls(self):
+        text = "Please fetch https://example.com/docs?q=agentmaestro and review it."
+        sanitized, secret_types = _scrub_input_text(text)
+        self.assertEqual(sanitized, text)
+        self.assertEqual(secret_types, [])
 
 
 class AgentWizardViewTests(TestCase):

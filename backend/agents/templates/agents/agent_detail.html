@@ -37,6 +37,77 @@
       margin-bottom: 1rem;
       border: 1px solid rgba(255, 255, 255, 0.08);
     }
+
+    .sidebar-split {
+      display: flex;
+      flex-direction: column;
+      min-height: calc(100vh - 140px);
+      gap: 1rem;
+    }
+
+    .sidebar-global,
+    .sidebar-agent {
+      display: flex;
+      flex-direction: column;
+    }
+
+    .sidebar-agent {
+      flex: 1;
+    }
+
+    .sidebar-section-label {
+      font-size: 0.72rem;
+      font-weight: 800;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: rgba(248, 250, 252, 0.56);
+      margin-bottom: 0.65rem;
+    }
+
+    .sidebar-action-link {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 100%;
+      min-height: 44px;
+      border-radius: 10px;
+      font-weight: 700;
+      text-decoration: none;
+      background: linear-gradient(135deg, #0284c7, #0ea5e9);
+      color: #f8fafc;
+      border: 1px solid rgba(56, 189, 248, 0.4);
+      box-sizing: border-box;
+    }
+
+    .agent-sidebar-meta {
+      display: grid;
+      gap: 0.75rem;
+      margin-bottom: 1rem;
+    }
+
+    .agent-sidebar-meta-card {
+      background: rgba(255, 255, 255, 0.03);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 12px;
+      padding: 0.8rem 0.9rem;
+    }
+
+    .agent-sidebar-meta-label {
+      display: block;
+      font-size: 0.73rem;
+      font-weight: 800;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: rgba(248, 250, 252, 0.54);
+      margin-bottom: 0.25rem;
+    }
+
+    .agent-sidebar-meta-value {
+      color: #f8fafc;
+      font-size: 0.96rem;
+      line-height: 1.35;
+      word-break: break-word;
+    }
     .sandbox-list {
       margin: 0.25rem 0 0;
       padding-left: 1.25rem;
@@ -140,7 +211,7 @@
     }
 
     .agent-tool {
-      padding: 0.6rem 0;
+      padding: 0.7rem 0;
       border-bottom: 1px solid rgba(255, 255, 255, 0.08);
     }
 
@@ -148,8 +219,36 @@
       border-bottom: none;
     }
 
+    .agent-tool strong {
+      display: block;
+      margin-bottom: 0.15rem;
+    }
+
     .agent-tool small {
       color: rgba(248, 250, 252, 0.6);
+    }
+
+    .agent-tool details {
+      margin-top: 0.35rem;
+    }
+
+    .agent-tool summary {
+      cursor: pointer;
+      font-size: 0.85rem;
+      font-weight: 700;
+      color: rgba(125, 211, 252, 0.96);
+      list-style: none;
+    }
+
+    .agent-tool summary::-webkit-details-marker {
+      display: none;
+    }
+
+    .agent-tool details p {
+      margin: 0.45rem 0 0;
+      color: rgba(248, 250, 252, 0.84);
+      font-size: 0.9rem;
+      line-height: 1.4;
     }
 
     .chat-stream-header {
@@ -536,69 +635,90 @@
 <body>
   <div class="chat-shell agent-detail-shell">
     <aside class="chat-list agent-detail-panel">
-      <div class="chat-list-header">
-        <div>
-          <h3>{{ agent.name }}</h3>
-          <p>{{ workspace.name }}</p>
-          <p class="chat-stream-subtitle">
-            Policy: {{ agent.policy_name }}
-          </p>
-        </div>
-      </div>
       <div class="chat-list-body">
-        <div class="agent-info-card">
-          <strong>Model</strong>
-          <p>{{ agent.default_model }} · Temperature {{ agent.temperature }}</p>
-        </div>
-        {% if sandbox_paths %}
-          <div class="sandbox-card">
-            <strong>Allowed paths</strong>
-            <ul class="sandbox-list">
-              {% for path in sandbox_paths %}
-                <li>{{ path }}</li>
-              {% endfor %}
-            </ul>
-          </div>
-        {% endif %}
+        <div class="sidebar-split">
+          <section class="sidebar-global">
+            <div class="sidebar-section-label">global</div>
+            <div class="agent-info-card">
+              <a href="{% url 'agents:agent_create' %}?reset=1" target="_blank" rel="noopener" class="sidebar-action-link">New Agent</a>
+            </div>
+          </section>
 
-        {% if telegram_status %}
-          <div class="sandbox-card telegram-card">
-            <strong>Telegram</strong>
-            {% if telegram_status.detail %}
-              <p style="margin-bottom: 0.5rem;">{{ telegram_status.detail }}</p>
-            {% endif %}
-            <a href="{{ telegram_status.cta_url }}" class="status-action success">
-              {{ telegram_status.cta_label }}
-            </a>
-          </div>
-        {% endif %}
+          <section class="sidebar-agent">
+            <div class="sidebar-section-label">agent</div>
 
-        <details class="agent-tools" open>
-          <summary class="agent-tools-summary">
-            Tools available ({{ tool_count }})
-          </summary>
-          {% if tools %}
-            {% for tool in tools %}
-              <div class="agent-tool">
-                <strong>{{ tool.name }}</strong>
-                <small>{{ tool.group }} · Risk {{ tool.risk }}</small>
-                <p>{{ tool.description }}</p>
+            <div class="agent-sidebar-meta">
+              <div class="agent-sidebar-meta-card">
+                <span class="agent-sidebar-meta-label">name</span>
+                <div class="agent-sidebar-meta-value">{{ agent.name }}</div>
               </div>
-            {% endfor %}
-          {% else %}
-            <p class="chat-empty-state">No tools granted yet.</p>
-          {% endif %}
-        </details>
+              <div class="agent-sidebar-meta-card">
+                <span class="agent-sidebar-meta-label">workspace</span>
+                <div class="agent-sidebar-meta-value">{{ workspace.name }}</div>
+              </div>
+              <div class="agent-sidebar-meta-card">
+                <span class="agent-sidebar-meta-label">policy</span>
+                <div class="agent-sidebar-meta-value">{{ agent.policy_name }}</div>
+              </div>
+              <div class="agent-sidebar-meta-card">
+                <span class="agent-sidebar-meta-label">model</span>
+                <div class="agent-sidebar-meta-value">{{ agent.default_model }} - Temperature {{ agent.temperature }}</div>
+              </div>
+            </div>
 
-        <section class="approval-grants-card" data-approval-grants-shell>
-          <div class="approval-grants-header">
-            <strong>Run approvals</strong>
-            <button type="button" class="approval-grants-clear" data-clear-approval-grants disabled>Clear all</button>
-          </div>
-          <div class="approval-grants-list" data-approval-grants-list></div>
-          <p class="approval-grants-empty" data-approval-grants-empty>No temporary approvals for this run.</p>
-        </section>
+            {% if sandbox_paths %}
+              <div class="sandbox-card">
+                <strong>Allowed paths</strong>
+                <ul class="sandbox-list">
+                  {% for path in sandbox_paths %}
+                    <li>{{ path }}</li>
+                  {% endfor %}
+                </ul>
+              </div>
+            {% endif %}
 
+            {% if telegram_status %}
+              <div class="sandbox-card telegram-card">
+                <strong>Telegram</strong>
+                {% if telegram_status.detail %}
+                  <p style="margin-bottom: 0.5rem;">{{ telegram_status.detail }}</p>
+                {% endif %}
+                <a href="{{ telegram_status.cta_url }}" class="status-action success">
+                  {{ telegram_status.cta_label }}
+                </a>
+              </div>
+            {% endif %}
+
+            <details class="agent-tools" open>
+              <summary class="agent-tools-summary">
+                Tools available ({{ tool_count }})
+              </summary>
+              {% if tools %}
+                {% for tool in tools %}
+                  <div class="agent-tool">
+                    <strong>{{ tool.name }}</strong>
+                    <small>{{ tool.group }} - Risk {{ tool.risk }}</small>
+                    <details>
+                      <summary>tool text</summary>
+                      <p>{{ tool.description }}</p>
+                    </details>
+                  </div>
+                {% endfor %}
+              {% else %}
+                <p class="chat-empty-state">No tools granted yet.</p>
+              {% endif %}
+            </details>
+
+            <section class="approval-grants-card" data-approval-grants-shell>
+              <div class="approval-grants-header">
+                <strong>Run approvals</strong>
+                <button type="button" class="approval-grants-clear" data-clear-approval-grants disabled>Clear all</button>
+              </div>
+              <div class="approval-grants-list" data-approval-grants-list></div>
+              <p class="approval-grants-empty" data-approval-grants-empty>No temporary approvals for this run.</p>
+            </section>
+          </section>
+        </div>
       </div>
     </aside>
 

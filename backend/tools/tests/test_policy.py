@@ -125,3 +125,48 @@ class SeedWorkspaceToolsTests(TestCase):
         call_command("seed_workspace_tools", "--workspace", self.workspace.name)
         definition.refresh_from_db()
         self.assertTrue(definition.enabled)
+
+
+class SeedDevToolsCommandTests(TestCase):
+    def setUp(self):
+        User = get_user_model()
+        self.user = User.objects.create_user(username="devowner", password="password", email="devowner@example.com")
+        self.workspace = Workspace.objects.create(name="Dev Workspace")
+        self.agent_one = Agent.objects.create(
+            workspace=self.workspace,
+            owner=self.user,
+            name="jeeves",
+            description="dev agent one",
+            default_model="gpt-5",
+            temperature=Decimal("0.70"),
+            soul="",
+            policy_name="react",
+        )
+        self.agent_two = Agent.objects.create(
+            workspace=self.workspace,
+            owner=self.user,
+            name="maestro",
+            description="dev agent two",
+            default_model="gpt-5",
+            temperature=Decimal("0.70"),
+            soul="",
+            policy_name="react",
+        )
+
+    def test_seed_dev_tools_enables_workspace_tools_and_grants_agents(self):
+        call_command("seed_dev_tools", "--workspace", self.workspace.name)
+
+        self.assertTrue(ToolDefinition.objects.filter(workspace=self.workspace, enabled=True).exists())
+        file_read = Tool.objects.get(name="file_read")
+        self.assertTrue(AgentToolGrant.objects.filter(agent=self.agent_one, tool=file_read, enabled=True).exists())
+        self.assertTrue(AgentToolGrant.objects.filter(agent=self.agent_two, tool=file_read, enabled=True).exists())
+
+        self.agent_one.refresh_from_db()
+        self.assertIn("file_read", self.agent_one.tool_policy_json.get("selected_tools", []))
+
+    def test_seed_dev_tools_can_target_specific_agent(self):
+        call_command("seed_dev_tools", "--workspace", self.workspace.name, "--agent", self.agent_one.name)
+
+        file_read = Tool.objects.get(name="file_read")
+        self.assertTrue(AgentToolGrant.objects.filter(agent=self.agent_one, tool=file_read, enabled=True).exists())
+        self.assertFalse(AgentToolGrant.objects.filter(agent=self.agent_two, tool=file_read).exists())

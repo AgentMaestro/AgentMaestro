@@ -75,6 +75,7 @@ class AgentRun(TimeStampedModel):
     started_at = models.DateTimeField(null=True, blank=True, db_index=True)
     ended_at = models.DateTimeField(null=True, blank=True, db_index=True)
     error_summary = models.TextField(blank=True, default="")
+    previous_response_id = models.CharField(max_length=128, blank=True, default="")
     current_task_id = models.CharField(max_length=64, blank=True, default="")
     correlation_id = models.UUIDField(default=uuid.uuid4, db_index=True)
     archived_at = models.DateTimeField(null=True, blank=True, db_index=True)
@@ -173,6 +174,28 @@ class RunArchive(TimeStampedModel):
 
     def __str__(self):
         return f"Archive for {self.run_id} at {self.created_at.isoformat()}"
+
+
+class RunMemory(TimeStampedModel):
+    run = models.OneToOneField(
+        AgentRun,
+        on_delete=models.CASCADE,
+        related_name="memory",
+    )
+    objective = models.TextField(blank=True, default="")
+    current_plan = models.TextField(blank=True, default="")
+    key_facts = models.JSONField(default=list, blank=True)
+    open_questions = models.JSONField(default=list, blank=True)
+    recent_tool_results = models.JSONField(default=list, blank=True)
+    notes = models.TextField(blank=True, default="")
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["updated_at"]),
+        ]
+
+    def __str__(self):
+        return f"RunMemory for {self.run_id}"
 
 
 class Artifact(TimeStampedModel):

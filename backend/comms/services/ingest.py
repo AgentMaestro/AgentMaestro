@@ -19,6 +19,7 @@ from comms.models import (
 from control.models import ControlConversation, ControlMessage, IngestEvent
 from control.services.messaging import broadcast_control_message
 from comms.transports.base import NormalizedEvent
+from comms.transports.telegram import TelegramAdapter
 from comms.services.agent_chat_bridge import forward_transport_user_message
 from comms.services.outbound import send_telegram_message
 
@@ -288,6 +289,15 @@ def ingest_normalized_event(
                 performed_by=_identity_label(identity, event.from_username),
             )
         if callback_message is not None:
+            if event.callback_query_id and transport.key == "telegram":
+                try:
+                    async def _answer_callback():
+                        async with TelegramAdapter() as adapter:
+                            await adapter.answer_callback_query(endpoint, event.callback_query_id)
+                    from asgiref.sync import async_to_sync
+                    async_to_sync(_answer_callback)()
+                except Exception as exc:  # pragma: no cover - best effort
+                    logger.debug("Unable to answer telegram callback query %s: %s", event.callback_query_id, exc)
             ingest_event.result_meta = {
                 "conversation_uuid": str(control_conversation.uuid),
                 "control_message_id": callback_message.id,

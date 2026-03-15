@@ -4,6 +4,10 @@
   <form method="post" action="?step={{ current_step }}">
     {% csrf_token %}
     <div class="form-section">
+      <div>
+        <label>Tool access</label>
+        <div class="helper">Only enabled workspace tools can be granted here. Each selected tool creates an initial agent grant.</div>
+      </div>
       {% if tool_sections %}
         {% for section in tool_sections %}
           <div class="tool-section">
@@ -13,11 +17,15 @@
                 <div class="tool-card">
                   <div class="tool-card__info">
                     <strong>{{ tool.definition.tool.name }}</strong>
-                    <p>{{ tool.definition.description|default:tool.definition.tool.description }}</p>
+                    <div class="tool-card__group">{{ section.name }}</div>
                     <span class="risk-tag {{ tool.definition.tool.risk|lower }}">
                       {{ tool.definition.tool.risk|title }}
                     </span>
                   </div>
+                  <details class="tool-card__details">
+                    <summary>tool text</summary>
+                    <p>{{ tool.definition.description|default:tool.definition.tool.description }}</p>
+                  </details>
                   <div class="tool-card__toggle">
                     <label for="{{ tool.field.id_for_label }}">Enabled</label>
                     {{ tool.field }}

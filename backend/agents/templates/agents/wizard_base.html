@@ -5,71 +5,269 @@
   <meta charset="utf-8">
   <title>Agent Wizard</title>
   <style>
+    :root {
+      color-scheme: dark;
+      --bg: #030712;
+      --panel: #0f172a;
+      --panel-2: #111827;
+      --border: rgba(148, 163, 184, 0.18);
+      --text: #e5eefb;
+      --muted: rgba(226, 232, 240, 0.68);
+      --accent: #22c55e;
+      --accent-2: #38bdf8;
+      --warning: #f59e0b;
+      --shadow: 0 18px 45px rgba(2, 6, 23, 0.36);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
     body {
       font-family: "Segoe UI", system-ui, sans-serif;
-      background: #f5f7fa;
+      background: radial-gradient(circle at top, rgba(56, 189, 248, 0.12), transparent 32%), var(--bg);
       margin: 0;
       padding: 0;
-      line-height: 1.4;
+      line-height: 1.45;
+      color: var(--text);
+      min-height: 100vh;
+    }
+
+    a {
+      color: inherit;
+      text-decoration: none;
     }
 
     .wizard-shell {
-      max-width: 900px;
-      margin: 0 auto;
-      padding: 32px 24px 48px;
+      width: min(1380px, calc(100vw - 32px));
+      margin: 20px auto;
+      display: grid;
+      grid-template-columns: 280px minmax(0, 1fr);
+      gap: 18px;
+      align-items: start;
+    }
+
+    .wizard-sidebar,
+    .wizard-card {
+      background: rgba(15, 23, 42, 0.94);
+      border: 1px solid var(--border);
+      border-radius: 18px;
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(12px);
+    }
+
+    .wizard-sidebar {
+      position: sticky;
+      top: 20px;
+      display: flex;
+      flex-direction: column;
+      min-height: calc(100vh - 40px);
+      padding: 18px;
+      gap: 18px;
+    }
+
+    .wizard-sidebar-section {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .wizard-sidebar-section--grow {
+      flex: 1;
+    }
+
+    .wizard-section-label {
+      font-size: 0.72rem;
+      font-weight: 800;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: rgba(148, 163, 184, 0.86);
+    }
+
+    .wizard-brand {
+      padding-bottom: 12px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .wizard-brand h1 {
+      margin: 0;
+      font-size: 1.28rem;
+    }
+
+    .wizard-brand p {
+      margin: 6px 0 0;
+      color: var(--muted);
+      font-size: 0.92rem;
+    }
+
+    .wizard-action-button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0.4rem;
+      width: 100%;
+      min-height: 44px;
+      padding: 0.75rem 0.95rem;
+      border-radius: 12px;
+      font-weight: 700;
+      background: linear-gradient(135deg, #0284c7, #0ea5e9);
+      color: #f8fafc;
+      border: 1px solid rgba(14, 165, 233, 0.6);
+    }
+
+    .wizard-secondary-link {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 100%;
+      min-height: 40px;
+      padding: 0.65rem 0.9rem;
+      border-radius: 10px;
+      border: 1px solid var(--border);
+      color: var(--muted);
+      font-size: 0.9rem;
+    }
+
+    .wizard-nav {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .wizard-nav-item {
+      display: block;
+      padding: 0.85rem 0.9rem;
+      border-radius: 14px;
+      border: 1px solid rgba(148, 163, 184, 0.12);
+      background: rgba(15, 23, 42, 0.62);
+      transition: border-color 0.15s ease, transform 0.15s ease, background-color 0.15s ease;
+    }
+
+    .wizard-nav-item:hover {
+      border-color: rgba(56, 189, 248, 0.34);
+      transform: translateY(-1px);
+    }
+
+    .wizard-nav-item.active {
+      border-color: rgba(56, 189, 248, 0.58);
+      background: rgba(14, 165, 233, 0.14);
+    }
+
+    .wizard-nav-item.complete {
+      border-color: rgba(34, 197, 94, 0.34);
+      background: rgba(34, 197, 94, 0.08);
+    }
+
+    .wizard-nav-item.muted {
+      opacity: 0.72;
+      cursor: default;
+    }
+
+    .wizard-nav-label-row {
+      display: flex;
+      justify-content: space-between;
+      gap: 0.6rem;
+      align-items: baseline;
+    }
+
+    .wizard-nav-label {
+      font-weight: 700;
+      text-transform: lowercase;
+    }
+
+    .wizard-nav-state {
+      font-size: 0.72rem;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: rgba(148, 163, 184, 0.82);
+    }
+
+    .wizard-nav-value {
+      margin-top: 0.18rem;
+      font-size: 0.88rem;
+      color: var(--muted);
+      word-break: break-word;
     }
 
     .wizard-card {
-      background: #ffffff;
-      border-radius: 12px;
-      padding: 32px;
-      box-shadow: 0 10px 32px rgba(30, 38, 54, 0.12);
+      padding: 28px 30px 34px;
+    }
+
+    .wizard-card-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 1rem;
+      margin-bottom: 24px;
+    }
+
+    .wizard-card-header h2 {
+      margin: 0;
+      font-size: 1.6rem;
+    }
+
+    .wizard-card-header p {
+      margin: 6px 0 0;
+      color: var(--muted);
     }
 
     .wizard-stepper {
       display: flex;
+      flex-wrap: wrap;
       gap: 0.5rem;
-      margin-bottom: 24px;
+      justify-content: flex-end;
     }
 
     .wizard-step {
-      flex: 1;
-      padding: 12px;
+      padding: 0.55rem 0.85rem;
       text-align: center;
-      border-radius: 8px;
-      background: #e9ecef;
-      font-weight: 600;
-      font-size: 0.95rem;
-      color: #4a4a4a;
+      border-radius: 999px;
+      background: rgba(148, 163, 184, 0.12);
+      font-weight: 700;
+      font-size: 0.83rem;
+      color: var(--muted);
+      border: 1px solid transparent;
     }
 
     .wizard-step.active {
-      background: linear-gradient(135deg, #0070f3, #00c4ff);
-      color: #ffffff;
+      background: rgba(14, 165, 233, 0.16);
+      color: #f8fafc;
+      border-color: rgba(56, 189, 248, 0.42);
     }
 
     .form-section {
       display: grid;
-      gap: 16px;
+      gap: 18px;
     }
 
     label {
-      font-weight: 600;
+      font-weight: 700;
       display: block;
       margin-bottom: 6px;
+      color: #f8fafc;
     }
 
     input[type="text"],
+    input[type="number"],
     textarea,
     select,
     .steps-summary {
       width: 100%;
-      border-radius: 8px;
-      border: 1px solid #d0d7de;
-      padding: 10px 12px;
+      border-radius: 12px;
+      border: 1px solid rgba(148, 163, 184, 0.2);
+      padding: 12px 14px;
       font-size: 1rem;
       font-family: inherit;
       box-sizing: border-box;
+      background: rgba(15, 23, 42, 0.82);
+      color: var(--text);
+    }
+
+    input:focus,
+    textarea:focus,
+    select:focus {
+      outline: 2px solid rgba(56, 189, 248, 0.34);
+      border-color: rgba(56, 189, 248, 0.42);
     }
 
     textarea {
@@ -78,170 +276,97 @@
 
     .helper {
       font-size: 0.85rem;
-      color: #6c737f;
-      margin-top: 4px;
+      color: var(--muted);
+      margin-top: 5px;
+    }
+
+    ul.errorlist {
+      margin: 8px 0 0;
+      padding-left: 1.15rem;
+      color: #fca5a5;
     }
 
     button,
     .button-link {
-      padding: 10px 16px;
-      border-radius: 8px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 44px;
+      padding: 0.75rem 1.1rem;
+      border-radius: 12px;
       border: none;
       font-size: 0.95rem;
-      font-weight: 600;
+      font-weight: 700;
       cursor: pointer;
+      text-decoration: none;
     }
 
-    button.primary {
-      background: #0066ff;
+    button.primary,
+    .button-link.primary {
+      background: linear-gradient(135deg, #0284c7, #0ea5e9);
       color: #fff;
     }
 
-    button.secondary {
-      background: transparent;
-      border: 1px solid #d0d7de;
-      color: #1d1d1d;
+    button.secondary,
+    .button-link.secondary {
+      background: rgba(148, 163, 184, 0.1);
+      border: 1px solid rgba(148, 163, 184, 0.18);
+      color: #f8fafc;
     }
 
-    .tool-row {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      padding: 12px;
-      border-radius: 10px;
-      background: #f9fbff;
-      border: 1px solid #e4e9f2;
-    }
-
-    .tool-row + .tool-row {
-      margin-top: 12px;
-    }
-
-    .tool-row p {
-      margin: 0;
-      max-width: 70%;
-      color: #2c2d33;
-    }
-
-    .tool-grid {
+    .tool-grid,
+    .review-tool-grid {
       display: grid;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
+      grid-template-columns: repeat(2, minmax(0, 1fr));
       gap: 16px;
       margin-top: 12px;
     }
 
-    @media (max-width: 1000px) {
-      .tool-grid {
-        grid-template-columns: repeat(2, minmax(0, 1fr));
-      }
-    }
-
-    @media (max-width: 650px) {
-      .tool-grid {
-        grid-template-columns: 1fr;
-      }
-    }
-
     .tool-card {
-      border: 1px solid #e4e9f2;
-      border-radius: 14px;
-      background: #f8f9ff;
-      padding: 18px;
+      border: 1px solid rgba(148, 163, 184, 0.16);
+      border-radius: 16px;
+      background: rgba(15, 23, 42, 0.68);
+      padding: 16px;
       display: flex;
       flex-direction: column;
-      justify-content: space-between;
-      min-height: 160px;
+      gap: 12px;
+      min-height: 170px;
+    }
+
+    .tool-card__info strong,
+    .tool-card__meta strong {
+      display: block;
+      font-size: 1rem;
+      margin: 0;
+      color: #f8fafc;
+    }
+
+    .tool-card__group {
+      font-size: 0.8rem;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: rgba(148, 163, 184, 0.88);
+      margin-top: 0.15rem;
     }
 
     .tool-card__info p {
-      margin: 8px 0;
-      color: #2c2d33;
+      margin: 0;
+      color: var(--muted);
     }
 
     .tool-card__toggle {
-      margin-top: 12px;
+      margin-top: auto;
       display: flex;
       align-items: center;
       justify-content: space-between;
+      gap: 0.75rem;
       font-size: 0.9rem;
-      color: #2f2f2f;
+      color: #f8fafc;
     }
 
     .tool-card__toggle label {
-      font-weight: 600;
-    }
-
-    .review-grid {
-      display: grid;
-      gap: 8px;
-    }
-
-    .review-card {
-      border: 1px solid #e4e9f2;
-      border-radius: 12px;
-      background: #ffffff;
-      padding: 8px 12px;
-      box-shadow: 0 4px 16px rgba(15, 23, 42, 0.08);
-    }
-
-    .review-card strong {
-      display: block;
-      margin-bottom: 2px;
-      font-size: 0.95rem;
-    }
-
-    .review-card .steps-summary {
-      background: #f8f9ff;
-      border-radius: 10px;
-      padding: 4px 8px;
-      border: 1px solid #e4e9f2;
-      font-family: inherit;
-      margin-top: 3px;
-      white-space: normal;
-    }
-
-    .review-card .steps-summary .review_step {
-      margin: 1px 0;
-      line-height: 1.25;
-    }
-
-    .review_sandbox_list {
-      margin: 2px 0 0;
-      padding-left: 1.25rem;
-      color: #1f2937;
-    }
-
-    .review_step {
-      margin: 1px 0;
-      line-height: 1.25;
-    }
-
-    .review-card select {
-      padding: 6px 8px;
-      font-size: 0.9rem;
-    }
-
-    .helper {
-      margin-top: 2px;
-    }
-
-    .review-tool-grid {
-      display: grid;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
-      gap: 12px;
-      margin-top: 12px;
-    }
-
-    @media (max-width: 1000px) {
-      .review-tool-grid {
-        grid-template-columns: repeat(2, minmax(0, 1fr));
-      }
-    }
-
-    @media (max-width: 700px) {
-      .review-tool-grid {
-        grid-template-columns: 1fr;
-      }
+      margin: 0;
+      font-weight: 700;
     }
 
     .tool-card__toggle input {
@@ -249,59 +374,189 @@
       height: 22px;
     }
 
+    .tool-card__details {
+      border-top: 1px solid rgba(148, 163, 184, 0.12);
+      padding-top: 10px;
+    }
+
+    .tool-card__details summary {
+      cursor: pointer;
+      color: rgba(125, 211, 252, 0.96);
+      font-size: 0.88rem;
+      font-weight: 700;
+      list-style: none;
+    }
+
+    .tool-card__details summary::-webkit-details-marker {
+      display: none;
+    }
+
+    .tool-card__details p {
+      margin: 8px 0 0;
+      color: var(--muted);
+      font-size: 0.9rem;
+    }
+
+    .review-grid {
+      display: grid;
+      gap: 12px;
+    }
+
+    .review-card {
+      border: 1px solid rgba(148, 163, 184, 0.14);
+      border-radius: 16px;
+      background: rgba(15, 23, 42, 0.72);
+      padding: 14px 16px;
+    }
+
+    .review-card strong {
+      display: block;
+      margin-bottom: 6px;
+      font-size: 0.95rem;
+    }
+
+    .review-card .steps-summary {
+      background: rgba(15, 23, 42, 0.82);
+      border-radius: 12px;
+      padding: 8px 10px;
+      border: 1px solid rgba(148, 163, 184, 0.12);
+      font-family: inherit;
+      margin-top: 3px;
+      white-space: normal;
+    }
+
+    .review_sandbox_list {
+      margin: 4px 0 0;
+      padding-left: 1.1rem;
+      color: var(--text);
+    }
+
+    .review_step {
+      margin: 2px 0;
+      line-height: 1.35;
+    }
+
     .risk-tag {
       display: inline-flex;
       align-items: center;
       justify-content: center;
-      padding: 2px 6px;
+      padding: 0.18rem 0.48rem;
       border-radius: 999px;
-      font-size: 0.75rem;
-      font-weight: 700;
+      font-size: 0.74rem;
+      font-weight: 800;
       color: #fff;
-      margin-top: 6px;
+      margin-top: 8px;
+      width: fit-content;
     }
 
-    .risk-tag.safe {
-      background: #28a745;
-    }
-
-    .risk-tag.elevated {
-      background: #ffc107;
-    }
-
-    .risk-tag.dangerous {
-      background: #dc3545;
-    }
-
-    .toggle input {
-      width: 32px;
-      height: 18px;
-      position: relative;
-    }
-
-    .steps-summary {
-      white-space: pre-wrap;
-      font-family: "Segoe UI", system-ui, monospace;
-    }
+    .risk-tag.safe { background: #15803d; }
+    .risk-tag.elevated { background: #d97706; }
+    .risk-tag.dangerous { background: #b91c1c; }
 
     .messages {
       margin-bottom: 16px;
-      color: #0d6efd;
+      padding: 0.85rem 1rem;
+      border-radius: 12px;
+      border: 1px solid rgba(56, 189, 248, 0.24);
+      background: rgba(2, 132, 199, 0.12);
+      color: #dbeafe;
+    }
+
+    @media (max-width: 1120px) {
+      .wizard-shell {
+        grid-template-columns: 1fr;
+      }
+
+      .wizard-sidebar {
+        position: static;
+        min-height: 0;
+      }
+    }
+
+    @media (max-width: 760px) {
+      .wizard-shell {
+        width: min(100vw - 20px, 100%);
+        margin: 10px auto;
+      }
+
+      .wizard-card {
+        padding: 20px 18px 24px;
+      }
+
+      .wizard-card-header {
+        flex-direction: column;
+      }
+
+      .wizard-stepper {
+        justify-content: flex-start;
+      }
+
+      .tool-grid,
+      .review-tool-grid {
+        grid-template-columns: 1fr;
+      }
     }
   </style>
 </head>
 
 <body>
   <div class="wizard-shell">
-    <div class="wizard-card">
-      <h1>Agent Creation Wizard</h1>
-      <div class="wizard-stepper">
-        {% for step in steps %}
-          <div class="wizard-step {% if step.number == current_step %}active{% endif %}">
-            {{ step.number }} · {{ step.name }}
-          </div>
-        {% endfor %}
+    <aside class="wizard-sidebar">
+      <div class="wizard-brand">
+        <div class="wizard-section-label">agent wizard</div>
+        <h1>Create a new agent</h1>
+        <p>Configure the current agent surface first, then pair transports like Telegram after creation.</p>
       </div>
+
+      <div class="wizard-sidebar-section">
+        <div class="wizard-section-label">global</div>
+        {% for action in wizard_sidebar.global_actions %}
+          <a class="wizard-action-button" href="{{ action.href }}"{% if action.target %} target="{{ action.target }}" rel="noopener"{% endif %}>{{ action.label }}</a>
+        {% endfor %}
+        <a class="wizard-secondary-link" href="{{ wizard_reset_url }}">Start over</a>
+      </div>
+
+      <div class="wizard-sidebar-section wizard-sidebar-section--grow">
+        <div class="wizard-section-label">agent setup</div>
+        <nav class="wizard-nav">
+          {% for item in wizard_sidebar.agent_items %}
+            {% if item.href %}
+              <a class="wizard-nav-item {{ item.state }}" href="{{ item.href }}">
+                <div class="wizard-nav-label-row">
+                  <span class="wizard-nav-label">{{ item.label }}</span>
+                  <span class="wizard-nav-state">{{ item.state }}</span>
+                </div>
+                <div class="wizard-nav-value">{{ item.value }}</div>
+              </a>
+            {% else %}
+              <div class="wizard-nav-item {{ item.state }}">
+                <div class="wizard-nav-label-row">
+                  <span class="wizard-nav-label">{{ item.label }}</span>
+                  <span class="wizard-nav-state">{{ item.state }}</span>
+                </div>
+                <div class="wizard-nav-value">{{ item.value }}</div>
+              </div>
+            {% endif %}
+          {% endfor %}
+        </nav>
+      </div>
+    </aside>
+
+    <main class="wizard-card">
+      <div class="wizard-card-header">
+        <div>
+          <h2>Agent Creation Wizard</h2>
+          <p>Keep the agent core lean here. Telegram and other comms providers are paired after the agent exists.</p>
+        </div>
+        <div class="wizard-stepper">
+          {% for step in steps %}
+            <div class="wizard-step {% if step.number == current_step %}active{% endif %}">
+              {{ step.number }} - {{ step.name }}
+            </div>
+          {% endfor %}
+        </div>
+      </div>
+
       {% if messages %}
         <div class="messages">
           {% for message in messages %}
@@ -309,8 +564,9 @@
           {% endfor %}
         </div>
       {% endif %}
+
       {% block wizard_content %}{% endblock %}
-    </div>
+    </main>
   </div>
 </body>
 

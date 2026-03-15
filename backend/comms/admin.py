@@ -20,9 +20,34 @@ class TransportAdmin(admin.ModelAdmin):
 
 @admin.register(TransportEndpoint)
 class TransportEndpointAdmin(admin.ModelAdmin):
-    list_display = ("transport", "kind")
+    list_display = ("transport", "kind", "paired_agents")
     list_filter = ("transport", "kind")
-    search_fields = ("transport__key", "kind")
+    search_fields = ("transport__key", "kind", "pairings__agent__name", "conversations__control_conversation__default_for_agents__name")
+
+    def get_queryset(self, request):
+        queryset = super().get_queryset(request)
+        return queryset.prefetch_related(
+            "pairings__agent",
+            "conversations__control_conversation__default_for_agents",
+        )
+
+    @admin.display(description="Paired Agent")
+    def paired_agents(self, obj: TransportEndpoint) -> str:
+        names: set[str] = set()
+        for pairing in obj.pairings.all():
+            agent = getattr(pairing, "agent", None)
+            if agent and agent.name:
+                names.add(agent.name)
+        for conversation in obj.conversations.all():
+            control_conversation = getattr(conversation, "control_conversation", None)
+            if not control_conversation:
+                continue
+            for agent in control_conversation.default_for_agents.all():
+                if agent.name:
+                    names.add(agent.name)
+        if not names:
+            return "-"
+        return ", ".join(sorted(names))
 
 
 @admin.register(ExternalIdentity)

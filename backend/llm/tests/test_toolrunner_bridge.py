@@ -8,6 +8,8 @@ import os
 from pathlib import Path
 
 import pytest
+
+from tools.services.execution import _DEFAULT_TOOLRUNNER_SANDBOX_ROOT
 from django.conf import settings
 
 from llm.services.toolrunner_bridge import run_tool
@@ -28,6 +30,7 @@ pytestmark = pytest.mark.skipif(
 
 
 BACKEND_ROOT = Path(settings.BASE_DIR).resolve()
+BRIDGE_SANDBOX_ROOT = Path(os.environ.get("TOOLRUNNER_SANDBOX_ROOT", str(_DEFAULT_TOOLRUNNER_SANDBOX_ROOT))).resolve()
 
 
 def _tool_result_payload(response: dict) -> dict:
@@ -60,7 +63,7 @@ def test_repository_orientation_references_real_folders():
     top_level = {
         entry["path"]
         for entry in entries
-        if entry.get("path") and entry.get("depth", 0) == 0
+        if entry.get("path") and entry.get("depth", 0) == 1
     }
     assert any("agentmaestro" in path.lower() for path in top_level)
     summary = "Top level entries: " + ", ".join(sorted(top_level)[:5])
@@ -80,7 +83,7 @@ def test_targeted_code_lookup_reads_settings():
     payload = _tool_result_payload(response)
     matches = payload.get("matches") or []
     assert matches, "search_code should find the setting key"
-    target_file = matches[0]["path"]
+    target_file = next((match["path"] for match in matches if "settings" in match["path"].replace("\\", "/").lower()), matches[0]["path"])
     read_response = _call_tool(
         "file_read",
         {
@@ -88,7 +91,7 @@ def test_targeted_code_lookup_reads_settings():
             "absolute_root": str(BACKEND_ROOT),
             "mode": "text",
             "encoding": "utf-8",
-            "max_bytes": 4096,
+            "max_bytes": 65536,
         },
     )
     read_payload = _tool_result_payload(read_response)
@@ -98,7 +101,7 @@ def test_targeted_code_lookup_reads_settings():
 
 
 def test_patch_inside_sandbox_and_read_back():
-    target_path = "bridge/llm_payload.json"
+    target_path = str((BRIDGE_SANDBOX_ROOT / "bridge" / "llm_payload.json").resolve())
     initial_content = '{"value":1,"status":"new"}\n'
     write_response = _call_tool(
         "file_write",
@@ -112,7 +115,7 @@ def test_patch_inside_sandbox_and_read_back():
     assert write_response.get("ok"), "file_write should succeed"
     patch_text = """--- a/bridge/llm_payload.json
 +++ b/bridge/llm_payload.json
-@@ -1 +1 @@
+@@ -1,1 +1,1 @@
 -{"value":1,"status":"new"}
 +{"value":2,"status":"patched"}
 """
@@ -146,7 +149,7 @@ def test_shell_exec_lists_sandbox_contents():
                 "-c",
                 "import json,os; print(json.dumps(sorted(os.listdir('.'))))",
             ],
-            "cwd": ".",
+            "cwd": str(BACKEND_ROOT),
         },
     )
     stdout = response.get("meta", {}).get("stdout", "").strip()
@@ -154,6 +157,7 @@ def test_shell_exec_lists_sandbox_contents():
     data = json.loads(stdout)
     assert isinstance(data, list)
     assert data
+    assert any(item.lower() == "agentmaestro" for item in data)
 
 
 def test_python_exec_computes_expected_sha():
@@ -163,5 +167,6 @@ def test_python_exec_computes_expected_sha():
     )
     stdout = response.get("meta", {}).get("stdout", "").strip()
     assert stdout == RUNNER_SHA_STRING
+
 
 

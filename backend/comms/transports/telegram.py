@@ -93,6 +93,24 @@ class TelegramAdapter(TransportAdapter):
         resp.raise_for_status()
         return resp.json()
 
+    async def answer_callback_query(
+        self,
+        endpoint: TransportEndpoint,
+        callback_query_id: str,
+        text: str | None = None,
+        *,
+        show_alert: bool = False,
+    ) -> Mapping[str, Any]:
+        token = self._bot_token(endpoint)
+        body: dict[str, Any] = {"callback_query_id": callback_query_id}
+        if text:
+            body["text"] = text
+        if show_alert:
+            body["show_alert"] = True
+        resp = await self._client.post(self._build_api_url(token, "answerCallbackQuery"), json=body)
+        resp.raise_for_status()
+        return resp.json()
+
     async def get_me(self, endpoint: TransportEndpoint) -> Mapping[str, Any]:
         token = self._bot_token(endpoint)
         resp = await self._client.get(self._build_api_url(token, "getMe"))
@@ -113,9 +131,10 @@ class TelegramAdapter(TransportAdapter):
             callback_query_id: Optional[str],
             callback_data: Optional[str],
             ts: Optional[int],
+            from_payload: Optional[Mapping[str, Any]] = None,
         ) -> None:
             chat = payload.get("chat") or {}
-            from_user = payload.get("from") or {}
+            from_user = from_payload or payload.get("from") or {}
             events.append(
                 NormalizedEvent(
                     kind=kind,
@@ -153,6 +172,7 @@ class TelegramAdapter(TransportAdapter):
                 callback.get("id"),
                 callback.get("data"),
                 callback.get("date") or message.get("date"),
+                callback.get("from") or {},
             )
         return events
 

@@ -271,3 +271,87 @@ def test_execute_tool_call_enforces_agent_sandbox(monkeypatch, tmp_path):
     tool_call.args["cwd"] = str(blocked_dir)
     with pytest.raises(ToolrunnerError):
         execute_tool_call(str(tool_call.id))
+
+
+@override_settings(
+    TOOLRUNNER_URL="http://example/v1/execute",
+    TOOLRUNNER_SECRET="test-secret",
+    TOOLRUNNER_TIMEOUT=5,
+    TOOLRUNNER_OUTPUT_LIMIT=128,
+    TOOLRUNNER_HTTP_TIMEOUT=10,
+)
+def test_execute_native_memory_tool_call_skips_toolrunner_http(monkeypatch, fake_result_bus):
+    tool_call = _build_test_run("native-memory")
+    tool_call.tool_name = "remember"
+    tool_call.args = {
+        "scope_type": "sandbox",
+        "scope_id": "C:/Dev/AgentMaestro",
+        "memory_kind": "semantic",
+        "content": "The backend lives in backend/.",
+        "summary": "backend location",
+        "dedupe_key": "fact:backend-location",
+        "dedupe_mode": "key",
+        "source_kind": "manual_remember",
+        "source_ref": "operator:console",
+        "pinned": True,
+        "expires_at": "2026-03-31T23:59:59Z",
+    }
+    tool_call.save(update_fields=["tool_name", "args", "updated_at"])
+    ToolDefinition.objects.create(workspace=tool_call.run.workspace, name="remember", enabled=True)
+
+    def _fail_client(*args, **kwargs):
+        raise AssertionError("http client should not be used for native memory tools")
+
+    monkeypatch.setattr("tools.services.execution.httpx.Client", _fail_client)
+
+    execute_tool_call(str(tool_call.id))
+
+    tool_call.refresh_from_db()
+    assert tool_call.status == ToolCall.Status.COMPLETED
+    assert tool_call.result["scope_type"] == "sandbox"
+    assert tool_call.result["dedupe_key"] == "fact:backend-location"
+    assert tool_call.result["source_kind"] == "manual_remember"
+    assert tool_call.result["source_ref"] == "operator:console"
+    assert tool_call.result["pinned"] is True
+    assert tool_call.result["expires_at"].startswith("2026-03-31T23:59:59")
+    assert tool_call.result["access_count"] == 1
+    assert tool_call.result["last_accessed_at"]
+    calls, _layer = fake_result_bus
+    assert calls[0][2]["status"] == ToolCall.Status.COMPLETED
+
+
+@override_settings(
+    TOOLRUNNER_URL="http://example/v1/execute",
+    TOOLRUNNER_SECRET="test-secret",
+    TOOLRUNNER_TIMEOUT=5,
+    TOOLRUNNER_OUTPUT_LIMIT=128,
+    TOOLRUNNER_HTTP_TIMEOUT=10,
+)
+def test_execute_native_schedule_task_skips_toolrunner_http(monkeypatch, fake_result_bus):
+    tool_call = _build_test_run("native-schedule")
+    tool_call.tool_name = "schedule_task"
+    tool_call.args = {
+        "title": "daily weather report for Richmond, VA",
+        "task_type": "daily_weather_report",
+        "timezone": "America/New_York",
+        "local_time": "08:00",
+        "execution_payload": {
+            "location": "Richmond, VA",
+            "query": "site:weather.com Richmond VA daily and weekly weather forecast",
+            "source_domain": "weather.com",
+        },
+    }
+    tool_call.save(update_fields=["tool_name", "args", "updated_at"])
+    ToolDefinition.objects.create(workspace=tool_call.run.workspace, name="schedule_task", enabled=True)
+
+    def _fail_client(*args, **kwargs):
+        raise AssertionError("http client should not be used for native scheduling tools")
+
+    monkeypatch.setattr("tools.services.execution.httpx.Client", _fail_client)
+
+    execute_tool_call(str(tool_call.id))
+
+    tool_call.refresh_from_db()
+    assert tool_call.status == ToolCall.Status.COMPLETED
+    assert tool_call.result["task_type"] == "daily_weather_report"
+    assert tool_call.result["scheduled_task_id"]

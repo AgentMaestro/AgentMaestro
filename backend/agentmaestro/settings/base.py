@@ -77,6 +77,7 @@ INSTALLED_APPS = [
     'core',
     'agents',
     'runs',
+    'memory',
     'tools',
     'ui',
     'api',
@@ -208,6 +209,9 @@ CELERY_TASK_ROUTES = {
     "comms.tasks.telegram_poll_scheduler": {"queue": "comms"},
     "comms.tasks.telegram_poll_once": {"queue": "comms"},
     "comms.tasks.expire_remote_approval_tickets_task": {"queue": "comms"},
+    "memory.tasks.run_due_scheduled_tasks": {"queue": "runs"},
+    "memory.tasks.run_scheduled_task_once": {"queue": "runs"},
+    "memory.tasks.run_memory_retention_task": {"queue": "runs"},
 }
 
 ARCHIVE_RETENTION_DAYS = int(os.getenv("ARCHIVE_RETENTION_DAYS", "30"))
@@ -247,8 +251,18 @@ TELEGRAM_BOT_TOKEN = _env_value("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = _env_value("TELEGRAM_CHAT_ID")
 REMOTE_APPROVAL_TTL_MINUTES = int(_env_value("REMOTE_APPROVAL_TTL_MINUTES") or "15")
 REMOTE_APPROVAL_EXPIRY_INTERVAL_SECONDS = int(_env_value("REMOTE_APPROVAL_EXPIRY_INTERVAL_SECONDS") or "60")
-AGENTMAESTRO_BASE_URL = (_env_value("AGENTMAESTRO_BASE_URL") or "http://127.0.0.1:8000").rstrip("/")
+SCHEDULED_TASK_INTERVAL_SECONDS = int(_env_value("SCHEDULED_TASK_INTERVAL_SECONDS") or "60")
+SCHEDULED_TASK_BATCH_LIMIT = int(_env_value("SCHEDULED_TASK_BATCH_LIMIT") or "10")
 
+MEMORY_RETENTION_ENABLED = (_env_value("MEMORY_RETENTION_ENABLED") or "0").lower() in {"1", "true", "yes"}
+MEMORY_RETENTION_DAYS = int(_env_value("MEMORY_RETENTION_DAYS") or "30")
+MEMORY_RETENTION_BATCH_SIZE = int(_env_value("MEMORY_RETENTION_BATCH_SIZE") or "500")
+MEMORY_EPISODIC_DISTILL_GROUP_LIMIT = int(_env_value("MEMORY_EPISODIC_DISTILL_GROUP_LIMIT") or "50")
+MEMORY_RETENTION_INTERVAL_HOURS = int(_env_value("MEMORY_RETENTION_INTERVAL_HOURS") or "24")
+MEMORY_RETENTION_LOW_IMPORTANCE_THRESHOLD = _env_value("MEMORY_RETENTION_LOW_IMPORTANCE_THRESHOLD") or "0.40"
+MEMORY_RETENTION_PROTECTED_IMPORTANCE_THRESHOLD = _env_value("MEMORY_RETENTION_PROTECTED_IMPORTANCE_THRESHOLD") or "0.80"
+
+AGENTMAESTRO_BASE_URL = (_env_value("AGENTMAESTRO_BASE_URL") or "http://127.0.0.1:8000").rstrip("/")
 OPENAI_MODELS_REFRESH_INTERVAL_HOURS = int(os.getenv("OPENAI_MODELS_REFRESH_INTERVAL_HOURS", "24"))
 
 CELERY_BEAT_SCHEDULE = {
@@ -270,6 +284,11 @@ CELERY_BEAT_SCHEDULE = {
         "schedule": timedelta(seconds=REMOTE_APPROVAL_EXPIRY_INTERVAL_SECONDS),
         "options": {"expires": max(REMOTE_APPROVAL_EXPIRY_INTERVAL_SECONDS, 30)},
     },
+    "memory.run_due_scheduled_tasks": {
+        "task": "memory.tasks.run_due_scheduled_tasks",
+        "schedule": timedelta(seconds=SCHEDULED_TASK_INTERVAL_SECONDS),
+        "options": {"expires": max(SCHEDULED_TASK_INTERVAL_SECONDS, 30)},
+    },
 }
 
 if TELEGRAM_ENABLE_POLLING:
@@ -277,6 +296,13 @@ if TELEGRAM_ENABLE_POLLING:
         "task": "comms.tasks.telegram_poll_scheduler",
         "schedule": timedelta(seconds=TELEGRAM_POLL_INTERVAL_SECONDS),
         "options": {"expires": max(TELEGRAM_POLL_INTERVAL_SECONDS * 2, 15)},
+    }
+
+if MEMORY_RETENTION_ENABLED:
+    CELERY_BEAT_SCHEDULE["memory.run_memory_retention"] = {
+        "task": "memory.tasks.run_memory_retention_task",
+        "schedule": timedelta(hours=MEMORY_RETENTION_INTERVAL_HOURS),
+        "options": {"expires": max(MEMORY_RETENTION_INTERVAL_HOURS * 3600, 300)},
     }
 
 # ToolRunner settings (new preferred names)

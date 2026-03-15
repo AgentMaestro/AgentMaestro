@@ -63,7 +63,13 @@ async def test_agent_chat_consumer_denies_non_member():
 async def test_agent_chat_consumer_sends_tools_and_messages(monkeypatch):
     workspace = Workspace.objects.create(name="chat-workspace")
     owner = get_user_model().objects.create_user(username="chat-owner-2")
-    Agent.objects.create(workspace=workspace, owner=owner, name="Existing Agent", soul="Respond carefully.")
+    Agent.objects.create(
+        workspace=workspace,
+        owner=owner,
+        name="Existing Agent",
+        description="Handles coding and operator workflows.",
+        soul="Respond carefully.",
+    )
     agent = Agent.objects.get(name="Existing Agent")
     group = ToolGroup.objects.create(name="chat-group")
     tool = Tool.objects.create(
@@ -90,6 +96,7 @@ async def test_agent_chat_consumer_sends_tools_and_messages(monkeypatch):
     assert connected
     connected_event = await communicator.receive_json_from()
     assert connected_event["type"] == "connected"
+    assert "Handles coding and operator workflows." in connected_event["system_context"]
     assert "Respond carefully." in connected_event["system_context"]
     assert "read the repository `AGENTS.md` file" in connected_event["system_context"]
     assert "confirming that you read `AGENTS.md`" in connected_event["system_context"]
@@ -170,3 +177,35 @@ async def test_build_ws_input_items_uses_only_tool_output_for_continuation():
             "output": "{\"ok\": true}",
         }
     ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.django_db
+async def test_build_ws_input_items_resends_system_context_on_first_turn_after_connect():
+    user = get_user_model().objects.create_user(username="ws-reconnect-user")
+    workspace = Workspace.objects.create(name="ws-reconnect-ws")
+    agent = Agent.objects.create(
+        workspace=workspace,
+        owner=user,
+        name="Reconnect Agent",
+        description="Preserve agent identity after reconnect.",
+        soul="Always announce reconnect readiness.",
+    )
+    consumer = AgentChatConsumer(
+        scope={"type": "websocket", "user": user, "url_route": {"kwargs": {"slug": agent.slug}}}
+    )
+    consumer.agent = agent
+    consumer.model_name = "gpt-5-codex"
+    consumer.transport = "ws"
+    consumer.run_id = "run-456"
+    consumer.session = SimpleNamespace(previous_response_id="resp-456")
+    consumer.history = [{"role": "user", "content": "who are you?"}]
+    consumer._ensure_system_context()
+
+    items = consumer._build_ws_input_items()
+
+    assert items[0]["role"] == "system"
+    assert "Preserve agent identity after reconnect." in items[0]["content"][0]["text"]
+    assert "Always announce reconnect readiness." in items[0]["content"][0]["text"]
+    assert items[-1]["role"] == "user"
+    assert items[-1]["content"][0]["text"] == "who are you?"

@@ -11,9 +11,10 @@ from django.utils import timezone
 
 from comms.models import CommsConversation, RemoteApprovalTicket
 from comms.services.agent_chat_bridge import paired_conversation_for_agent
-from comms.services.outbound import send_conversation_message
+from comms.services.outbound import edit_conversation_message, send_conversation_message
 from control.models import ControlConversation, ControlMessage
 from control.services.messaging import broadcast_control_message
+from runs.services.events import append_event
 from tools.services.approval_grants import (
     GRANT_MODE_ONCE,
     GRANT_MODE_PATH_PREFIX,
@@ -31,6 +32,18 @@ RUN_CONTROL_STATUS = "status"
 RUN_CONTROL_PAUSE = "pause"
 RUN_CONTROL_RESUME = "resume"
 RUN_CONTROL_CANCEL = "cancel"
+REMOTE_OPS_MESSAGE_EVENT = "remote_ops_message"
+TOOL_CALL_STATUS_EVENT_NAME = "tool_call_status"
+
+
+
+def _terminal_status_for_tool_call(ticket: RemoteApprovalTicket) -> str:
+    tool_status = str(ticket.tool_call.status or "").strip().upper()
+    if tool_status == "DENIED":
+        return RemoteApprovalTicket.STATUS_DENIED
+    if tool_status in {"QUEUED", "RUNNING", "COMPLETED", "SUCCEEDED"}:
+        return RemoteApprovalTicket.STATUS_APPROVED
+    return RemoteApprovalTicket.STATUS_SUPERSEDED
 ACTION_TO_GRANT_MODE = {
     APPROVAL_ACTION_APPROVE: GRANT_MODE_ONCE,
     APPROVAL_ACTION_ALLOW_FOLDER: GRANT_MODE_PATH_PREFIX,
@@ -137,12 +150,82 @@ def _ticket_reply_markup(ticket: RemoteApprovalTicket) -> dict[str, object]:
         rows.append(scope_row)
     rows.append([
         _run_button(str(ticket.run_id), RUN_CONTROL_STATUS, "Status"),
-        _run_button(str(ticket.run_id), RUN_CONTROL_PAUSE, "Pause"),
-        _run_button(str(ticket.run_id), RUN_CONTROL_RESUME, "Resume"),
         _run_button(str(ticket.run_id), RUN_CONTROL_CANCEL, "Cancel"),
     ])
-    rows.append([{"text": "Open Run", "url": ticket.web_url}])
     return {"inline_keyboard": rows}
+
+
+def _ticket_terminal_reply_markup(ticket: RemoteApprovalTicket) -> dict[str, object]:
+    return {"inline_keyboard": []}
+
+
+def _ticket_status_label(ticket: RemoteApprovalTicket) -> str:
+    return str(ticket.status or "").strip().upper() or "UNKNOWN"
+
+
+def _ticket_terminal_text(ticket: RemoteApprovalTicket) -> str:
+    summary = ticket.summary or {}
+    tool_name = summary.get("tool_name") or ticket.tool_call.tool_name
+    args = summary.get("args") or ticket.tool_call.args or {}
+    agent_name = summary.get("agent_name") or getattr(ticket.run.agent, "name", "")
+    expires_local = timezone.localtime(ticket.expires_at).strftime("%H:%M %Z")
+    lines = [
+        f"Approval {ticket.short_code} - {_ticket_status_label(ticket)}",
+        f"Tool: {tool_name}",
+        f"Args: {_format_args(args)}",
+        f"Run: {ticket.run_id}",
+    ]
+    if agent_name:
+        lines.append(f"Agent: {agent_name}")
+    if ticket.status == RemoteApprovalTicket.STATUS_EXPIRED:
+        lines.append(f"Timed out at: {expires_local}")
+    else:
+        lines.append(f"Expires: {expires_local}")
+    if ticket.acted_by_label:
+        lines.append(f"By: {ticket.acted_by_label}")
+    if ticket.acted_at:
+        lines.append(f"At: {timezone.localtime(ticket.acted_at).strftime('%H:%M:%S %Z')}")
+    if ticket.action_error:
+        lines.append(f"Note: {ticket.action_error}")
+    lines.append("Action complete. Open the run for full context.")
+    return "\n".join(lines)
+
+
+def _emit_run_remote_ops_message(ticket: RemoteApprovalTicket, *, text: str, author_label: str) -> None:
+    append_event(
+        run_id=str(ticket.run_id),
+        event_type=REMOTE_OPS_MESSAGE_EVENT,
+        payload={
+            "text": text,
+            "author_label": str(author_label or "system").strip().lower(),
+            "kind": "remote_ops",
+            "timestamp": timezone.now().isoformat(),
+            "source_transport": ticket.transport.key,
+            "remote_ticket_id": str(ticket.id),
+            "status": ticket.status,
+            "short_code": ticket.short_code,
+        },
+    )
+
+
+def _update_remote_ticket_card(ticket: RemoteApprovalTicket) -> None:
+    if not ticket.external_message_id:
+        return
+    try:
+        edit_conversation_message(
+            ticket.conversation,
+            ticket.external_message_id,
+            _ticket_terminal_text(ticket),
+            reply_markup=_ticket_terminal_reply_markup(ticket),
+        )
+    except Exception as exc:  # pragma: no cover - best effort
+        logger.warning(
+            "Unable to update remote approval card ticket=%s status=%s: %s",
+            ticket.id,
+            ticket.status,
+            exc,
+            exc_info=exc,
+        )
 
 
 def create_remote_approval_ticket(tool_call) -> RemoteApprovalTicket | None:
@@ -301,10 +384,11 @@ def _apply_ticket_action(
     from tools.services.approvals import approve_tool_call, deny_tool_call
 
     if ticket.status != RemoteApprovalTicket.STATUS_PENDING:
+        _update_remote_ticket_card(ticket)
         return f"Approval {ticket.short_code} is already {ticket.status}."
     if ticket.expires_at <= timezone.now():
         expire_remote_approval_ticket(ticket, acted_by_external_user_id=external_user_id, acted_by_label=performed_by)
-        return f"Approval {ticket.short_code} expired."
+        return f"Approval {ticket.short_code} timed out."
 
     if action == APPROVAL_ACTION_DENY:
         deny_tool_call(
@@ -318,7 +402,10 @@ def _apply_ticket_action(
             acted_by_external_user_id=external_user_id,
             acted_by_label=performed_by,
         )
-        return f"Denied {ticket.short_code}."
+        response_text = f"Denied {ticket.short_code}."
+        _update_remote_ticket_card(ticket)
+        _emit_run_remote_ops_message(ticket, text=response_text, author_label=performed_by)
+        return response_text
 
     grant_mode = ACTION_TO_GRANT_MODE.get(action)
     if not grant_mode:
@@ -336,10 +423,32 @@ def _apply_ticket_action(
         acted_by_label=performed_by,
     )
     if action == APPROVAL_ACTION_ALLOW_FOLDER:
-        return f"Approved {ticket.short_code} for this folder."
-    if action == APPROVAL_ACTION_ALLOW_REPO:
-        return f"Approved {ticket.short_code} for this repository."
-    return f"Approved {ticket.short_code}."
+        response_text = f"Approved {ticket.short_code} for this folder."
+        approval_detail = f"Approved via {ticket.transport.display_name} for this folder."
+    elif action == APPROVAL_ACTION_ALLOW_REPO:
+        response_text = f"Approved {ticket.short_code} for this repository."
+        approval_detail = f"Approved via {ticket.transport.display_name} for this repository."
+    else:
+        response_text = f"Approved {ticket.short_code}."
+        approval_detail = f"Approved via {ticket.transport.display_name}."
+    append_event(
+        run_id=str(ticket.run_id),
+        event_type=TOOL_CALL_STATUS_EVENT_NAME,
+        payload={
+            "tool_call_id": str(ticket.tool_call_id),
+            "tool_name": ticket.tool_call.tool_name,
+            "status": ticket.tool_call.status,
+            "detail": approval_detail,
+            "approval_metadata": ticket.tool_call.approval_metadata or {},
+            "approval_grant_id": str(ticket.tool_call.approval_grant_id) if ticket.tool_call.approval_grant_id else "",
+            "args": ticket.tool_call.args or {},
+            "requires_approval": ticket.tool_call.requires_approval,
+        },
+        correlation_id=ticket.tool_call.correlation_id,
+    )
+    _update_remote_ticket_card(ticket)
+    _emit_run_remote_ops_message(ticket, text=response_text, author_label=performed_by)
+    return response_text
 
 
 def handle_remote_callback(
@@ -449,7 +558,19 @@ def expire_remote_approval_ticket(
     acted_by_external_user_id: str = "",
     acted_by_label: str = "system",
 ) -> RemoteApprovalTicket:
+    ticket.refresh_from_db(fields=["status", "tool_call", "acted_at", "acted_by_label", "updated_at"])
+    ticket.tool_call.refresh_from_db(fields=["status", "approval_metadata", "approval_grant", "updated_at"])
     if ticket.status != RemoteApprovalTicket.STATUS_PENDING:
+        _update_remote_ticket_card(ticket)
+        return ticket
+    if ticket.tool_call.status != ticket.tool_call.Status.PENDING_APPROVAL:
+        ticket.mark_terminal(
+            status=_terminal_status_for_tool_call(ticket),
+            acted_by_external_user_id=acted_by_external_user_id,
+            acted_by_label=ticket.acted_by_label or acted_by_label,
+            action_error="Resolved before remote approval expiry task ran.",
+        )
+        _update_remote_ticket_card(ticket)
         return ticket
     from tools.services.approvals import deny_tool_call
 
@@ -463,6 +584,12 @@ def expire_remote_approval_ticket(
         status=RemoteApprovalTicket.STATUS_EXPIRED,
         acted_by_external_user_id=acted_by_external_user_id,
         acted_by_label=acted_by_label,
+    )
+    _update_remote_ticket_card(ticket)
+    _emit_run_remote_ops_message(
+        ticket,
+        text=f"Approval {ticket.short_code} timed out.",
+        author_label=acted_by_label,
     )
     return ticket
 

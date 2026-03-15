@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import time
 import uuid
 from pathlib import Path
@@ -31,8 +32,10 @@ from runs.services.event_builders import (
     build_chat_message_payload,
 )
 from runs.services.events import append_event
+from runs.services.memory_bootstrap import bootstrap_memory_for_first_turn
 from runs.services.steps import append_step
 from runs.services.input_items import build_input_items
+from runs.services.memory import get_or_create_run_memory
 from tools.models import ToolCall
 from tools.policy import ToolNotAllowedError, assert_tool_allowed, get_effective_tools
 from tools.services.approval_grants import active_grants_for_run
@@ -55,6 +58,7 @@ logger = logging.getLogger(__name__)
 SCRUBBER = Scrubber()
 DEBUG_GROUP_ECHO_EVENT = "debug_group_echo"
 DEBUG_GROUP_ECHO_FROM_EVENTS = "debug_group_echo_from_events"
+URL_PLACEHOLDER_RE = re.compile(r"https?://[^\s<>\"]+")
 
 
 def _should_scrub_prompts() -> bool:
@@ -100,10 +104,20 @@ def _get_profile(policy_name: str | None) -> LLMModelProfile | None:
 def _scrub_input_text(text: str | None) -> tuple[str, list[str]]:
     if text is None:
         return "", []
-    filths = list(SCRUBBER.iter_filth(text))
+    protected_urls: dict[str, str] = {}
+
+    def _protect_url(match: re.Match[str]) -> str:
+        placeholder = f"__AM_URL_{len(protected_urls)}_{uuid.uuid4().hex}__"
+        protected_urls[placeholder] = match.group(0)
+        return placeholder
+
+    protected_text = URL_PLACEHOLDER_RE.sub(_protect_url, text)
+    filths = list(SCRUBBER.iter_filth(protected_text))
     if not filths:
         return text, []
-    sanitized = SCRUBBER.clean(text)
+    sanitized = SCRUBBER.clean(protected_text)
+    for placeholder, original_url in protected_urls.items():
+        sanitized = sanitized.replace(placeholder, original_url)
     types: list[str] = []
     for filth in filths:
         type_name = getattr(filth, "filth_type", None) or getattr(filth, "type", None)
@@ -171,7 +185,7 @@ def _assert_tool_allowed(agent: Agent, user, tool_name: str):
 
 @database_sync_to_async
 def _create_agent_run(agent: Agent, user, started_at: timezone.datetime):
-    return AgentRun.objects.create(
+    run = AgentRun.objects.create(
         workspace=agent.workspace,
         agent=agent,
         started_by=user,
@@ -180,6 +194,8 @@ def _create_agent_run(agent: Agent, user, started_at: timezone.datetime):
         started_at=started_at,
         input_text="",
     )
+    get_or_create_run_memory(run)
+    return run
 
 
 @database_sync_to_async
@@ -196,6 +212,11 @@ def _get_run_status(run_id: str) -> str | None:
 
 
 @database_sync_to_async
+def _set_run_previous_response_id(run_id: str, previous_response_id: str | None) -> None:
+    AgentRun.objects.filter(id=run_id).update(previous_response_id=str(previous_response_id or "").strip())
+
+
+@database_sync_to_async
 def _build_transport_status(agent: Agent):
     return build_transport_status(agent)
 
@@ -208,6 +229,15 @@ def _get_effective_tools(agent: Agent, user):
 @database_sync_to_async
 def _get_active_tool_approval_grants(run_id: str):
     return active_grants_for_run(run_id)
+
+
+@database_sync_to_async
+def _bootstrap_memory_for_first_turn(run_id: str, agent_id: str, user_text: str):
+    if not run_id or not agent_id:
+        return None
+    run = AgentRun.objects.select_related("workspace", "agent").get(id=run_id)
+    agent = Agent.objects.select_related("workspace").get(id=agent_id)
+    return bootstrap_memory_for_first_turn(run, agent, user_text)
 
 
 @database_sync_to_async
@@ -373,6 +403,9 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
             requested_run_id = None
 
         run = None
+        reused_existing_run = False
+        restored_previous_response_id = False
+        hydrated_previous_response_id = ""
 
         logger.info(
             "WS connect parsed requested_run_id=%s raw_qs=%s",
@@ -385,6 +418,7 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
                 run_uuid = uuid.UUID(str(requested_run_id))
                 run = await _fetch_agent_run(agent, user, run_uuid)
                 if run:
+                    reused_existing_run = True
                     logger.info(
                         "WS reusing existing run from querystring",
                         extra={"agent": str(agent.id), "run": str(run.id)},
@@ -405,6 +439,7 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
 
         self.run = run
         self.run_id = str(run.id)
+        hydrated_previous_response_id = str(getattr(run, "previous_response_id", "") or "").strip()
         layer = getattr(self, "channel_layer", None)
         logger.info(
             "WS connect channel_layer=%s channel_name=%s run_id=%s",
@@ -437,6 +472,18 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
                 self.session = await self.client.get_ws_session(
                     self.run_id, model_name, agent_id=str(agent.id)
                 )
+                session_previous_response_id = str(getattr(self.session, "previous_response_id", "") or "").strip()
+                if hydrated_previous_response_id and not session_previous_response_id:
+                    self.session.previous_response_id = hydrated_previous_response_id
+                    restored_previous_response_id = True
+                    logger.info(
+                        "Restored persisted previous_response_id for agent=%s run=%s previous_response_id=%s",
+                        agent.slug,
+                        self.run_id,
+                        hydrated_previous_response_id,
+                    )
+                elif session_previous_response_id and session_previous_response_id != hydrated_previous_response_id:
+                    await _set_run_previous_response_id(self.run_id, session_previous_response_id)
             except Exception as exc:
                 logger.error(
                     "OpenAI WS session error for agent %s: %s", agent.slug, exc, exc_info=True
@@ -563,6 +610,20 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
                 "run_status": run.status,
             }
         )
+        if reused_existing_run:
+            reconnect_text = "Reconnected to the existing run after a local browser disconnect."
+            if self.use_ws and (restored_previous_response_id or str(getattr(self.session, "previous_response_id", "") or "").strip()):
+                reconnect_text += " Responses continuity was restored from our saved provider cursor."
+            elif self.use_ws:
+                reconnect_text += " Responses continuity cursor was not available, so the next turn may feel colder."
+            await self.send_json(
+                {
+                    "type": "system",
+                    "kind": "connection",
+                    "text": reconnect_text,
+                    "timestamp": timezone.now().isoformat(),
+                }
+            )
         transport_detail = "WS" if self.use_ws else "HTTP"
         system_detail = f"OpenAI {transport_detail} connected ({model_name})"
         await self.send_json(
@@ -585,19 +646,12 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
         )
         if self.use_ws and self.client and self.run_id:
             agent_slug = self.agent.slug if self.agent else "unknown"
-            try:
-                await self.client.close_ws_session(self.run_id, model=self.model_name)
-                logger.info(
-                    "Closed OpenAI WS session for agent=%s run=%s", agent_slug, self.run_id
-                )
-            except Exception as exc:
-                logger.warning(
-                    "Failed to close OpenAI WS session for agent=%s run=%s: %s",
-                    agent_slug,
-                    self.run_id,
-                    exc,
-                    exc_info=True,
-                )
+            logger.info(
+                "Preserving OpenAI WS session across browser disconnect for agent=%s run=%s previous_response_id=%s",
+                agent_slug,
+                self.run_id,
+                str(getattr(self.session, "previous_response_id", "") or "").strip(),
+            )
         channel_layer = self.channel_layer
         channel_name = getattr(self, "channel_name", None)
         logger.info(
@@ -763,6 +817,15 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
                     self.run_id,
                     secret_list,
                 )
+        bootstrap_result = None
+        if self.run_id and self.agent:
+            bootstrap_result = await _bootstrap_memory_for_first_turn(
+                str(self.run_id),
+                str(self.agent.id),
+                sanitized_text,
+            )
+        if bootstrap_result and bootstrap_result.summary_text:
+            self.history.append({"role": "system", "content": bootstrap_result.summary_text})
         self.history.append({"role": "user", "content": sanitized_text})
         if persist:
             await _persist_chat_history_event(self.run_id or "", "user", sanitized_text)
@@ -904,9 +967,14 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
                     response.get("status"),
                     len(response.get("tool_calls") or []),
                 )
+                response_id = str(response.get("response_id") or "").strip()
+                if response_id:
+                    await _set_run_previous_response_id(self.run_id or "", response_id)
+                self._include_system_context = False
             except OpenAIResponsesWSPreviousResponseNotFound as exc:
                 if self.session:
                     self.session.previous_response_id = None
+                await _set_run_previous_response_id(self.run_id or "", None)
                 await self._handle_ws_failure(
                     exc,
                     input_items,
@@ -1555,6 +1623,19 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
             )
             return
 
+        if event_type == "remote_ops_message":
+            await self.send_json(
+                {
+                    "type": "message",
+                    "role": "system",
+                    "author": str(data.get("author_label") or "system").strip().lower(),
+                    "kind": str(data.get("kind") or "remote_ops"),
+                    "text": data.get("text") or "",
+                    "timestamp": data.get("timestamp") or timezone.now().isoformat(),
+                }
+            )
+            return
+
         if event_type == TOOL_CALL_DENIED_EVENT:
             logger.info(
                 "4:  Event type -> TOOL_CALL_DENIED_EVENT AgentChatConsumer.push debug echo run=%s data=%s",
@@ -1631,6 +1712,9 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
                 ),
                 run_id=self.run_id,
             )
+
+        if self._include_system_context:
+            return self._build_input_items()
 
         last_user = self._last_user_message()
         if last_user:

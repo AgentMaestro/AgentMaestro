@@ -25,6 +25,7 @@ from .forms import (
 )
 from .models import Agent
 from runs.models import AgentRun
+from runs.services.memory import get_or_create_run_memory
 from tools.models import AgentToolGrant, ToolDefinition
 from tools.policy import RISK_ORDER, get_effective_tools, visible_tools_for_user
 
@@ -193,6 +194,7 @@ def agent_run_preallocate(request, slug: str):
         started_at=timezone.now(),
         input_text="",
     )
+    get_or_create_run_memory(run)
     return JsonResponse({"run_id": str(run.id)})
 
 
@@ -244,6 +246,87 @@ def _selected_tool_definitions(session_data: dict[str, object], user) -> list[To
         .filter(workspace=workspace, enabled=True, tool__isnull=False, tool__in=visible_tools, tool_id__in=tool_ids)
     )
     return sorted(definitions, key=_definition_sort_key)
+
+
+def _sidebar_state(*, current_step: int, step_number: int | None = None, enabled: bool = True) -> str:
+    if not enabled:
+        return "muted"
+    if step_number is None:
+        return "active" if current_step == len(STEPS) else "pending"
+    if current_step == step_number:
+        return "active"
+    if current_step > step_number:
+        return "complete"
+    return "pending"
+
+
+def _build_wizard_sidebar(current_step: int, session_data: dict[str, object]) -> dict[str, object]:
+    basics = session_data.get("basics", {})
+    llm = session_data.get("llm", {})
+    workspace = session_data.get("workspace", {})
+    tool_ids = session_data.get("tools", {}).get("tool_ids", [])
+    sandbox_paths = basics.get("sandbox_paths") or []
+    workspace_name = workspace.get("workspace_name")
+    if workspace.get("workspace_id") and not workspace_name:
+        workspace_name = "existing workspace"
+    if not workspace_name:
+        workspace_name = "default workspace"
+    selected_tool_count = len(tool_ids)
+    tool_value = f"{selected_tool_count} selected" if selected_tool_count else "workspace defaults"
+    create_url = reverse("agents:agent_create")
+    return {
+        "global_actions": [
+            {
+                "label": "New Agent",
+                "href": f"{create_url}?reset=1",
+                "target": "_blank",
+            },
+        ],
+        "agent_items": [
+            {
+                "label": "name",
+                "value": basics.get("name") or "not set",
+                "href": f"{create_url}?step=1",
+                "state": _sidebar_state(current_step=current_step, step_number=1),
+            },
+            {
+                "label": "workspace",
+                "value": workspace_name,
+                "href": f"{create_url}?step=3",
+                "state": _sidebar_state(current_step=current_step, step_number=3),
+            },
+            {
+                "label": "policy",
+                "value": llm.get("policy_name") or "react",
+                "href": f"{create_url}?step=2",
+                "state": _sidebar_state(current_step=current_step, step_number=2),
+            },
+            {
+                "label": "model",
+                "value": llm.get("default_model") or Agent.DEFAULT_MODEL,
+                "href": f"{create_url}?step=2",
+                "state": _sidebar_state(current_step=current_step, step_number=2),
+            },
+            {
+                "label": "allowed paths",
+                "value": f"{len(sandbox_paths)} configured" if sandbox_paths else "not set",
+                "href": f"{create_url}?step=1",
+                "state": _sidebar_state(current_step=current_step, step_number=1),
+            },
+            {
+                "label": "telegram",
+                "value": "connect after create",
+                "href": None,
+                "state": _sidebar_state(current_step=current_step, enabled=False),
+            },
+            {
+                "label": "tools",
+                "value": tool_value,
+                "href": f"{create_url}?step=4",
+                "state": _sidebar_state(current_step=current_step, step_number=4),
+            },
+        ],
+    }
 
 
 def _build_review_context(session_data: dict[str, object], user) -> dict[str, object]:
@@ -318,6 +401,8 @@ def agent_create_wizard(request):
         "owner_form": owner_form,
         "review": _build_review_context(session_data, request.user),
         "tool_sections": tool_sections,
+        "wizard_sidebar": _build_wizard_sidebar(step, session_data),
+        "wizard_reset_url": f"{reverse('agents:agent_create')}?reset=1",
     }
     return render(request, step_def["template"], context)
 
@@ -339,6 +424,8 @@ def _complete_wizard(request, session_data: dict[str, object], owner_form: forms
             "form": None,
             "owner_form": owner_form,
             "review": review_data,
+            "wizard_sidebar": _build_wizard_sidebar(len(STEPS), session_data),
+            "wizard_reset_url": f"{reverse('agents:agent_create')}?reset=1",
         }
         return render(request, STEPS[-1]["template"], context)
 

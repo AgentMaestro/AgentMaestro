@@ -125,10 +125,16 @@ Runtime:
 - Tools available: {_format_tool_hint(tool_names)}
 """.strip()
 
+    description_text = (getattr(agent, "description", "") or "").strip()
+    if description_text:
+        description_short = shorten(" ".join(description_text.splitlines()), width=300, placeholder="?")
+        description_section = f"Agent description:\n{description_short}"
+    else:
+        description_section = ""
+
     custom_text = (getattr(agent, "soul", "") or "").strip()
     if custom_text:
-        custom_short = shorten(" ".join(custom_text.splitlines()), width=450, placeholder="…")
-        custom_section = f"Agent-specific instructions:\n{custom_short}"
+        custom_section = f"Agent-specific instructions:\n{custom_text}"
     else:
         custom_section = ""
 
@@ -138,6 +144,8 @@ Runtime:
     sections.append(overlay)
     sections.append(runtime)
     sections.append(_build_model_notice(agent, model_name))
+    if description_section:
+        sections.append(description_section)
     if custom_section:
         sections.append(custom_section)
     return "\n\n".join(section.strip() for section in sections if section).strip()

@@ -1,6 +1,6 @@
 from django.contrib import admin
 
-from .models import AgentRun, AgentStep, RunEvent, Artifact
+from .models import AgentRun, AgentStep, Artifact, RunEvent, RunMemory
 
 
 class AgentStepInline(admin.TabularInline):
@@ -19,12 +19,46 @@ class RunEventInline(admin.TabularInline):
     extra = 0
 
 
+class RunMemoryInline(admin.StackedInline):
+    model = RunMemory
+    fields = (
+        "objective",
+        "current_plan",
+        "key_facts",
+        "open_questions",
+        "recent_tool_results",
+        "notes",
+        "created_at",
+        "updated_at",
+    )
+    readonly_fields = ("created_at", "updated_at")
+    extra = 0
+    can_delete = False
+    max_num = 1
+
+
 @admin.register(AgentRun)
 class AgentRunAdmin(admin.ModelAdmin):
     list_display = ("id", "workspace", "agent", "status", "started_at")
     list_filter = ("workspace", "status", "started_at")
     search_fields = ("id",)
-    inlines = [AgentStepInline, RunEventInline]
+    inlines = [RunMemoryInline, AgentStepInline, RunEventInline]
+
+
+@admin.register(RunMemory)
+class RunMemoryAdmin(admin.ModelAdmin):
+    list_display = ("run", "run_agent", "run_status", "updated_at")
+    list_filter = ("run__workspace", "run__agent", "run__status", "updated_at")
+    search_fields = ("run__id", "run__agent__name", "objective", "current_plan", "notes")
+    readonly_fields = ("created_at", "updated_at")
+
+    @admin.display(description="Agent")
+    def run_agent(self, obj: RunMemory):
+        return obj.run.agent
+
+    @admin.display(description="Run Status")
+    def run_status(self, obj: RunMemory):
+        return obj.run.status
 
 
 @admin.register(Artifact)

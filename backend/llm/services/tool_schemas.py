@@ -51,6 +51,12 @@ def _schema_docs(
 _FALLBACK_TOOL_NAMES = [
     "repo_tree",
     "search_code",
+    "web_search",
+    "fetch_url",
+    "remember",
+    "search_memory",
+    "schedule_task",
+    "list_scheduled_tasks",
     "file_read",
     "file_write",
     "file_delete",
@@ -149,6 +155,45 @@ _TOOL_TEMPLATES: Dict[str, Dict[str, Any]] = {
         "cmd": ["cmd", "/C", "echo RUN_COMMAND_SMOKE_OK && dir C:\\Dev\\AgentMaestro\\toolrunner\\app\\tools"],
         "cwd": ".",
     },
+    "web_search": {"query": "AgentMaestro orchestration platform", "max_results": 5},
+    "fetch_url": {"url": "https://example.com", "extract": "main_text", "max_chars": 4000},
+    "remember": {
+        "scope_type": "sandbox",
+        "scope_id": "C:/Dev/AgentMaestro",
+        "memory_kind": "semantic",
+        "content": "The backend app holds Django state.",
+        "tags": ["architecture"],
+        "importance": 0.5,
+        "summary": "Backend location",
+        "dedupe_key": "fact:backend-location",
+        "dedupe_mode": "key",
+        "source_kind": "manual_remember",
+        "source_ref": "operator:console",
+        "pinned": True,
+        "expires_at": "2026-03-31T23:59:59Z",
+    },
+    "search_memory": {
+        "query": "backend",
+        "scope_type": "sandbox",
+        "scope_id": "C:/Dev/AgentMaestro",
+        "memory_kind": "semantic",
+        "limit": 5,
+    },
+    "schedule_task": {
+        "title": "daily weather report for Richmond, VA",
+        "task_type": "daily_weather_report",
+        "timezone": "America/New_York",
+        "local_time": "08:00",
+        "execution_payload": {
+            "location": "Richmond, VA",
+            "query": "site:weather.com Richmond VA daily and weekly weather forecast",
+            "source_domain": "weather.com"
+        }
+    },
+    "list_scheduled_tasks": {
+        "enabled_only": True,
+        "limit": 10
+    },
     "test_runner": [
         {
             "kind": "pytest",
@@ -242,6 +287,55 @@ _TOOL_RESPONSE_FIELDS: Dict[str, Dict[str, str]] = {
         "matches": "Path-sorted files with match_count and snippet metadata for each matching file.",
         "stats": "File counts, total matches, exclusions, and allowed roots used by policy.",
         "truncated": "True when max_results or timeout limits stopped the scan.",
+    },
+    "web_search": {
+        "query": "Echoes the submitted search query.",
+        "results": "List of title/url/snippet search hits from the configured provider.",
+    },
+    "fetch_url": {
+        "url": "Original requested URL.",
+        "final_url": "Resolved final URL after safe redirects.",
+        "title": "Best-effort page title for HTML responses.",
+        "content": "Readable extracted content capped by max_chars.",
+        "content_type": "HTTP content type returned by the server.",
+        "status_code": "Final HTTP status code.",
+        "truncated": "True when download or returned content was capped.",
+    },
+    "remember": {
+        "memory_id": "Durable Django memory record identifier.",
+        "scope_type": "Echoes the stored scope type.",
+        "scope_id": "Echoes the stored scope identifier.",
+        "memory_kind": "Echoes the stored memory kind.",
+        "dedupe_key": "Stored dedupe or retention-bucket key for the memory.",
+        "source_kind": "Provenance label describing where the memory came from.",
+        "source_ref": "Optional source reference associated with the memory provenance.",
+        "summary": "Stored summary text for the record.",
+        "tags": "Normalized tag list stored with the record.",
+        "importance": "Normalized importance score as a string decimal.",
+        "pinned": "Whether the memory is pinned against normal lifecycle decay.",
+        "expires_at": "Optional expiry timestamp after which the memory is ignored by active lookups.",
+        "access_count": "Number of times the memory has been created or retrieved through the memory services.",
+        "last_accessed_at": "Most recent timestamp when the memory was remembered or returned by search.",
+    },
+    "search_memory": {
+        "query": "Echoes the submitted memory search text.",
+        "count": "Number of results returned.",
+        "results": "Concise matching memory records ordered by relevance, importance, and recency, including lifecycle metadata.",
+    },
+    "schedule_task": {
+        "scheduled_task_id": "Durable scheduled-task identifier.",
+        "title": "Stored human-friendly task title.",
+        "task_type": "Echoes the stored task type.",
+        "schedule_kind": "The recurring schedule model used by the task.",
+        "timezone": "The IANA timezone used to calculate due times.",
+        "local_time": "The local wall-clock time the task runs each day.",
+        "next_run_at": "The next UTC datetime when the task is due.",
+        "enabled": "Whether the recurring task is active.",
+        "source_memory_id": "The episodic memory record created to remember the scheduling request.",
+    },
+    "list_scheduled_tasks": {
+        "count": "Number of scheduled tasks returned.",
+        "results": "Concise scheduled-task records ordered by next run time.",
     },
     "shell_exec": {
         "command": "The executed command array.",
@@ -446,6 +540,30 @@ _TOOL_ADDITIONAL_DOCS: Dict[str, str] = {
     "- Use `run_command` only as a last resort when no specialized tool matches the task.\n"
     "- Do not use `run_command` for Git operations that map to `git_add`, `git_status`, `git_diff`, `git_log`, `git_apply`, `git_commit`, `git_push`, `git_checkout`, or `git_branch_create`.\n"
     "- Do not use `run_command` for direct file content reads that should go through `file_read`.\n",
+    "web_search": "\n\nRESEARCH NOTES:\n"
+    "- `web_search` returns lightweight search metadata only. Use `fetch_url` for page content.\n"
+    "- Provider failures usually indicate missing credentials, timeout, or upstream HTTP errors.",
+    "fetch_url": "\n\nFETCH NOTES:\n"
+    "- Only public http/https URLs are allowed. Localhost, private-network, and internal addresses are rejected.\n"
+    "- `content` returns extracted readable text, not raw HTML.\n"
+    "- Use `max_chars` to keep follow-up reasoning compact.",
+    "remember": "\n\nMEMORY NOTES:\n"
+    "- `remember` stores a durable episodic, semantic, or procedural memory record in Django.\n"
+    "- Prefer concise, stable facts or procedures rather than transient chatter.\n"
+    "- `dedupe_key` identifies the same durable fact or procedure across repeated writes.\n"
+    "- `dedupe_mode` controls whether writes dedupe by key, by exact content, or skip dedupe entirely.\n"
+    "- Set `pinned=true` for memories that should survive normal cleanup pressure, such as durable preferences or important procedures.\n"
+    "- Set `expires_at` to an ISO 8601 datetime when the memory is temporary and should naturally age out of active lookups.\n"
+    "- Use `source_kind` and `source_ref` to record provenance, such as `manual_remember`, `scheduled_task_created`, or `scheduled_task_executed`.\n"
+    "- Example semantic memory: `scope_type='sandbox'`, `scope_id='C:/Dev/AgentMaestro'`, `memory_kind='semantic'`, `dedupe_key='fact:backend-location'`, `content='Use apply_patch for manual edits.'`, `pinned=true`.\n"
+    "- Example procedural memory: `scope_type='agent'`, `scope_id='<agent-id>'`, `memory_kind='procedural'`, `dedupe_key='procedure:test-runner'`, `content='When Telegram testing locally, clear the webhook and switch to polling first.'`.\n"
+    "- Example episodic memory: `scope_type='user'`, `scope_id='<user-id>'`, `memory_kind='episodic'`, `dedupe_mode='none'`, `dedupe_key='scheduled-task-exec-bucket:<task-id>:daily-weather-report'`, `content='On March 13, 2026, Scott validated Telegram approvals end-to-end.'`, `expires_at='2026-03-31T23:59:59Z'`.",
+    "search_memory": "\n\nMEMORY NOTES:\n"
+    "- `search_memory` performs simple text lookup over durable memory records.\n"
+    "- Narrow by `scope_type`, `scope_id`, and `memory_kind` when the target scope is known.\n"
+    "- Example targeted lookup: `query='apply_patch edits'`, `scope_type='sandbox'`, `scope_id='C:/Dev/AgentMaestro'`.\n"
+    "- Example procedural lookup: `query='telegram polling'`, `scope_type='agent'`, `scope_id='<agent-id>'`, `memory_kind='procedural'`.\n"
+    "- Example episodic lookup: `query='validated Telegram approvals'`, `scope_type='user'`, `scope_id='<user-id>'`, `memory_kind='episodic'`.",
     "typecheck_runner": "\n\nRUN MODE NOTES:\n"
     "- `tool` is required.\n"
     "- Supported values are `mypy`, `pyright`, `tsc`, and `command`.\n"

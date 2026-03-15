@@ -9,6 +9,7 @@ from agents.models import Agent
 from comms.models import CommsConversation, RemoteApprovalTicket, Transport, TransportEndpoint
 from comms.services.remote_ops import (
     create_remote_approval_ticket,
+    expire_remote_approval_ticket,
     handle_remote_callback,
     notify_remote_approval_ticket,
     resolve_remote_ticket_for_code,
@@ -108,7 +109,7 @@ def test_create_remote_approval_ticket_and_notify(monkeypatch):
     assert reply_markup["inline_keyboard"][0][0]["text"] == "Approve"
     assert reply_markup["inline_keyboard"][0][1]["text"] == "Deny"
     assert reply_markup["inline_keyboard"][-2][0]["text"] == "Status"
-    assert reply_markup["inline_keyboard"][-2][1]["text"] == "Pause"
+    assert reply_markup["inline_keyboard"][-2][1]["text"] == "Cancel"
 
 
 @pytest.mark.django_db
@@ -157,11 +158,16 @@ def test_handle_remote_callback_marks_ticket_approved(monkeypatch):
         endpoint=conversation.endpoint,
         conversation=conversation,
         external_chat_id=conversation.external_conversation_id,
+        external_message_id="100",
         short_code="4F7K",
         callback_token="tokcallback1",
+        web_url="http://example.test/run/1",
+        summary={"tool_name": "file_write", "args": {"path": "notes/callback.txt"}, "agent_name": tool_call.run.agent.name},
         expires_at=timezone.now() + timedelta(minutes=15),
     )
     called = {}
+    edits = {}
+    events = []
 
     def fake_approve_tool_call(*, tool_call_id, user, grant_mode, actor_label=None):
         called["tool_call_id"] = tool_call_id
@@ -171,7 +177,19 @@ def test_handle_remote_callback_marks_ticket_approved(monkeypatch):
         tool_call.save(update_fields=["status", "updated_at"])
         return tool_call
 
+    def fake_edit(conversation_arg, message_id, text, **kwargs):
+        edits["conversation"] = conversation_arg
+        edits["message_id"] = message_id
+        edits["text"] = text
+        edits["kwargs"] = kwargs
+        return {"response": {"ok": True, "result": {"message_id": message_id}}}
+
+    def fake_append_event(*, run_id, event_type, payload, correlation_id=None, broadcast_to_run=True, metadata=None):
+        events.append({"run_id": run_id, "event_type": event_type, "payload": payload})
+
     monkeypatch.setattr("tools.services.approvals.approve_tool_call", fake_approve_tool_call)
+    monkeypatch.setattr("comms.services.remote_ops.edit_conversation_message", fake_edit)
+    monkeypatch.setattr("comms.services.remote_ops.append_event", fake_append_event)
 
     event = NormalizedEvent(
         kind="callback",
@@ -199,3 +217,112 @@ def test_handle_remote_callback_marks_ticket_approved(monkeypatch):
     assert ticket.status == RemoteApprovalTicket.STATUS_APPROVED
     assert called["tool_call_id"] == str(tool_call.id)
     assert called["actor_label"] == "scott"
+    assert edits["conversation"] == conversation
+    assert edits["message_id"] == "100"
+    assert "APPROVED" in edits["text"]
+    assert edits["kwargs"]["reply_markup"]["inline_keyboard"] == [[{"text": "Open Run", "url": ticket.web_url}]]
+    assert events[-1]["event_type"] == "remote_ops_message"
+    assert events[-1]["payload"]["text"] == "Approved 4F7K."
+    assert events[-1]["payload"]["author_label"] == "scott"
+
+
+@pytest.mark.django_db
+def test_expire_remote_approval_ticket_updates_card_and_emits_run_event(monkeypatch):
+    conversation, _control_conversation, tool_call = _build_remote_ops_env("expire")
+    ticket = RemoteApprovalTicket.objects.create(
+        workspace=tool_call.run.workspace,
+        run=tool_call.run,
+        tool_call=tool_call,
+        transport=conversation.transport,
+        endpoint=conversation.endpoint,
+        conversation=conversation,
+        external_chat_id=conversation.external_conversation_id,
+        external_message_id="200",
+        short_code="9ABC",
+        callback_token="tokexpire1",
+        web_url="http://example.test/run/2",
+        summary={"tool_name": "file_write", "args": {"path": "notes/expire.txt"}, "agent_name": tool_call.run.agent.name},
+        expires_at=timezone.now() - timedelta(minutes=1),
+    )
+    edits = {}
+    events = []
+    denied = {}
+
+    def fake_deny_tool_call(*, tool_call_id, user, reason, actor_label=None):
+        denied["tool_call_id"] = tool_call_id
+        denied["reason"] = reason
+        denied["actor_label"] = actor_label
+        tool_call.status = ToolCall.Status.DENIED
+        tool_call.save(update_fields=["status", "updated_at"])
+        return tool_call
+
+    def fake_edit(conversation_arg, message_id, text, **kwargs):
+        edits["conversation"] = conversation_arg
+        edits["message_id"] = message_id
+        edits["text"] = text
+        edits["kwargs"] = kwargs
+        return {"response": {"ok": True, "result": {"message_id": message_id}}}
+
+    def fake_append_event(*, run_id, event_type, payload, correlation_id=None, broadcast_to_run=True, metadata=None):
+        events.append({"run_id": run_id, "event_type": event_type, "payload": payload})
+
+    monkeypatch.setattr("tools.services.approvals.deny_tool_call", fake_deny_tool_call)
+    monkeypatch.setattr("comms.services.remote_ops.edit_conversation_message", fake_edit)
+    monkeypatch.setattr("comms.services.remote_ops.append_event", fake_append_event)
+
+    expire_remote_approval_ticket(ticket, acted_by_label="system")
+
+    ticket.refresh_from_db()
+    assert ticket.status == RemoteApprovalTicket.STATUS_EXPIRED
+    assert denied["tool_call_id"] == str(tool_call.id)
+    assert denied["reason"] == "Approval expired"
+    assert "EXPIRED" in edits["text"]
+    assert "Timed out at" in edits["text"]
+    assert events[-1]["event_type"] == "remote_ops_message"
+    assert events[-1]["payload"]["text"] == "Approval 9ABC timed out."
+    assert events[-1]["payload"]["author_label"] == "system"
+
+
+@pytest.mark.django_db
+def test_expire_remote_approval_ticket_reconciles_tool_call_already_resolved(monkeypatch):
+    conversation, _control_conversation, tool_call = _build_remote_ops_env("reconcile")
+    ticket = RemoteApprovalTicket.objects.create(
+        workspace=tool_call.run.workspace,
+        run=tool_call.run,
+        tool_call=tool_call,
+        transport=conversation.transport,
+        endpoint=conversation.endpoint,
+        conversation=conversation,
+        external_chat_id=conversation.external_conversation_id,
+        external_message_id="300",
+        short_code="7XYZ",
+        callback_token="tokreconcile1",
+        web_url="http://example.test/run/3",
+        summary={"tool_name": "file_write", "args": {"path": "notes/reconcile.txt"}, "agent_name": tool_call.run.agent.name},
+        expires_at=timezone.now() - timedelta(minutes=1),
+    )
+    tool_call.status = ToolCall.Status.QUEUED
+    tool_call.save(update_fields=["status", "updated_at"])
+    edits = {}
+
+    def fake_edit(conversation_arg, message_id, text, **kwargs):
+        edits["conversation"] = conversation_arg
+        edits["message_id"] = message_id
+        edits["text"] = text
+        edits["kwargs"] = kwargs
+        return {"response": {"ok": True, "result": {"message_id": message_id}}}
+
+    def fail_deny_tool_call(**kwargs):
+        raise AssertionError("deny_tool_call should not run for already-resolved tool calls")
+
+    monkeypatch.setattr("comms.services.remote_ops.edit_conversation_message", fake_edit)
+    monkeypatch.setattr("tools.services.approvals.deny_tool_call", fail_deny_tool_call)
+
+    expire_remote_approval_ticket(ticket, acted_by_label="system")
+
+    ticket.refresh_from_db()
+    assert ticket.status == RemoteApprovalTicket.STATUS_APPROVED
+    assert ticket.action_error == "Resolved before remote approval expiry task ran."
+    assert edits["conversation"] == conversation
+    assert edits["message_id"] == "300"
+    assert "APPROVED" in edits["text"]

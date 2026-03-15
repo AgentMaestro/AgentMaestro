@@ -14,13 +14,16 @@ from django.conf import settings
 from django.utils import timezone
 
 from agents.models import Agent
+from runs.services.memory import append_tool_result_summary
 from tools.models import ToolCall, ToolDefinition
+from tools.services.native_tools import execute_native_tool_call
 from tools.services.quotas import acquire_tool_call_slots, release_tool_call_slots
 from tools.services.result_bus import store_tool_result
 
 logger = logging.getLogger(__name__)
 _DEFAULT_TOOLRUNNER_SANDBOX_ROOT = Path("C:/tmp/agentmaestro/sandbox")
 _DEFAULT_TOOLRUNNER_HTTP_TIMEOUT_BUFFER_S = 30.0
+_NATIVE_TOOL_NAMES = {"remember", "search_memory", "schedule_task", "list_scheduled_tasks"}
 
 
 def _run_group(run_id: str) -> str:
@@ -415,6 +418,22 @@ def _emit_tool_call_completed(tool_call: ToolCall, duration_ms: int) -> None:
         )
 
 
+
+
+def _summarize_tool_result_for_memory(tool_call: ToolCall) -> str:
+    parts = [f"status={tool_call.status.lower()}"]
+    if tool_call.exit_code is not None:
+        parts.append(f"exit_code={tool_call.exit_code}")
+    if tool_call.error:
+        parts.append(f"error={tool_call.error}")
+    elif tool_call.stderr:
+        parts.append(f"stderr={tool_call.stderr}")
+    elif tool_call.stdout:
+        parts.append(f"stdout={tool_call.stdout}")
+    elif tool_call.result:
+        parts.append(f"result={tool_call.result}")
+    return " | ".join(str(part).strip() for part in parts if str(part).strip())
+
 def execute_tool_call(tool_call_id: str) -> ToolCall:
     tool_call = (
         ToolCall.objects
@@ -422,8 +441,9 @@ def execute_tool_call(tool_call_id: str) -> ToolCall:
         .get(id=tool_call_id)
     )
     logger.info("execute_tool_call start tool_call=%s run=%s status=%s", tool_call.id, tool_call.run_id, tool_call.status)
-    _ensure_paths_within_sandbox(tool_call)
-    logger.info("execute_tool_call sandbox check passed tool_call=%s", tool_call.id)
+    if tool_call.tool_name not in _NATIVE_TOOL_NAMES:
+        _ensure_paths_within_sandbox(tool_call)
+        logger.info("execute_tool_call sandbox check passed tool_call=%s", tool_call.id)
     if tool_call.status not in {ToolCall.Status.QUEUED, ToolCall.Status.RUNNING}:
         raise RuntimeError(f"Cannot execute tool call in status {tool_call.status}")
 
@@ -475,16 +495,19 @@ def execute_tool_call(tool_call_id: str) -> ToolCall:
         getattr(settings, "TOOLRUNNER_HTTP_TIMEOUT", 45),
     )
     try:
-        with httpx.Client(timeout=http_timeout_s) as client:
-            request = httpx.Request("POST", settings.TOOLRUNNER_URL)
-            response = client.post(
-                settings.TOOLRUNNER_URL,
-                content=body,
-                headers=headers,
-            )
-        if response.is_error:
-            raise httpx.HTTPStatusError("toolrunner error", request=request, response=response)
-        data = response.json()
+        if tool_call.tool_name in _NATIVE_TOOL_NAMES:
+            data = execute_native_tool_call(tool_call)
+        else:
+            with httpx.Client(timeout=http_timeout_s) as client:
+                request = httpx.Request("POST", settings.TOOLRUNNER_URL)
+                response = client.post(
+                    settings.TOOLRUNNER_URL,
+                    content=body,
+                    headers=headers,
+                )
+            if response.is_error:
+                raise httpx.HTTPStatusError("toolrunner error", request=request, response=response)
+            data = response.json()
         status_str = data.get("status", "FAILED")
         succeeded = status_str == "COMPLETED"
         exit_code = data.get("exit_code")
@@ -553,6 +576,11 @@ def execute_tool_call(tool_call_id: str) -> ToolCall:
             "observed_at",
             "updated_at",
         ])
+        append_tool_result_summary(
+            tool_call.run,
+            tool_call.tool_name,
+            _summarize_tool_result_for_memory(tool_call),
+        )
         if tool_call.requires_approval or acquired_quota:
             release_tool_call_slots(
                 str(tool_call.run.workspace_id),
