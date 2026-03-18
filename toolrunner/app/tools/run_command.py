@@ -1,14 +1,12 @@
 from __future__ import annotations
 
-import os
-import subprocess
-import time
 from pathlib import Path
 
 from fastapi.responses import JSONResponse
 
 from ..config import resolve_policy_path
 from ..models import RunCommandArgs
+from .subprocess_utils import run_subprocess, timeout_details
 
 
 def _error_response(
@@ -30,60 +28,6 @@ def _error_response(
     )
 
 
-def _timeout_details(timeout_ms: int | None, source: str) -> dict:
-    if timeout_ms is None:
-        return {"timeout_ms": None, "timeout_seconds": None, "timeout_source": source}
-    return {
-        "timeout_ms": timeout_ms,
-        "timeout_seconds": timeout_ms / 1000,
-        "timeout_source": source,
-    }
-
-
-def _truncate_output(payload: bytes | str | None, max_bytes: int) -> tuple[str, bool]:
-    if payload is None:
-        return "", False
-    if isinstance(payload, str):
-        data = payload.encode("utf-8", errors="replace")
-    else:
-        data = payload
-    if len(data) <= max_bytes:
-        return data.decode("utf-8", errors="replace"), False
-    ellipsis = "\u2026"
-    ellipsis_bytes = ellipsis.encode("utf-8")
-    available = max(max_bytes - len(ellipsis_bytes), 0)
-    truncated_data = data[:available]
-    safe_bytes = truncated_data
-    safe_text = ""
-    while safe_bytes:
-        try:
-            safe_text = safe_bytes.decode("utf-8")
-            break
-        except UnicodeDecodeError as exc:
-            safe_bytes = safe_bytes[: exc.start]
-    else:
-        safe_text = ""
-    text = safe_text + ellipsis
-    return text, True
-
-
-def _terminate_tree(proc: subprocess.Popen):
-    if os.name == "nt":
-        try:
-            subprocess.run(
-                ["taskkill", "/T", "/F", "/PID", str(proc.pid)],
-                capture_output=True,
-                check=False,
-            )
-        except Exception:
-            pass
-    else:
-        try:
-            proc.kill()
-        except Exception:
-            pass
-
-
 def run_command(run_dir: Path, args: RunCommandArgs, policy: dict | None = None):
     try:
         working_dir = resolve_policy_path(run_dir, args.cwd or ".", policy)
@@ -97,51 +41,16 @@ def run_command(run_dir: Path, args: RunCommandArgs, policy: dict | None = None)
             {"cwd": args.cwd, "resolved_cwd": str(working_dir)},
         )
 
-    merged_env = os.environ.copy()
-    if args.env:
-        merged_env.update(args.env)
-
-    timeout_s = args.timeout_ms / 1000 if args.timeout_ms > 0 else None
-    input_data = args.stdin_text.encode("utf-8") if args.stdin_text is not None else None
-    start = time.monotonic()
-    stdout_bytes: bytes | None = None
-    stderr_bytes: bytes | None = None
-    exit_code: int | None = None
-    stdout_truncated = False
-    stderr_truncated = False
-    timed_out = False
-    creationflags = subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
-    proc: subprocess.Popen | None = None
+    timeout_seconds = args.timeout_ms / 1000 if args.timeout_ms > 0 else None
     try:
-        proc = subprocess.Popen(
+        completed = run_subprocess(
             args.cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            stdin=subprocess.PIPE if input_data is not None else None,
             cwd=working_dir,
-            env=merged_env,
-            creationflags=creationflags,
+            env=args.env,
+            timeout_seconds=int(timeout_seconds) if timeout_seconds is not None else None,
+            max_output_bytes=args.max_output_bytes,
+            stdin_text=args.stdin_text,
         )
-        try:
-            stdout_bytes, stderr_bytes = proc.communicate(
-                input=input_data, timeout=timeout_s
-            )
-            exit_code = proc.returncode
-        except subprocess.TimeoutExpired as exc:
-            timed_out = True
-            if proc:
-                _terminate_tree(proc)
-                try:
-                    stdout_bytes, stderr_bytes = proc.communicate(timeout=1)
-                except subprocess.TimeoutExpired:
-                    stdout_bytes = exc.stdout or b""
-                    stderr_bytes = exc.stderr or b""
-                finally:
-                    try:
-                        proc.wait(timeout=2)
-                    except Exception:
-                        pass
-            exit_code = None
     except FileNotFoundError as exc:
         return _error_response(
             "NOT_FOUND",
@@ -154,22 +63,18 @@ def run_command(run_dir: Path, args: RunCommandArgs, policy: dict | None = None)
         return _error_response("INVALID_ARGUMENT", str(exc))
     except OSError as exc:
         return _error_response("INVALID_ARGUMENT", str(exc))
-    finally:
-        duration_ms = int(round((time.monotonic() - start) * 1000))
 
-    stdout, stdout_truncated = _truncate_output(stdout_bytes, args.max_output_bytes)
-    stderr, stderr_truncated = _truncate_output(stderr_bytes, args.max_output_bytes)
     result = {
-        "exit_code": exit_code,
-        "duration_ms": duration_ms,
-        "timed_out": timed_out,
-        "stdout": stdout,
-        "stderr": stderr,
-        "stdout_truncated": stdout_truncated,
-        "stderr_truncated": stderr_truncated,
-        **_timeout_details(args.timeout_ms, "args.timeout_ms"),
+        "exit_code": completed.exit_code,
+        "duration_ms": completed.duration_ms,
+        "timed_out": completed.timed_out,
+        "stdout": completed.stdout,
+        "stderr": completed.stderr,
+        "stdout_truncated": completed.stdout_truncated,
+        "stderr_truncated": completed.stderr_truncated,
+        **timeout_details(int(timeout_seconds) if timeout_seconds is not None else None, "args.timeout_ms"),
     }
-    if timed_out and not result["stderr"]:
+    if completed.timed_out and not result["stderr"]:
         result["stderr"] = (
             f"command timed out after {result['timeout_ms']} ms "
             f"(source={result['timeout_source']})"

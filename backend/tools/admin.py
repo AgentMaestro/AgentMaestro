@@ -7,6 +7,8 @@ from django.http import HttpResponse
 from django.utils.html import format_html
 from django.urls import reverse
 
+from core.admin_utils import format_datetime_eastern
+
 from .models import Tool, ToolApprovalGrant, ToolCall, ToolDefinition, ToolGroup, AgentToolGrant
 
 
@@ -56,7 +58,7 @@ class ToolGroupAdmin(admin.ModelAdmin):
 
 @admin.register(Tool)
 class ToolAdmin(admin.ModelAdmin):
-    list_display = ("tool_group", "name", "description", "required_parameters_display", "risk", "requires_approval", "released", "updated_at")
+    list_display = ("tool_group", "name", "description", "required_parameters_display", "risk", "requires_approval", "released", "updated_at_display")
     list_filter = ("tool_group", "risk", "requires_approval", "released")
     search_fields = ("name", "slug", "tool_group__name")
     actions = ("import_schemas", "export_tools_to_json")
@@ -64,6 +66,10 @@ class ToolAdmin(admin.ModelAdmin):
     def required_parameters_display(self, obj: Tool) -> str:
         return ", ".join(obj.required_parameters or [])
     required_parameters_display.short_description = "Required params"
+
+    @admin.display(description="Updated At")
+    def updated_at_display(self, obj: Tool) -> str:
+        return format_datetime_eastern(obj.updated_at)
 
     @admin.action(description="Import Schemas")
     def import_schemas(self, request, queryset):
@@ -160,16 +166,24 @@ class ToolDefinitionAdmin(admin.ModelAdmin):
 
 @admin.register(AgentToolGrant)
 class AgentToolGrantAdmin(admin.ModelAdmin):
-    list_display = ("agent", "tool", "enabled", "created_at")
+    list_display = ("agent", "tool", "enabled", "created_at_display")
     list_filter = ("enabled", "tool")
     search_fields = ("agent__name", "tool__name")
+
+    @admin.display(description="Created At")
+    def created_at_display(self, obj: AgentToolGrant) -> str:
+        return format_datetime_eastern(obj.created_at)
 
 
 @admin.register(ToolApprovalGrant)
 class ToolApprovalGrantAdmin(admin.ModelAdmin):
-    list_display = ("tool_name", "run", "scope_type", "scope_path", "created_by", "revoked_at")
+    list_display = ("tool_name", "run", "scope_type", "scope_path", "created_by", "revoked_at_display")
     list_filter = ("tool_name", "scope_type", "revoked_at")
     search_fields = ("tool_name", "scope_path", "run__id")
+
+    @admin.display(description="Revoked At")
+    def revoked_at_display(self, obj: ToolApprovalGrant) -> str:
+        return format_datetime_eastern(obj.revoked_at)
 
 
 @admin.register(ToolCall)

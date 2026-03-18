@@ -2,6 +2,14 @@
 
 `toolrunner.app.main` exposes a signed execution API for workspace-safe tool calls plus the local orchestration UI. This document is contract-first: the JSON shown here matches the current Pydantic request models and the result payloads returned by the handlers in `toolrunner/app/tools/`.
 
+## Smoke Testing
+
+The ToolRunner smoke-test runbook lives in:
+
+- `docs/smoke/toolrunner-smoke-plan.md`
+
+Use that document for focused ToolRunner verification instead of older root-level smoke doc paths.
+
 ## Execute API
 
 Primary route:

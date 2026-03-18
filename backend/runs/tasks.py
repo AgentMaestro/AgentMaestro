@@ -7,6 +7,7 @@ from agentmaestro.celery import app
 from django.conf import settings
 from runs.models import AgentRun
 from runs.services.checkpoints import archive_completed_runs
+from runs.services.headless import execute_headless_run as execute_headless_run_service
 from runs.services.recovery import handle_run_failure
 from runs.services.ticker import run_tick as run_tick_service
 
@@ -24,6 +25,17 @@ def run_tick(self, run_id: str):
         if instruction.retry:
             raise self.retry(exc=exc, countdown=instruction.delay_seconds)
         raise
+    finally:
+        AgentRun.objects.filter(id=run_id).update(current_task_id="")
+
+
+@app.task(bind=True, name="runs.tasks.execute_headless_run", max_retries=0)
+def execute_headless_run_task(self, run_id: str):
+    """Celery entry point for executing a headless AgentRun."""
+    AgentRun.objects.filter(id=run_id).update(current_task_id=self.request.id)
+    try:
+        run = execute_headless_run_service(run_id=run_id)
+        return {"run_id": str(run.id), "status": run.status}
     finally:
         AgentRun.objects.filter(id=run_id).update(current_task_id="")
 

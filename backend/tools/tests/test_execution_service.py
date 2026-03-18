@@ -333,6 +333,7 @@ def test_execute_native_schedule_task_skips_toolrunner_http(monkeypatch, fake_re
     tool_call.args = {
         "title": "daily weather report for Richmond, VA",
         "task_type": "daily_weather_report",
+        "execution_mode": "headless_run",
         "timezone": "America/New_York",
         "local_time": "08:00",
         "execution_payload": {
@@ -354,4 +355,5 @@ def test_execute_native_schedule_task_skips_toolrunner_http(monkeypatch, fake_re
     tool_call.refresh_from_db()
     assert tool_call.status == ToolCall.Status.COMPLETED
     assert tool_call.result["task_type"] == "daily_weather_report"
+    assert tool_call.result["execution_mode"] == "headless_run"
     assert tool_call.result["scheduled_task_id"]

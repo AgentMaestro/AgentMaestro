@@ -1,6 +1,7 @@
 from django.core.management import call_command
 from django.test import TestCase
 
+from llm.services.tool_schemas import get_tool_schemas
 from tools.models import Tool, ToolGroup, ToolRisk
 from tools.policy import visible_tools_for_user
 from tools.registry import TOOL_REGISTRY
@@ -62,3 +63,16 @@ class ToolVisibilityTests(TestCase):
 
         User = get_user_model()
         return User.objects.create_superuser(username="supers", password="pass")
+
+
+class ToolSchemaCoverageTests(TestCase):
+    def test_safe_command_tools_are_registered(self):
+        registry_tools = {tool["name"]: tool for group in TOOL_REGISTRY for tool in group["tools"]}
+        self.assertIn("run_command_safe", registry_tools)
+        self.assertIn("run_tests", registry_tools)
+        self.assertFalse(registry_tools["run_command_safe"]["requires_approval"])
+        self.assertFalse(registry_tools["run_tests"]["requires_approval"])
+
+        fallback_names = {tool["name"] for tool in get_tool_schemas()}
+        self.assertIn("run_command_safe", fallback_names)
+        self.assertIn("run_tests", fallback_names)

@@ -1,11 +1,17 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field, ValidationInfo, field_validator, model_validator
 
-from .config import COMMAND_TIMEOUT, EXCLUDE_FROM_SEARCH_LIST, OUTPUT_LIMIT
+from .config import (
+    COMMAND_TIMEOUT,
+    EXCLUDE_FROM_SEARCH_LIST,
+    OUTPUT_LIMIT,
+    RUN_TESTS_TIMEOUT,
+    SAFE_COMMAND_TIMEOUT,
+)
 
 
 class ExecuteLimits(BaseModel):
@@ -250,6 +256,17 @@ class SearchCodeArgs(BaseModel):
         return [pattern.replace("\\", "/") for pattern in value]
 
 
+class WebSearchArgs(BaseModel):
+    query: str = Field(..., min_length=1)
+    max_results: int = Field(default=5, ge=1, le=10)
+
+
+class FetchUrlArgs(BaseModel):
+    url: str = Field(..., min_length=1)
+    extract: Literal["main_text"] = "main_text"
+    max_chars: int = Field(default=12000, ge=1, le=50000)
+
+
 class RunCommandArgs(BaseModel):
     cmd: List[str]
     cwd: str = "."
@@ -268,6 +285,38 @@ class RunCommandArgs(BaseModel):
     def normalize_cwd(cls, value: str) -> str:
         normalized = value.replace("\\", "/") or "."
         return Path(normalized).as_posix()
+
+
+class RunCommandSafeArgs(BaseModel):
+    argv: List[str]
+    cwd: str = "."
+    timeout_seconds: int = Field(default=SAFE_COMMAND_TIMEOUT, ge=1, le=600)
+
+    @field_validator("argv")
+    def argv_must_not_be_empty(cls, value: List[str]) -> List[str]:
+        if not value:
+            raise ValueError("argv must include at least one element")
+        return value
+
+    @field_validator("cwd")
+    def normalize_cwd(cls, value: str) -> str:
+        normalized = value.replace("\\", "/") or "."
+        return Path(normalized).as_posix()
+
+
+class RunTestsArgs(BaseModel):
+    suites: List[Literal["backend", "toolrunner", "all"]]
+    timeout_seconds: int = Field(default=RUN_TESTS_TIMEOUT, ge=1, le=3600)
+
+    @field_validator("suites")
+    def validate_suites(cls, value: List[Literal["backend", "toolrunner", "all"]]) -> List[Literal["backend", "toolrunner", "all"]]:
+        if not value:
+            raise ValueError("suites must include at least one suite")
+        normalized = [str(item).strip().lower() for item in value]
+        for item in normalized:
+            if item not in {"backend", "toolrunner", "all"}:
+                raise ValueError(f"unsupported suite '{item}'")
+        return normalized
 
 
 class RunnerTestArgs(BaseModel):
@@ -602,3 +651,4 @@ class GitLogArgs(BaseModel):
         if not value or not value.strip():
             raise ValueError("ref is required")
         return value.strip()
+

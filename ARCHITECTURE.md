@@ -145,6 +145,7 @@ When adding a new tool, update every layer in this order so the tool can be expo
    - The command copies shared catalog fields down into each workspace definition, including `name`, `description`, `args_schema`, `default_risk_level`, and `default_requires_approval`, so the workspace starts from the current shared baseline.
    - By default, `seed_workspace_tools` seeds released tools only and leaves definitions disabled unless `--enable-all` is passed. Use `--include-unreleased` only when you intentionally want unreleased shared tools to appear in that workspace.
    - Ensure the workspace `ToolDefinition.tool` foreign key is linked to the shared `Tool` row and `enabled=True` if the tool should be selectable.
+   - For local/dev acceleration, `python manage.py seed_dev_tools` is the one-command shortcut. It runs `seed_tools`, runs `seed_workspace_tools --enable-all` for the selected workspace, creates or re-enables `AgentToolGrant` rows for the selected agents, and updates each agent's `tool_policy_json["selected_tools"]` metadata.
 5. Grant the tool to the agent.
    - Create or enable the `AgentToolGrant` row for the target agent and tool.
    - The effective prompt tool set is built from `ToolDefinition` + `AgentToolGrant` + release gating, so seeding alone is not enough.
@@ -210,3 +211,15 @@ Constraints:
 - Explicit transitions over implicit behavior.
 - Approval streams keep humans in the loop.
 - Observability is built-in via event logs, snapshots, and WebSocket streams.
+
+
+------------------------------------------------------------------------
+
+## Smoke Runbooks
+
+Operational smoke-test runbooks live under `docs/smoke/`. Current runbooks include:
+
+- `docs/smoke/memory-smoke-test-plan.md`
+- `docs/smoke/toolrunner-smoke-plan.md`
+
+Use those documents for post-change operator validation before broader QA.

@@ -12,6 +12,22 @@ and production-safe.
 
 ------------------------------------------------------------------------
 
+# Current Capabilities (Mar 17, 2026)
+
+- Full agent runtime with event loop
+- ToolRunner execution system (async-ready)
+- OpenAI WS + HTTP integration
+- Gemini HTTP-compatible provider path
+- Multi-agent switching capability
+- Full developer and researcher tool suite
+- Safe bounded command execution and repo-scripted test runners
+- Telegram communication channel
+- Memory (STM + LTM)
+- Scheduled tasks
+- Autonomous coding workflows
+
+------------------------------------------------------------------------
+
 ## Why AgentMaestro?
 
 Many AI agent frameworks rely on implicit loops and in-memory control
@@ -47,6 +63,7 @@ This design enables:
 -   Clear debugging
 -   Sub-agent orchestration
 -   Production-grade multi-user control
+-   Diagnostic tools that are used to improve agent orchestration and efficiency
 
 ------------------------------------------------------------------------
 
@@ -145,6 +162,7 @@ Parent/child relationships are first-class, enabling:
 - **Workspace isolation:** each Agent, AgentRun, and ToolCall belongs to a workspace that owns ToolDefinitions. Only enabled ToolDefinitions may appear in the wizard or be granted to agents.
 - **Tool policy hierarchy:** workspace shelves control which tools are visible, released gating keeps unreleased functionality locked for non-superusers, and AgentToolGrant enforces explicit enablement (default-deny) before an AI can invoke a tool.
 - **Risk tiers & approvals:** tools are classified as SAFE, ELEVATED, or DANGEROUS. Elevated/Dangerous calls create ToolCalls with status PENDING_APPROVAL; manual approval (via the WS approval card) progresses them to QUEUED/RUNNING while denials emit audit-friendly observations back to the provider.
+- **Bounded developer execution:** `run_command_safe` is the no-approval path for tightly allowlisted developer commands inside the workspace. Git is excluded from that surface and must go through the dedicated `git_*` tools. `run_tests` is limited to the repo-owned PowerShell test entrypoints.
 - **Async Celery execution:** approved tool calls enqueue `tools.execute_tool_call_async`, register `celery_task_id`, and persist the result or error payload. Completion events publish via the channel layer so the WebSocket consumer can resume the OpenAI session with the tool output without polling.
 - **Persisted observability:** every user/assistant/tool turn is stored as `LLMMessage` linked to `AgentRun` <-> `LLMRun`. The `/agents/<slug>/` page replays the last 50 turns, while RunEvents and ToolCalls provide a durable audit trail.
 - **Pairing & transport security:** pairing codes bind chat IDs to endpoints; Telegram adapters accept `/pair <code>` only from allowlisted users, and transports remain dormant until a valid pairing claims the conversation. Secrets (bot tokens, chat IDs, Celery credentials) stay in `.env` and are never logged.

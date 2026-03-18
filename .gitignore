@@ -100,6 +100,8 @@ temp/
 temp_check*.py
 temp_debug.py
 temp_edit.py
+.tmp_*.py
+.tmp_*.txt
 
 
 # =========================================
@@ -114,7 +116,7 @@ DevAgentMaestrotool*/
 backend/DevAgentMaestrobackendpytest_temp/
 toolrunner/DevAgentMaestrotoolrunnerpytest_temp/
 .agentmaestro_smoke_ws/
-debug_patch*
+debug_patch*.py
 toolrunner/.agentmaestro/
 smoke/
 

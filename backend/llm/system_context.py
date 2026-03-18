@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from textwrap import shorten
-from typing import Iterable
+from typing import Any, Iterable
 
 from django.conf import settings
 
@@ -54,6 +54,7 @@ Operating rules:
 
 Context:
 - You may be given tool access and runtime constraints. Stay within them.
+- If the user explicitly says 'remember that', 'note that', or states a stable preference and the `remember` tool is available, prefer persisting it instead of only acknowledging it conversationally.
 """.strip()
 
 POLICY_DOC_PATH = "backend/llm/policy.MD"
@@ -109,7 +110,67 @@ def _build_model_notice(agent, model_name: str) -> str:
     )
 
 
-def build_system_context(agent, *, model_name: str, transport: str, tool_names: Iterable[str]) -> str:
+def _build_capability_notices(tool_names: Iterable[str]) -> list[str]:
+    names = {str(name or "").strip() for name in tool_names if str(name or "").strip()}
+    sections: list[str] = []
+    if "spawn_subrun" in names:
+        sections.append(
+            "Capability: Subruns\n"
+            "- The `spawn_subrun` tool is available in this run.\n"
+            "- Use it when the task benefits from focused delegated research or a narrow child prompt.\n"
+            "- Do not say subruns are unavailable when `spawn_subrun` is listed as available.\n"
+            "- After the child completes, continue in the parent run and synthesize the child result into the final answer.\n"
+            "- Child failures should usually be handled and reported in the parent, not used to fail the parent run.\n"
+            "- If a child fails, acknowledge that failure yourself and continue in the parent without asking the user for permission to proceed.\n"
+            "- When a child fails, briefly report the failure cause if known and state that you are continuing the work directly.\n"
+            "- Reserve `FAIL_FAST` for critical safety or security situations only.\n"
+            "- Tool-invoked child runs may execute inline and return child summary text before the current planner turn ends."
+        )
+    if "schedule_task" in names:
+        sections.append(
+            "Capability: Scheduling\n"
+            "- The `schedule_task` tool is available in this run.\n"
+            "- Do not say scheduling is unavailable when `schedule_task` is listed as available.\n"
+            "- For built-in deterministic weather automation, use `task_type=daily_weather_report`.\n"
+            "- For general recurring agent work such as backups, maintenance, digests, or delegated research, use `task_type=other_daily_task` with `execution_mode=headless_run`.\n"
+            "- Use `recurrence` for complex schedules; use `timezone` and `local_time` only for simple once-per-day schedules."
+        )
+    if "remember" in names or "search_memory" in names:
+        sections.append(
+            "Capability: User Memory Scope\n"
+            "- When using user-scoped memory tools, prefer the canonical authenticated user identifier provided below.\n"
+            "- Do not invent display-name variants such as merged or reformatted names for `scope_id`.\n"
+            "- If a canonical user id is available, prefer that exact id for `scope_type=user` calls."
+        )
+    return sections
+
+
+def _build_authenticated_user_notice(authenticated_user: Any | None) -> str:
+    if authenticated_user is None:
+        return ""
+    user_id = str(getattr(authenticated_user, "pk", "") or "").strip()
+    username_getter = getattr(authenticated_user, "get_username", None)
+    username = username_getter() if callable(username_getter) else getattr(authenticated_user, "username", "")
+    username = str(username or "").strip()
+    full_name_getter = getattr(authenticated_user, "get_full_name", None)
+    full_name = full_name_getter() if callable(full_name_getter) else ""
+    full_name = str(full_name or "").strip()
+    email = str(getattr(authenticated_user, "email", "") or "").strip()
+    lines = ["Authenticated user:"]
+    if user_id:
+        lines.append(f"- Canonical user id: {user_id}")
+    if username:
+        lines.append(f"- Canonical auth username: {username}")
+    if full_name:
+        lines.append(f"- Display name: {full_name}")
+    if email:
+        lines.append(f"- Account email: {email}")
+    if user_id or username:
+        lines.append("- For `remember` or `search_memory` with `scope_type=user`, use the canonical user id above when possible; otherwise use the exact canonical auth username above.")
+    return "\n".join(lines)
+
+
+def build_system_context(agent, *, model_name: str, transport: str, tool_names: Iterable[str], authenticated_user: Any | None = None) -> str:
     role = (getattr(agent, "role", "") or DEFAULT_ROLE).strip().lower()
     if role not in VALID_ROLES:
         role = DEFAULT_ROLE
@@ -143,7 +204,11 @@ Runtime:
         sections.append(policy_section)
     sections.append(overlay)
     sections.append(runtime)
+    sections.extend(_build_capability_notices(tool_names))
     sections.append(_build_model_notice(agent, model_name))
+    authenticated_user_section = _build_authenticated_user_notice(authenticated_user)
+    if authenticated_user_section:
+        sections.append(authenticated_user_section)
     if description_section:
         sections.append(description_section)
     if custom_section:

@@ -36,6 +36,17 @@ REMOTE_OPS_MESSAGE_EVENT = "remote_ops_message"
 TOOL_CALL_STATUS_EVENT_NAME = "tool_call_status"
 
 
+def _tool_display_name(tool_call, *, summary: dict[str, object] | None = None) -> str:
+    details = summary if isinstance(summary, dict) else {}
+    label = str(details.get("tool_display_name") or (tool_call.args or {}).get("display_label") or "").strip()
+    return label or tool_call.tool_name
+
+
+def _tool_display_summary(tool_call, *, summary: dict[str, object] | None = None) -> str:
+    details = summary if isinstance(summary, dict) else {}
+    return str(details.get("display_summary") or (tool_call.args or {}).get("display_summary") or "").strip()
+
+
 
 def _terminal_status_for_tool_call(ticket: RemoteApprovalTicket) -> str:
     tool_status = str(ticket.tool_call.status or "").strip().upper()
@@ -90,7 +101,9 @@ def _approval_summary(tool_call, *, web_url: str, expires_at) -> dict[str, objec
     run = tool_call.run
     return {
         "tool_name": tool_call.tool_name,
+        "tool_display_name": _tool_display_name(tool_call),
         "args": tool_call.args or {},
+        "display_summary": _tool_display_summary(tool_call),
         "run_id": str(run.id),
         "agent_name": getattr(run.agent, "name", ""),
         "workspace_id": str(run.workspace_id),
@@ -113,8 +126,9 @@ def _format_args(args: dict[str, object]) -> str:
 
 def _ticket_message_text(ticket: RemoteApprovalTicket) -> str:
     summary = ticket.summary or {}
-    tool_name = summary.get("tool_name") or ticket.tool_call.tool_name
+    tool_name = _tool_display_name(ticket.tool_call, summary=summary)
     args = summary.get("args") or ticket.tool_call.args or {}
+    display_summary = _tool_display_summary(ticket.tool_call, summary=summary)
     agent_name = summary.get("agent_name") or getattr(ticket.run.agent, "name", "")
     expires_local = timezone.localtime(ticket.expires_at).strftime("%H:%M %Z")
     lines = [
@@ -125,6 +139,8 @@ def _ticket_message_text(ticket: RemoteApprovalTicket) -> str:
     ]
     if agent_name:
         lines.append(f"Agent: {agent_name}")
+    if display_summary:
+        lines.append(f"Summary: {display_summary}")
     lines.append(f"Expires: {expires_local}")
     lines.append("Choose an action below or use approve/deny with the short code.")
     return "\n".join(lines)
@@ -165,8 +181,9 @@ def _ticket_status_label(ticket: RemoteApprovalTicket) -> str:
 
 def _ticket_terminal_text(ticket: RemoteApprovalTicket) -> str:
     summary = ticket.summary or {}
-    tool_name = summary.get("tool_name") or ticket.tool_call.tool_name
+    tool_name = _tool_display_name(ticket.tool_call, summary=summary)
     args = summary.get("args") or ticket.tool_call.args or {}
+    display_summary = _tool_display_summary(ticket.tool_call, summary=summary)
     agent_name = summary.get("agent_name") or getattr(ticket.run.agent, "name", "")
     expires_local = timezone.localtime(ticket.expires_at).strftime("%H:%M %Z")
     lines = [
@@ -177,6 +194,8 @@ def _ticket_terminal_text(ticket: RemoteApprovalTicket) -> str:
     ]
     if agent_name:
         lines.append(f"Agent: {agent_name}")
+    if display_summary:
+        lines.append(f"Summary: {display_summary}")
     if ticket.status == RemoteApprovalTicket.STATUS_EXPIRED:
         lines.append(f"Timed out at: {expires_local}")
     else:
@@ -381,7 +400,11 @@ def _apply_ticket_action(
     performed_by: str,
     external_user_id: str,
 ) -> str:
+    from tools.models import ToolCall
     from tools.services.approvals import approve_tool_call, deny_tool_call
+
+    ticket.refresh_from_db()
+    ticket.tool_call.refresh_from_db()
 
     if ticket.status != RemoteApprovalTicket.STATUS_PENDING:
         _update_remote_ticket_card(ticket)
@@ -389,6 +412,19 @@ def _apply_ticket_action(
     if ticket.expires_at <= timezone.now():
         expire_remote_approval_ticket(ticket, acted_by_external_user_id=external_user_id, acted_by_label=performed_by)
         return f"Approval {ticket.short_code} timed out."
+    if ticket.tool_call.status != ToolCall.Status.PENDING_APPROVAL:
+        ticket.mark_terminal(
+            status=(
+                RemoteApprovalTicket.STATUS_DENIED
+                if ticket.tool_call.status == ToolCall.Status.DENIED
+                else RemoteApprovalTicket.STATUS_APPROVED
+            ),
+            acted_by_external_user_id=external_user_id,
+            acted_by_label=performed_by,
+            action_error="tool_call_already_acted_on",
+        )
+        _update_remote_ticket_card(ticket)
+        return f"Approval {ticket.short_code} was already processed."
 
     if action == APPROVAL_ACTION_DENY:
         deny_tool_call(
@@ -437,6 +473,7 @@ def _apply_ticket_action(
         payload={
             "tool_call_id": str(ticket.tool_call_id),
             "tool_name": ticket.tool_call.tool_name,
+            "tool_display_name": _tool_display_name(ticket.tool_call),
             "status": ticket.tool_call.status,
             "detail": approval_detail,
             "approval_metadata": ticket.tool_call.approval_metadata or {},

@@ -6,7 +6,7 @@
   <meta charset="utf-8">
   <title>{{ agent.name }} · Agent Chat</title>
   <link rel="icon" type="image/x-icon" href="{% static 'img/favicon.ico' %}">
-  <link rel="stylesheet" href="{% static 'control/chat.css' %}" />
+  <link rel="stylesheet" href="{% static 'control/chat.css' %}?v=20260315-md-renderer" />
   <style>
     body {
       background: #030712;
@@ -418,8 +418,18 @@
     .chat-form {
       margin-top: auto;
       flex-shrink: 0;
-      max-width: 90%;
+      max-width: 95%;
     }
+    .chat-elapsed-prompt {
+      align-self: center;
+      margin: 0 0 0.85rem;
+      min-height: 1.1rem;
+      color: rgba(15, 23, 42, 0.55);
+      font-size: 0.9rem;
+      font-style: italic;
+      text-align: center;
+    }
+
     .tool-request-card {
       border: 1px solid rgba(161, 98, 7, 0.25);
       border-radius: 10px;
@@ -447,8 +457,24 @@
       background: rgba(220, 252, 231, 0.65);
       border-color: rgba(34, 197, 94, 0.35);
     }
+    .tool-request-entry[data-status="COMPLETED_WITH_WARNING"] {
+      background: rgba(254, 243, 199, 0.82);
+      border-color: rgba(245, 158, 11, 0.4);
+    }
+    .tool-request-entry[data-status="COMPLETED_WITH_FAILURE"],
+    .tool-request-entry[data-status="FAILED"] {
+      background: rgba(254, 226, 226, 0.82);
+      border-color: rgba(220, 38, 38, 0.35);
+    }
     .tool-request-entry[data-status="COMPLETED"] .chat-message-meta {
       color: rgba(20, 83, 45, 0.8);
+    }
+    .tool-request-entry[data-status="COMPLETED_WITH_WARNING"] .chat-message-meta {
+      color: rgba(120, 53, 15, 0.9);
+    }
+    .tool-request-entry[data-status="COMPLETED_WITH_FAILURE"] .chat-message-meta,
+    .tool-request-entry[data-status="FAILED"] .chat-message-meta {
+      color: rgba(127, 29, 29, 0.9);
     }
     .tool-request-entry .chat-message-meta {
       color: rgba(120, 53, 15, 0.8);
@@ -516,6 +542,15 @@
       background: rgba(34, 197, 94, 0.18);
       color: #166534;
     }
+    .tool-request-status[data-status="COMPLETED_WITH_WARNING"] {
+      background: rgba(245, 158, 11, 0.24);
+      color: #92400e;
+    }
+    .tool-request-status[data-status="COMPLETED_WITH_FAILURE"],
+    .tool-request-status[data-status="FAILED"] {
+      background: rgba(220, 38, 38, 0.18);
+      color: #991b1b;
+    }
     .tool-request-status[data-status="DENIED"] {
       background: rgba(220, 53, 69, 0.18);
       color: #b02a37;
@@ -532,6 +567,36 @@
     .tool-request-card[data-status="COMPLETED"] .tool-request-footer,
     .tool-request-card[data-status="COMPLETED"] .tool-request-detail-toggle {
       color: #166534;
+    }
+    .tool-request-card[data-status="COMPLETED_WITH_WARNING"] {
+      background: rgba(254, 243, 199, 0.92);
+      border-color: rgba(245, 158, 11, 0.35);
+      color: #78350f;
+    }
+    .tool-request-card[data-status="COMPLETED_WITH_WARNING"] .tool-request-args {
+      background: rgba(255, 251, 235, 0.98);
+      color: #78350f;
+    }
+    .tool-request-card[data-status="COMPLETED_WITH_WARNING"] .tool-request-footer,
+    .tool-request-card[data-status="COMPLETED_WITH_WARNING"] .tool-request-detail-toggle {
+      color: #92400e;
+    }
+    .tool-request-card[data-status="COMPLETED_WITH_FAILURE"],
+    .tool-request-card[data-status="FAILED"] {
+      background: rgba(254, 242, 242, 0.94);
+      border-color: rgba(220, 38, 38, 0.32);
+      color: #7f1d1d;
+    }
+    .tool-request-card[data-status="COMPLETED_WITH_FAILURE"] .tool-request-args,
+    .tool-request-card[data-status="FAILED"] .tool-request-args {
+      background: rgba(254, 226, 226, 0.7);
+      color: #7f1d1d;
+    }
+    .tool-request-card[data-status="COMPLETED_WITH_FAILURE"] .tool-request-footer,
+    .tool-request-card[data-status="COMPLETED_WITH_FAILURE"] .tool-request-detail-toggle,
+    .tool-request-card[data-status="FAILED"] .tool-request-footer,
+    .tool-request-card[data-status="FAILED"] .tool-request-detail-toggle {
+      color: #991b1b;
     }
     .tool-request-args {
       background: rgba(255, 251, 235, 0.9);
@@ -627,6 +692,117 @@
     .chat-message-text-expanded {
       max-height: none;
       overflow: visible;
+    }
+    .chat-markdown {
+      display: block;
+      line-height: 1.55;
+      white-space: normal;
+      word-break: break-word;
+    }
+    .chat-markdown > :first-child {
+      margin-top: 0;
+    }
+    .chat-markdown > :last-child {
+      margin-bottom: 0;
+    }
+    .chat-markdown p,
+    .chat-markdown ul,
+    .chat-markdown ol,
+    .chat-markdown pre,
+    .chat-markdown table,
+    .chat-markdown blockquote,
+    .chat-markdown hr,
+    .chat-markdown .chat-md-footnotes {
+      margin: 0 0 0.8rem;
+    }
+    .chat-markdown ul,
+    .chat-markdown ol {
+      padding-left: 1.35rem;
+    }
+    .chat-markdown li + li {
+      margin-top: 0.3rem;
+    }
+    .chat-markdown h1,
+    .chat-markdown h2,
+    .chat-markdown h3,
+    .chat-markdown h4,
+    .chat-markdown h5,
+    .chat-markdown h6 {
+      margin: 0 0 0.65rem;
+      line-height: 1.25;
+      font-weight: 700;
+      color: inherit;
+    }
+    .chat-markdown h1 {
+      font-size: 1.35rem;
+    }
+    .chat-markdown h2 {
+      font-size: 1.2rem;
+    }
+    .chat-markdown h3 {
+      font-size: 1.08rem;
+    }
+    .chat-markdown a {
+      color: #1d4ed8;
+      text-decoration: underline;
+    }
+    .chat-markdown code {
+      font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+      font-size: 0.92em;
+      background: rgba(15, 23, 42, 0.08);
+      border-radius: 4px;
+      padding: 0.08rem 0.32rem;
+    }
+    .chat-markdown pre {
+      background: rgba(15, 23, 42, 0.9);
+      color: #e2e8f0;
+      border-radius: 10px;
+      padding: 0.8rem 0.9rem;
+      overflow-x: auto;
+    }
+    .chat-markdown pre code {
+      background: transparent;
+      padding: 0;
+      color: inherit;
+    }
+    .chat-markdown blockquote {
+      border-left: 3px solid rgba(29, 78, 216, 0.35);
+      padding-left: 0.85rem;
+      color: rgba(15, 23, 42, 0.78);
+    }
+    .chat-markdown table {
+      width: 100%;
+      border-collapse: collapse;
+      display: block;
+      overflow-x: auto;
+    }
+    .chat-markdown thead {
+      background: rgba(15, 23, 42, 0.06);
+    }
+    .chat-markdown th,
+    .chat-markdown td {
+      border: 1px solid rgba(15, 23, 42, 0.12);
+      padding: 0.5rem 0.6rem;
+      text-align: left;
+      vertical-align: top;
+      min-width: 120px;
+    }
+    .chat-markdown hr {
+      border: 0;
+      border-top: 1px solid rgba(15, 23, 42, 0.12);
+    }
+    .chat-md-footnote-ref {
+      font-size: 0.8em;
+      vertical-align: super;
+      line-height: 1;
+    }
+    .chat-md-footnotes {
+      font-size: 0.92em;
+      color: rgba(15, 23, 42, 0.82);
+    }
+    .chat-md-footnotes ol {
+      margin: 0;
+      padding-left: 1.2rem;
     }
   </style>
 
@@ -731,6 +907,11 @@
       data-user-name="{{ user_name }}"
       data-ws-url="{{ websocket_url }}"
       data-run-prealloc-url="{% url 'agents:agent_run_preallocate' slug=agent.slug %}"
+      data-llm-provider="{{ llm_provider }}"
+      data-llm-provider-label="{{ llm_provider_label }}"
+      data-llm-model="{{ llm_model }}"
+      data-llm-transport="{{ llm_transport }}"
+      data-llm-transport-label="{{ llm_transport_label }}"
     >
       <header class="chat-stream-header">
         <div>
@@ -762,6 +943,7 @@
         </div>
       </header>
       <div class="chat-messages" data-chat-messages></div>
+      <div class="chat-elapsed-prompt" data-elapsed-prompt></div>
       <form class="chat-form" data-chat-form>
         <textarea data-chat-input rows="4" placeholder="Say something to {{ agent.name|lower }}…"></textarea>
         <div class="chat-form-actions">
@@ -771,7 +953,7 @@
     </section>
   </div>
 
-  <script src="{% static 'agents/chat.js' %}" defer></script>
+  <script src="{% static 'agents/chat.js' %}?v=20260316-tool-warning-status" defer></script>
 </body>
 
 </html>

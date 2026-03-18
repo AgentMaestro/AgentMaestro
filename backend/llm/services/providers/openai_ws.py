@@ -13,6 +13,7 @@ from .base import OPENAI_WS_DEBUG
 from logging_utils import get_app_logger
 
 logger = get_app_logger(__name__)
+OPENAI_WS_LOG_PREFIX = "[OPENAI-WS]"
 logger.info("websockets version=%s", getattr(websockets, "__version__", "unknown"))
 OPENAI_WS_MAX_RETRIES = int(os.getenv("OPENAI_WS_MAX_RETRIES", "3"))
 OPENAI_WS_MAX_RETRY_JITTER_MS = int(os.getenv("OPENAI_WS_MAX_RETRY_JITTER_MS", "250"))
@@ -298,6 +299,8 @@ class OpenAIResponsesWebSocketSession:
         self._request_in_flight = False
         self._first_event_logged = False
         self._tools_sent = False
+        self._last_payload_preview = ""
+        self._last_request_id = ""
 
         logger.debug("-------------- WS START DEBUG LOGS ----------------------")
         logger.debug(f"url = {self._url}")
@@ -338,12 +341,13 @@ class OpenAIResponsesWebSocketSession:
             if self._ws and not self._connection_closed():
                 return
             logger.info(
-                "OpenAI WS connecting run=%s model=%s url=%s",
+                "%s connecting run=%s model=%s url=%s",
+                OPENAI_WS_LOG_PREFIX,
                 self._run_id,
                 self._model,
                 self._url,
             )
-            logger.info("OpenAI WS full URL: %s", self._url)
+            logger.info("%s full_url=%s run=%s model=%s", OPENAI_WS_LOG_PREFIX, self._url, self._run_id, self._model)
             headers = _auth_headers(self._api_key)
             logger.debug("OpenAI WS headers %s", _mask_headers(headers))
             try:
@@ -357,7 +361,8 @@ class OpenAIResponsesWebSocketSession:
                 )
             except websockets.WebSocketException as exc:
                 logger.error(
-                    "OpenAI WS connect error run=%s model=%s url=%s: %s",
+                    "%s connect_error run=%s model=%s url=%s error=%s",
+                    OPENAI_WS_LOG_PREFIX,
                     self._run_id,
                     self._model,
                     self._url,
@@ -366,7 +371,8 @@ class OpenAIResponsesWebSocketSession:
                 raise
             self._mark_active()
             logger.info(
-                "OpenAI WS connected run=%s model=%s url=%s",
+                "%s connected run=%s model=%s url=%s",
+                OPENAI_WS_LOG_PREFIX,
                 self._run_id,
                 self._model,
                 self._url,
@@ -400,7 +406,8 @@ class OpenAIResponsesWebSocketSession:
             response_ref = event.get("response_id") or event.get("id") or ""
         previous_ref = self.previous_response_id or ""
         logger.info(
-            "OpenAI WS event run=%s model=%s type=%s response_id=%s previous_response_id_sent=%s",
+            "%s event run=%s model=%s type=%s response_id=%s previous_response_id_sent=%s",
+            OPENAI_WS_LOG_PREFIX,
             self._run_id,
             self._model,
             event_type,
@@ -412,7 +419,8 @@ class OpenAIResponsesWebSocketSession:
         tool_count = len(payload.get("tools") or [])
         input_count = len(payload.get("input") or [])
         logger.info(
-            "OpenAI WS send run=%s agent=%s model=%s request_id=%s previous_response_id=%s attempt=%d inputs=%d tools=%d",
+            "%s send run=%s agent=%s model=%s request_id=%s previous_response_id=%s attempt=%d inputs=%d tools=%d",
+            OPENAI_WS_LOG_PREFIX,
             self._run_id,
             self._agent_id,
             self._model,
@@ -438,7 +446,8 @@ class OpenAIResponsesWebSocketSession:
         )
         model_returned = response.get("model") or self._model
         logger.info(
-            "OpenAI WS recv run=%s agent=%s model=%s request_id=%s response_id=%s model_returned=%s latency=%.3f classification=%s",
+            "%s recv run=%s agent=%s model=%s request_id=%s response_id=%s model_returned=%s latency=%.3f classification=%s",
+            OPENAI_WS_LOG_PREFIX,
             self._run_id,
             self._agent_id,
             self._model,
@@ -457,7 +466,8 @@ class OpenAIResponsesWebSocketSession:
         error: OpenAIResponsesWSException,
     ) -> None:
         logger.warning(
-            "OpenAI WS failure run=%s agent=%s model=%s request_id=%s classification=%s attempt=%d error=%s param=%s",
+            "%s failure run=%s agent=%s model=%s request_id=%s classification=%s attempt=%d error=%s param=%s",
+            OPENAI_WS_LOG_PREFIX,
             self._run_id,
             self._agent_id,
             self._model,
@@ -490,8 +500,7 @@ class OpenAIResponsesWebSocketSession:
         }
         if tools:
             payload["tools"] = tools
-        if self.previous_response_id:
-            payload["previous_response_id"] = self.previous_response_id
+        payload["previous_response_id"] = self.previous_response_id
         metadata = payload.get("metadata") or {}
         request_id = str(uuid.uuid4())
         metadata["request_id"] = request_id
@@ -553,7 +562,18 @@ class OpenAIResponsesWebSocketSession:
             try:
                 payload["previous_response_id"] = self.previous_response_id
                 payload_json = json.dumps(payload, ensure_ascii=False)
+                self._last_request_id = request_id
+                self._last_payload_preview = payload_json[:12000]
                 self._log_send_event(request_id, attempt, payload)
+                logger.info(
+                    "%s send_payload run=%s agent=%s model=%s request_id=%s payload=%s",
+                    OPENAI_WS_LOG_PREFIX,
+                    self._run_id,
+                    self._agent_id,
+                    self._model,
+                    request_id,
+                    self._last_payload_preview,
+                )
                 start = time.monotonic()
                 logger.debug("OpenAI WS send payload run=%s model=%s", self._run_id, self._model)
                 try:
@@ -580,13 +600,17 @@ class OpenAIResponsesWebSocketSession:
                 raw = await asyncio.wait_for(self._ws.recv(), timeout=self._timeout_seconds)
             except websockets.exceptions.ConnectionClosed as exc:
                 logger.warning(
-                    "OpenAI WS closed run=%s agent=%s model=%s code=%s reason=%r was_clean=%s",
+                    "%s closed run=%s agent=%s model=%s code=%s reason=%r was_clean=%s request_id=%s previous_response_id=%s payload=%s",
+                    OPENAI_WS_LOG_PREFIX,
                     self._run_id,
                     self._agent_id,
                     self._model,
                     getattr(exc, "code", None),
                     getattr(exc, "reason", None),
                     isinstance(exc, websockets.exceptions.ConnectionClosedOK),
+                    self._last_request_id,
+                    self.previous_response_id,
+                    self._last_payload_preview,
                 )
                 raise OpenAIResponsesWSNetworkError(
                     "OpenAI WS connection closed without a completed response",
@@ -615,10 +639,12 @@ class OpenAIResponsesWebSocketSession:
             self._log_event_metadata(event, event_type)
             if not self._first_event_logged:
                 logger.info(
-                    "OpenAI WS first event run=%s model=%s type=%s",
+                    "%s first_event run=%s model=%s type=%s payload=%s",
+                    OPENAI_WS_LOG_PREFIX,
                     self._run_id,
                     self._model,
                     event_type,
+                    raw_preview[:4000],
                 )
                 self._first_event_logged = True
             #_log_debug("OpenAI WS event type=%s", event_type)
@@ -653,7 +679,8 @@ class OpenAIResponsesWebSocketSession:
                 param = err.get("param")
                 request_id = _extract_request_id(event)
                 logger.error(
-                    "OpenAI WS error run=%s agent=%s model=%s code=%s status=%s param=%s message=%s",
+                    "%s error run=%s agent=%s model=%s code=%s status=%s param=%s message=%s",
+                    OPENAI_WS_LOG_PREFIX,
                     self._run_id,
                     self._agent_id,
                     self._model,
@@ -662,11 +689,11 @@ class OpenAIResponsesWebSocketSession:
                     param,
                     message,
                 )
-                logger.debug(
+                logger.warning(
                     "OpenAI WS error payload run=%s model=%s payload=%s",
                     self._run_id,
                     self._model,
-                    json.dumps(event, ensure_ascii=False)[:2000],
+                    json.dumps(event, ensure_ascii=False)[:4000],
                 )
                 if code == "previous_response_not_found":
                     raise OpenAIResponsesWSPreviousResponseNotFound(

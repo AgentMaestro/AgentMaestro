@@ -227,6 +227,71 @@ def test_handle_remote_callback_marks_ticket_approved(monkeypatch):
 
 
 @pytest.mark.django_db
+def test_handle_remote_callback_is_idempotent_when_tool_call_already_processed(monkeypatch):
+    conversation, control_conversation, tool_call = _build_remote_ops_env("callback-repeat")
+    ticket = RemoteApprovalTicket.objects.create(
+        workspace=tool_call.run.workspace,
+        run=tool_call.run,
+        tool_call=tool_call,
+        transport=conversation.transport,
+        endpoint=conversation.endpoint,
+        conversation=conversation,
+        external_chat_id=conversation.external_conversation_id,
+        external_message_id="101",
+        short_code="8JKL",
+        callback_token="tokcallbackrepeat1",
+        web_url="http://example.test/run/repeat",
+        summary={"tool_name": "file_write", "args": {"path": "notes/repeat.txt"}, "agent_name": tool_call.run.agent.name},
+        expires_at=timezone.now() + timedelta(minutes=15),
+    )
+    tool_call.status = ToolCall.Status.QUEUED
+    tool_call.save(update_fields=["status", "updated_at"])
+    edits = {}
+
+    def fake_edit(conversation_arg, message_id, text, **kwargs):
+        edits["conversation"] = conversation_arg
+        edits["message_id"] = message_id
+        edits["text"] = text
+        edits["kwargs"] = kwargs
+        return {"response": {"ok": True, "result": {"message_id": message_id}}}
+
+    def fail_approve_tool_call(**kwargs):
+        raise AssertionError("approve_tool_call should not run for already-processed tool calls")
+
+    monkeypatch.setattr("comms.services.remote_ops.edit_conversation_message", fake_edit)
+    monkeypatch.setattr("tools.services.approvals.approve_tool_call", fail_approve_tool_call)
+
+    event = NormalizedEvent(
+        kind="callback",
+        update_id=78,
+        chat_id=conversation.external_conversation_id,
+        from_user_id="42",
+        from_username="scott",
+        text=None,
+        message_id="101",
+        callback_data=f"rops:a:{ticket.callback_token}:approve",
+        callback_query_id="cq-repeat",
+        ts=1,
+    )
+
+    message = handle_remote_callback(
+        conversation=control_conversation,
+        event=event,
+        transport_key=conversation.transport.key,
+        performed_by="scott",
+        external_user_id="42",
+    )
+
+    ticket.refresh_from_db()
+    assert message is not None
+    assert ticket.status == RemoteApprovalTicket.STATUS_APPROVED
+    assert ticket.action_error == "tool_call_already_acted_on"
+    assert edits["conversation"] == conversation
+    assert edits["message_id"] == "101"
+    assert "APPROVED" in edits["text"]
+
+
+@pytest.mark.django_db
 def test_expire_remote_approval_ticket_updates_card_and_emits_run_event(monkeypatch):
     conversation, _control_conversation, tool_call = _build_remote_ops_env("expire")
     ticket = RemoteApprovalTicket.objects.create(

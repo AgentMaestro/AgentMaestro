@@ -8,11 +8,13 @@ from .file_patch import apply_patch
 from .repo_tree import list_repo_tree
 from .search_code import list_search_code
 from .run_command import run_command
+from .run_command_safe import run_command_safe
 from .git_status import run_git_status
 from .git_checkout import run_git_checkout
 from .git_commit import run_git_commit
 from .git_log import run_git_log
 from .test_runner import run_tests
+from .run_tests import run_predefined_tests
 from .lint_runner import run_linters
 from .typecheck_runner import run_typecheck
 from .format_runner import run_formatter
@@ -22,3 +24,6 @@ from .git_branch_create import run_git_branch_create
 from .git_add import run_git_add
 from .git_push import run_git_push
 from .git_apply import run_git_apply
+
+from .web_search import run_web_search
+from .fetch_url import run_fetch_url

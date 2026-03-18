@@ -8,11 +8,17 @@ Required for OpenAI provider:
 
 - `OPENAI_API_KEY`
 - `OPENAI_BASE_URL` (optional)
-- `OPENAI_TRANSPORT` (`http` or `ws`, default `http`). HTTP mode uses the Responses API and is the production default; enable websocket mode only for the Stage 2 smoke tests described later.
+- `OPENAI_TRANSPORT` (`ws` or `http`, default `ws`). WebSocket transport is the default path; switch to HTTP Responses mode when you need a diagnostic fallback or clearer validation errors.
 - `OPENAI_HTTP_MODE` (`responses` or `chat_completions`, default `responses`). Keep this on `responses` so the HTTP and WS transports normalize tool calls the same way.
 - `OPENAI_WS_TIMEOUT_SECONDS` (default `60`): per-request receive timeout for Responses WebSocket calls.
 - `OPENAI_WS_IDLE_TIMEOUT_SECONDS` (default `60`): how long a WS session can idle before the pool closes it.
 - `OPENAI_WS_DEBUG` (default `0`): set to `1` or `true` to log payload summaries/events during the WS workflow.
+
+Required for Gemini provider:
+
+- `GEMINI_API_KEY`
+- `GEMINI_BASE_URL` (optional, default `https://generativelanguage.googleapis.com/v1beta/openai`)
+- `GEMINI_TRANSPORT` (default `http`). Non-HTTP values are coerced back to HTTP for now because Gemini WS/Live transport is not implemented in this sprint.
 
 App defaults (can be added to settings or `.env`):
 
@@ -148,14 +154,14 @@ python manage.py migrate llm
 
 ## Stage 2 WebSocket tool smoke
 
-The LLM app now runs against the HTTP/Responses transport by default, but these commands allow you to exercise the older websocket-based Stage 2 smoke path when you need to verify incremental tool-calling or session reuse.
+The LLM app now runs against the WebSocket transport by default, while HTTP/Responses remains the backup path when you need a simpler diagnostic transport or clearer OpenAI validation errors.
 
 1. `powershell -Command "$env:OPENAI_TRANSPORT='ws'"` (or set the equivalent env variable for your shell).
 2. *(Optional)* `powershell -Command "$env:OPENAI_WS_DEBUG='1'"` to enable verbose WS payload/event logging.
 3. `python manage.py llm_responses_ws_smoke`
 4. `python manage.py llm_responses_ws_tool_smoke`
 
-The tool smoke command forces `OPENAI_TRANSPORT=ws`, calls `file_write` then the JSON-producing `shell_exec`, and asserts the run completed with at least two tool calls, final JSON list output, and a recorded `openai_response_id`. Afterward reset the defaults (`OPENAI_TRANSPORT='http'` and `OPENAI_HTTP_MODE='responses'`) and rerun `python manage.py llm_toolloop_real_smoke` to confirm the HTTP mode still behaves as expected.
+The tool smoke command forces `OPENAI_TRANSPORT=ws`, calls `file_write` then the JSON-producing `shell_exec`, and asserts the run completed with at least two tool calls, final JSON list output, and a recorded `openai_response_id`. Afterward, if you need a backup diagnostic pass, switch to `OPENAI_TRANSPORT='http'` with `OPENAI_HTTP_MODE='responses'` and rerun `python manage.py llm_toolloop_real_smoke` to confirm the HTTP path still behaves as expected.
 
 ## Console stream
 

@@ -23,7 +23,7 @@ from tools.services.result_bus import store_tool_result
 logger = logging.getLogger(__name__)
 _DEFAULT_TOOLRUNNER_SANDBOX_ROOT = Path("C:/tmp/agentmaestro/sandbox")
 _DEFAULT_TOOLRUNNER_HTTP_TIMEOUT_BUFFER_S = 30.0
-_NATIVE_TOOL_NAMES = {"remember", "search_memory", "schedule_task", "list_scheduled_tasks"}
+_NATIVE_TOOL_NAMES = {"remember", "search_memory", "schedule_task", "list_scheduled_tasks", "spawn_subrun", "scheduled_headless_run_gate"}
 
 
 def _run_group(run_id: str) -> str:
@@ -41,6 +41,11 @@ def _publish_tool_result_ready(
         start_ts,
     )
     channel_layer = get_channel_layer()
+    logger.debug(
+        "_publish_tool_result_ready channel_layer=%s group=%s",
+        channel_layer,
+        _run_group(run_id),
+    )
     if channel_layer is None:
         logger.warning(
             "_publish_tool_result_ready no channel layer for run=%s tool_call_id=%s",
@@ -323,6 +328,9 @@ def _tool_timeout_seconds(tool_call: ToolCall, payload: dict[str, object]) -> fl
     timeout_s = _coerce_positive_seconds(args.get("timeout_ms"), divisor=1000.0)
     if timeout_s is not None:
         return timeout_s
+    timeout_s = _coerce_positive_seconds(args.get("timeout_seconds"))
+    if timeout_s is not None:
+        return timeout_s
     limits = payload.get("limits")
     if isinstance(limits, dict):
         timeout_s = _coerce_positive_seconds(limits.get("timeout_s"))
@@ -405,10 +413,22 @@ def _emit_tool_call_completed(tool_call: ToolCall, duration_ms: int) -> None:
             tool_call_id=str(tool_call.id),
             payload=payload,
         )
+        logger.info(
+            "execution._emit_tool_call_completed stored tool_result run=%s tool_call=%s provider=%s",
+            tool_call.run_id,
+            tool_call.id,
+            provider_call_id,
+        )
         _publish_tool_result_ready(
             str(tool_call.run_id),
             str(tool_call.id),
             provider_call_id=provider_call_id,
+        )
+        logger.info(
+            "execution._emit_tool_call_completed tool_result_ready published run=%s tool_call=%s provider=%s",
+            tool_call.run_id,
+            tool_call.id,
+            provider_call_id,
         )
     except Exception:
         logger.exception(
@@ -447,13 +467,16 @@ def execute_tool_call(tool_call_id: str) -> ToolCall:
     if tool_call.status not in {ToolCall.Status.QUEUED, ToolCall.Status.RUNNING}:
         raise RuntimeError(f"Cannot execute tool call in status {tool_call.status}")
 
-    definition = (
-        ToolDefinition.objects
-        .filter(workspace_id=tool_call.run.workspace_id, name=tool_call.tool_name, enabled=True)
-        .first()
-    )
+    internal_gate_tool = tool_call.tool_name == "scheduled_headless_run_gate"
+    definition = None
+    if not internal_gate_tool:
+        definition = (
+            ToolDefinition.objects
+            .filter(workspace_id=tool_call.run.workspace_id, name=tool_call.tool_name, enabled=True)
+            .first()
+        )
     logger.info("execute_tool_call tool_definition lookup tool_call=%s definition=%s", tool_call.id, definition.id if definition else None)
-    if not definition:
+    if not internal_gate_tool and not definition:
         raise RuntimeError(f"tool {tool_call.tool_name} not enabled for workspace")
 
     acquired_quota = False
@@ -468,7 +491,11 @@ def execute_tool_call(tool_call_id: str) -> ToolCall:
     tool_call.started_at = timezone.now()
     tool_call.save(update_fields=["status", "started_at", "updated_at"])
 
-    body, payload = _build_toolrunner_payload(tool_call, definition)
+    if internal_gate_tool:
+        body = b""
+        payload = {"limits": {}}
+    else:
+        body, payload = _build_toolrunner_payload(tool_call, definition)
     timestamp = str(int(time.time()))
     signature = _sign_payload(body, timestamp)
     headers = {

@@ -1,6 +1,7 @@
 from decimal import Decimal
 from collections import OrderedDict
 from django import forms
+from django.conf import settings
 from django.contrib import messages
 from django.contrib.auth import get_user_model
 from django.contrib.auth.decorators import login_required
@@ -13,7 +14,12 @@ from django.utils import timezone
 from django.views.decorators.http import require_http_methods
 
 from agents.current import agent_creation_context
-from agents.utils import build_transport_status, find_agent_telegram_endpoint
+from agents.utils import (
+    build_transport_status,
+    find_agent_telegram_endpoint,
+    format_provider_display,
+    normalize_provider_for_model,
+)
 from core.models import Workspace, WorkspaceMembership
 
 from .forms import (
@@ -25,9 +31,12 @@ from .forms import (
 )
 from .models import Agent
 from runs.models import AgentRun
+from runs.services.handoff import apply_successor_handoff
 from runs.services.memory import get_or_create_run_memory
 from tools.models import AgentToolGrant, ToolDefinition
 from tools.policy import RISK_ORDER, get_effective_tools, visible_tools_for_user
+from llm.models import LLMModelProfile
+from llm.services.registry import get_client
 
 
 STEPS = [
@@ -185,6 +194,15 @@ def _get_agent_with_access(user, slug: str) -> Agent:
 @require_http_methods(["GET"])
 def agent_run_preallocate(request, slug: str):
     agent = _get_agent_with_access(request.user, slug)
+    predecessor_run = None
+    predecessor_run_id = str(request.GET.get("from_run_id") or "").strip()
+    rotation_reason = str(request.GET.get("rotation_reason") or "").strip()
+    if predecessor_run_id:
+        predecessor_run = AgentRun.objects.select_related("agent", "workspace", "started_by").filter(
+            id=predecessor_run_id,
+            agent=agent,
+            workspace=agent.workspace,
+        ).first()
     run = AgentRun.objects.create(
         workspace=agent.workspace,
         agent=agent,
@@ -195,7 +213,14 @@ def agent_run_preallocate(request, slug: str):
         input_text="",
     )
     get_or_create_run_memory(run)
-    return JsonResponse({"run_id": str(run.id)})
+    handoff = None
+    if predecessor_run is not None:
+        handoff = apply_successor_handoff(
+            successor_run=run,
+            predecessor_run=predecessor_run,
+            rotation_reason=rotation_reason,
+        )
+    return JsonResponse({"run_id": str(run.id), "handoff": handoff})
 
 
 def _definition_sort_key(definition: ToolDefinition) -> tuple[str, int, str]:
@@ -464,6 +489,22 @@ def _create_tool_grants(agent: Agent, workspace: Workspace, session_data: dict[s
     AgentToolGrant.objects.bulk_create(grants)
 
 
+def _resolve_transport_for_provider(provider: str) -> str:
+    normalized = (provider or "").strip().lower() or "openai"
+    if normalized == "openai":
+        return (getattr(settings, "OPENAI_TRANSPORT", "ws") or "ws").lower()
+    if normalized == "gemini":
+        return (getattr(settings, "GEMINI_TRANSPORT", "http") or "http").lower()
+    try:
+        client = get_client(normalized)
+        resolver = getattr(client, "resolve_transport", None)
+        if callable(resolver):
+            return str(resolver() or "http").lower()
+        return str(getattr(client, "transport", "http") or "http").lower()
+    except Exception:
+        return "http"
+
+
 @login_required
 def agent_detail(request, slug: str):
     agent = get_object_or_404(Agent.objects.select_related("workspace", "owner"), slug=slug)
@@ -478,6 +519,18 @@ def agent_detail(request, slug: str):
             .values("name", "slug")
         )
 
+    profile = (
+        LLMModelProfile.objects.filter(name=agent.policy_name, is_active=True)
+        .order_by("name")
+        .first()
+    )
+    provider = profile.provider if profile else getattr(settings, "LLM_PROVIDER", "openai")
+    model_name = profile.model if profile else agent.default_model
+    normalized_provider = normalize_provider_for_model(provider, model_name)
+    provider_label = format_provider_display(normalized_provider)
+    transport = _resolve_transport_for_provider(normalized_provider)
+    transport_label = "WS" if transport.lower() == "ws" else "HTTP"
+
     effective_tools = get_effective_tools(agent, request.user)
     telegram_endpoint = find_agent_telegram_endpoint(agent)
     context = {
@@ -490,6 +543,11 @@ def agent_detail(request, slug: str):
         "sandbox_paths": agent.sandbox_paths or [],
         "telegram_status": build_transport_status(agent, telegram_endpoint),
         "user_name": (request.user.get_full_name() or request.user.username or "You").strip() or "You",
+        "llm_provider": normalized_provider,
+        "llm_provider_label": provider_label,
+        "llm_model": model_name,
+        "llm_transport": transport,
+        "llm_transport_label": transport_label,
     }
     return render(request, "agents/agent_detail.html", context)
 

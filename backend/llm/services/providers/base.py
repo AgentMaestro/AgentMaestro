@@ -15,6 +15,9 @@ class BaseLLMClient:
     Base interface for LLM providers.
     """
 
+    provider_name = "base"
+    transport = "http"
+
     async def complete(
         self,
         messages: Sequence[Dict[str, Any]],
@@ -41,3 +44,30 @@ class BaseLLMClient:
         Optional streaming hook. Implementations may yield text deltas.
         """
         raise NotImplementedError
+
+    def preferred_transport(self) -> str:
+        return str(getattr(self, "transport", "http") or "http").lower()
+
+    def supports_ws_transport(self) -> bool:
+        return False
+
+    def resolve_transport(self) -> str:
+        transport = self.preferred_transport()
+        if transport == "ws" and not self.supports_ws_transport():
+            return "http"
+        return transport
+
+    def is_transient_error(self, exc: Exception) -> bool:
+        return False
+
+    def is_ws_exception(self, exc: Exception) -> bool:
+        return False
+
+    def is_previous_response_not_found(self, exc: Exception) -> bool:
+        return False
+
+    def build_error_meta(self, exc: Exception) -> Dict[str, Any]:
+        return {
+            "error_type": type(exc).__name__,
+            "error": str(exc),
+        }

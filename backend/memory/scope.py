@@ -133,6 +133,9 @@ def _resolve_user(value: Any):
         username_field = getattr(User, "USERNAME_FIELD", "username")
         instance = User.objects.filter(**{username_field: candidate}).first()
     if instance is None:
+        username_field = getattr(User, "USERNAME_FIELD", "username")
+        instance = User.objects.filter(**{f"{username_field}__iexact": candidate}).first()
+    if instance is None:
         raise ValueError(f"Unknown user memory scope '{candidate}'.")
     return instance
 

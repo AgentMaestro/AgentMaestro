@@ -35,6 +35,16 @@ TOOL_APPROVAL_GRANTS_CLEARED_EVENT = "tool_approval_grants_cleared"
 TOOL_APPROVAL_GRANTS_UPDATED_EVENT = "tool_approval_grants_updated"
 
 
+def _tool_display_name(tool_call: ToolCall) -> str:
+    label = str((tool_call.args or {}).get("display_label") or "").strip()
+    return label or tool_call.tool_name
+
+
+def _tool_display_summary(tool_call: ToolCall) -> str:
+    summary = str((tool_call.args or {}).get("display_summary") or "").strip()
+    return summary
+
+
 def _schedule_approvals_push(*, workspace_id: str, event: str, data: Dict[str, Any]) -> None:
     def _do_broadcast():
         broadcast_approvals_event(workspace_id=workspace_id, event=event, data=data)
@@ -46,11 +56,13 @@ def _broadcast_tool_call_status(tool_call: ToolCall, *, status: Optional[str] = 
     payload = {
         "tool_call_id": str(tool_call.id),
         "tool_name": tool_call.tool_name,
+        "tool_display_name": _tool_display_name(tool_call),
         "status": status or tool_call.status,
         "requires_approval": tool_call.requires_approval,
         "args": tool_call.args,
         "celery_task_id": tool_call.celery_task_id,
         "approval_metadata": tool_call.approval_metadata or {},
+        "display_summary": _tool_display_summary(tool_call),
         "approval_grant_id": str(tool_call.approval_grant_id) if tool_call.approval_grant_id else "",
     }
     if reason:
@@ -75,6 +87,7 @@ def _publish_terminal_tool_feedback(tool_call: ToolCall, *, payload: dict[str, A
         "tool_call_id": str(tool_call.id),
         "status": tool_call.status,
         "tool_name": tool_call.tool_name,
+        "tool_display_name": _tool_display_name(tool_call),
         "stdout": tool_call.stdout or "",
         "stderr": tool_call.stderr or "",
         "result": payload,
@@ -109,6 +122,18 @@ def _enqueue_and_schedule(tool_call_id: str) -> None:
 def _schedule_execution_after_commit(tool_call_id: str) -> None:
     transaction.on_commit(lambda: _enqueue_and_schedule(tool_call_id))
 
+
+
+
+def _schedule_headless_approval_denial(tool_call_id: str, reason: str | None) -> None:
+    def _finalize() -> None:
+        from runs.services.headless import handle_headless_approval_denial
+        from tools.models import ToolCall
+
+        tool_call = ToolCall.objects.select_related("run").get(id=tool_call_id)
+        handle_headless_approval_denial(tool_call, reason=reason or "headless_approval_denied")
+
+    transaction.on_commit(_finalize)
 
 def _schedule_grants_snapshot_push(*, run: AgentRun) -> None:
     def _do_broadcast():
@@ -204,6 +229,7 @@ def request_tool_call_approval(
                 "run_id": str(run.id),
                 "tool_call_id": str(tool_call.id),
                 "tool_name": tool_call.tool_name,
+                "tool_display_name": _tool_display_name(tool_call),
                 "status": tool_call.status,
             },
         )
@@ -230,6 +256,8 @@ def request_tool_call_approval(
         payload={
             "tool_call_id": str(tool_call.id),
             "tool_name": tool_call.tool_name,
+            "tool_display_name": _tool_display_name(tool_call),
+            "display_summary": _tool_display_summary(tool_call),
             "args": tool_call.args,
             "step_index": step.step_index,
             "status": tool_call.status,
@@ -317,6 +345,9 @@ def approve_tool_call(*, tool_call_id: str, user, grant_mode: str = GRANT_MODE_O
         event_type=TOOL_CALL_APPROVED_EVENT,
         payload={
             "tool_call_id": str(tool_call.id),
+            "tool_name": tool_call.tool_name,
+            "tool_display_name": _tool_display_name(tool_call),
+            "display_summary": _tool_display_summary(tool_call),
             "approved_by": getattr(user, "username", None) or actor_label,
             "status": tool_call.status,
             "approval_metadata": approval_metadata,
@@ -339,6 +370,9 @@ def approve_tool_call(*, tool_call_id: str, user, grant_mode: str = GRANT_MODE_O
         data={
             "run_id": str(tool_call.run_id),
             "tool_call_id": str(tool_call.id),
+            "tool_name": tool_call.tool_name,
+            "tool_display_name": _tool_display_name(tool_call),
+            "display_summary": _tool_display_summary(tool_call),
             "approved_by": getattr(user, "username", None) or actor_label,
             "status": tool_call.status,
             "approval_metadata": approval_metadata,
@@ -385,6 +419,9 @@ def deny_tool_call(*, tool_call_id: str, user, reason: Optional[str] = None, act
         event_type=TOOL_CALL_DENIED_EVENT,
         payload={
             "tool_call_id": str(tool_call.id),
+            "tool_name": tool_call.tool_name,
+            "tool_display_name": _tool_display_name(tool_call),
+            "display_summary": _tool_display_summary(tool_call),
             "denied_by": getattr(user, "username", None) or actor_label,
             "status": tool_call.status,
             "reason": reason,
@@ -407,6 +444,9 @@ def deny_tool_call(*, tool_call_id: str, user, reason: Optional[str] = None, act
 
     _broadcast_tool_call_status(tool_call, status=ToolCall.Status.DENIED, reason=reason)
 
+    if tool_call.tool_name == "scheduled_headless_run_gate":
+        _schedule_headless_approval_denial(str(tool_call.id), reason)
+
     transaction.on_commit(
         lambda: _publish_terminal_tool_feedback(
             tool_call,
@@ -418,6 +458,7 @@ def deny_tool_call(*, tool_call_id: str, user, reason: Optional[str] = None, act
                     "details": {
                         "tool_call_id": str(tool_call.id),
                         "tool_name": tool_call.tool_name,
+                        "tool_display_name": _tool_display_name(tool_call),
                         "denied_by": getattr(user, "username", None) or actor_label,
                     },
                 },

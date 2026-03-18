@@ -6,6 +6,7 @@
 
     const statusEl = shell.querySelector("[data-connection-status]");
     const messagesEl = shell.querySelector("[data-chat-messages]");
+    const elapsedPromptEl = shell.querySelector("[data-elapsed-prompt]");
     const form = shell.querySelector("[data-chat-form]");
     const textarea = shell.querySelector("[data-chat-input]");
     const connectionActionBtn = shell.querySelector("[data-connection-action]");
@@ -21,10 +22,54 @@
     const userName = shell.dataset.userName || "You";
     const agentSlug = shell.dataset.agentSlug || "";
     const toolCards = new Map();
+    const approvalChimePlayed = new Set();
+    const approvalChimeQueued = new Set();
+    let approvalAudioContext = null;
     let activeApprovalGrants = [];
-    const RUN_ID_STORAGE_KEY = "agentmaestro.active_run_id";
-    const log = (...args) => console.log("[chat.js]", ...args);
+    const RUN_ID_STORAGE_KEY_BASE = "agentmaestro.active_run_id";
+    let runtimeProvider = (shell.dataset.llmProvider || "openai").trim() || "openai";
+    let runtimeProviderLabel = (shell.dataset.llmProviderLabel || "LLM").trim() || "LLM";
+    let runtimeModel = (shell.dataset.llmModel || "unknown").trim() || "unknown";
+    let runtimeTransport = (shell.dataset.llmTransport || "ws").trim() || "ws";
+    let runtimeTransportLabel =
+        (shell.dataset.llmTransportLabel || "").trim() || (runtimeTransport.toLowerCase() === "ws" ? "WS" : "HTTP");
+    const normalizeTransportLabel = (value, fallbackValue = "") => {
+        const candidate = String(value || fallbackValue || "").trim().toUpperCase();
+        if (candidate.includes("HTTP")) {
+            return "HTTP";
+        }
+        if (candidate.includes("WS")) {
+            return "WS";
+        }
+        return "HTTP";
+    };
+    const runtimeLogPrefix = () => 
+        `[chat.js][${runtimeProviderLabel}:${runtimeModel}:${normalizeTransportLabel(runtimeTransportLabel, runtimeTransport)}]`;
+    const log = (...args) => console.log(runtimeLogPrefix(), ...args);
+    const warn = (...args) => console.warn(runtimeLogPrefix(), ...args);
+    const error = (...args) => console.error(runtimeLogPrefix(), ...args);
+    const debug = (...args) => console.debug(runtimeLogPrefix(), ...args);
+    const syncRuntimeMetadata = (payload = {}) => {
+        const nextProvider = String(payload.provider || runtimeProvider).trim();
+        const nextProviderLabel = String(payload.provider_label || runtimeProviderLabel).trim();
+        const nextModel = String(payload.model || runtimeModel).trim();
+        const nextTransport = String(payload.transport || runtimeTransport).trim();
+        const nextTransportLabel = String(
+            payload.transport_label ||
+                normalizeTransportLabel(nextTransport, runtimeTransportLabel)
+        ).trim();
+
+        runtimeProvider = nextProvider || runtimeProvider;
+        runtimeProviderLabel = nextProviderLabel || runtimeProviderLabel;
+        runtimeModel = nextModel || runtimeModel;
+        runtimeTransport = nextTransport || runtimeTransport;
+        runtimeTransportLabel = nextTransportLabel || runtimeTransportLabel;
+    };
     let activeRunId = null;
+    let queuedMessageAfterRunRotate = null;
+    let lastHandoffNoticeKey = null;
+    let lastPromptSentAt = null;
+    let elapsedPromptTimerId = null;
     const sessionRunStorage = (() => {
         try {
             if (typeof window === "undefined" || typeof window.sessionStorage === "undefined") {
@@ -47,6 +92,136 @@
             messagesEl.scrollTop = messagesEl.scrollHeight;
         }
     };
+
+    const formatElapsedPrompt = (elapsedMs) => {
+        const totalSeconds = Math.max(0, Math.floor((elapsedMs || 0) / 1000));
+        const hours = String(Math.floor(totalSeconds / 3600)).padStart(2, "0");
+        const minutes = String(Math.floor((totalSeconds % 3600) / 60)).padStart(2, "0");
+        const seconds = String(totalSeconds % 60).padStart(2, "0");
+        return `${hours}:${minutes}:${seconds}`;
+    };
+
+    const renderElapsedPrompt = () => {
+        if (!elapsedPromptEl) {
+            return;
+        }
+        if (!lastPromptSentAt) {
+            elapsedPromptEl.textContent = "";
+            return;
+        }
+        const elapsedText = formatElapsedPrompt(Date.now() - lastPromptSentAt);
+        elapsedPromptEl.textContent = `Elapsed since your last prompt: ${elapsedText}`;
+    };
+
+    const ensureElapsedPromptTimer = () => {
+        if (elapsedPromptTimerId !== null) {
+            return;
+        }
+        elapsedPromptTimerId = window.setInterval(() => {
+            renderElapsedPrompt();
+        }, 1000);
+    };
+
+    const markPromptSentNow = () => {
+        lastPromptSentAt = Date.now();
+        renderElapsedPrompt();
+        ensureElapsedPromptTimer();
+    };
+
+    const ensureApprovalAudioContext = () => {
+        if (approvalAudioContext) {
+            return approvalAudioContext;
+        }
+        const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+        if (!AudioContextClass) {
+            return null;
+        }
+        approvalAudioContext = new AudioContextClass();
+        return approvalAudioContext;
+    };
+
+    const playApprovalChime = () => {
+        const context = ensureApprovalAudioContext();
+        if (!context || context.state !== "running") {
+            return false;
+        }
+        const notes = [
+            {frequency: 880, start: 0, duration: 0.09, gain: 0.035},
+            {frequency: 1320, start: 0.11, duration: 0.14, gain: 0.03},
+        ];
+        notes.forEach((note) => {
+            const oscillator = context.createOscillator();
+            const gainNode = context.createGain();
+            oscillator.type = "sine";
+            oscillator.frequency.value = note.frequency;
+            gainNode.gain.setValueAtTime(0.0001, context.currentTime + note.start);
+            gainNode.gain.exponentialRampToValueAtTime(
+                note.gain,
+                context.currentTime + note.start + 0.01
+            );
+            gainNode.gain.exponentialRampToValueAtTime(
+                0.0001,
+                context.currentTime + note.start + note.duration
+            );
+            oscillator.connect(gainNode);
+            gainNode.connect(context.destination);
+            oscillator.start(context.currentTime + note.start);
+            oscillator.stop(context.currentTime + note.start + note.duration);
+        });
+        return true;
+    };
+
+    const flushQueuedApprovalChimes = () => {
+        if (!approvalChimeQueued.size) {
+            return;
+        }
+        const queuedToolCallIds = Array.from(approvalChimeQueued);
+        queuedToolCallIds.forEach((toolCallId) => {
+            if (!playApprovalChime()) {
+                return;
+            }
+            approvalChimeQueued.delete(toolCallId);
+            approvalChimePlayed.add(toolCallId);
+        });
+    };
+
+    const unlockApprovalAudio = () => {
+        const context = ensureApprovalAudioContext();
+        if (!context) {
+            return;
+        }
+        if (context.state === "running") {
+            flushQueuedApprovalChimes();
+            return;
+        }
+        const resumeResult = context.resume();
+        if (resumeResult && typeof resumeResult.then === "function") {
+            resumeResult
+                .then(() => {
+                    flushQueuedApprovalChimes();
+                })
+                .catch((error) => {
+                    console.debug("[chat.js] approval audio resume failed", error);
+                });
+            return;
+        }
+        flushQueuedApprovalChimes();
+    };
+
+    const queueApprovalChime = (toolCallId) => {
+        if (!toolCallId || approvalChimePlayed.has(toolCallId) || approvalChimeQueued.has(toolCallId)) {
+            return;
+        }
+        if (playApprovalChime()) {
+            approvalChimePlayed.add(toolCallId);
+            return;
+        }
+        approvalChimeQueued.add(toolCallId);
+    };
+
+    ["pointerdown", "keydown", "touchstart"].forEach((eventName) => {
+        document.addEventListener(eventName, unlockApprovalAudio, {passive: true});
+    });
 
     const renderApprovalGrants = () => {
         if (!approvalGrantsListEl || !approvalGrantsEmptyEl || !clearApprovalGrantsBtn) {
@@ -108,6 +283,37 @@
 
     let isConnected = false;
     let activeRunStatus = "RUNNING";
+
+    const TERMINAL_RUN_STATUSES = new Set(["FAILED", "COMPLETED", "CANCELED"]);
+
+    const shouldRotateRunForNextPrompt = () =>
+        activeRunStatus === "WAITING_FOR_SUBRUN" || TERMINAL_RUN_STATUSES.has(activeRunStatus);
+
+    const nextPromptRunRotationReason = () => {
+        if (activeRunStatus === "WAITING_FOR_SUBRUN") {
+            return "The previous run is still waiting on a subrun, so Maestro is starting a fresh run for this prompt.";
+        }
+        if (TERMINAL_RUN_STATUSES.has(activeRunStatus)) {
+            return `The previous run is ${activeRunStatus.toLowerCase()}, so Maestro is starting a fresh run for this prompt.`;
+        }
+        return "";
+    };
+
+    const nextPromptRunRotationCode = () => {
+        if (activeRunStatus === "WAITING_FOR_SUBRUN") {
+            return "waiting_for_subrun";
+        }
+        if (activeRunStatus === "FAILED") {
+            return "failed_run";
+        }
+        if (activeRunStatus === "COMPLETED") {
+            return "completed_run";
+        }
+        if (activeRunStatus === "CANCELED") {
+            return "canceled_run";
+        }
+        return "unexpected_result";
+    };
 
     const updateConnectionAction = (connected) => {
         if (!connectionActionBtn) {
@@ -226,12 +432,14 @@
         focusChannel?.close();
     };
 
+    const runIdStorageKey = agentSlug ? `${RUN_ID_STORAGE_KEY_BASE}:${agentSlug}` : RUN_ID_STORAGE_KEY_BASE;
+
     const storeRunId = (runId) => {
         if (!sessionRunStorage || !runId) {
             return;
         }
         try {
-            sessionRunStorage.setItem(RUN_ID_STORAGE_KEY, runId);
+            sessionRunStorage.setItem(runIdStorageKey, runId);
         } catch (error) {
             console.warn("Unable to persist run_id", error);
         }
@@ -242,19 +450,30 @@
             return null;
         }
         try {
-            return sessionRunStorage.getItem(RUN_ID_STORAGE_KEY);
+            return sessionRunStorage.getItem(runIdStorageKey);
         } catch {
             return null;
         }
     };
 
-    const ensureRunId = async () => {
+    const clearStoredRunId = () => {
+        if (!sessionRunStorage) {
+            return;
+        }
+        try {
+            sessionRunStorage.removeItem(runIdStorageKey);
+        } catch (error) {
+            console.warn("Unable to clear stored run_id", error);
+        }
+    };
+
+    const ensureRunId = async ({fromRunId = "", rotationReason = ""} = {}) => {
         if (activeRunId) {
             log("ensureRunId: already have activeRunId =", activeRunId);
             return activeRunId;
         }
         const storedRun = readStoredRunId();
-        if (storedRun) {
+        if (storedRun && !fromRunId) {
             activeRunId = storedRun;
             log("ensureRunId: restored run_id from sessionStorage =", activeRunId);
             return activeRunId;
@@ -264,22 +483,29 @@
             return null;
         }
         log("ensureRunId: requesting preallocated run_id via", runPreallocUrl);
-        const preallocated = await requestPreallocatedRunId();
+        const preallocated = await requestPreallocatedRunId({fromRunId, rotationReason});
         if (preallocated) {
-            activeRunId = preallocated;
-            storeRunId(preallocated);
+            activeRunId = preallocated.run_id || preallocated;
+            storeRunId(activeRunId);
             log("ensureRunId: obtained preallocated run_id =", activeRunId);
         }
         return activeRunId;
     };
 
-    const requestPreallocatedRunId = async () => {
+    const requestPreallocatedRunId = async ({fromRunId = "", rotationReason = ""} = {}) => {
         if (!runPreallocUrl) {
             return null;
         }
-        log("requestPreallocatedRunId: requesting", runPreallocUrl);
+        const requestUrl = new URL(runPreallocUrl, window.location.origin);
+        if (fromRunId) {
+            requestUrl.searchParams.set("from_run_id", fromRunId);
+        }
+        if (rotationReason) {
+            requestUrl.searchParams.set("rotation_reason", rotationReason);
+        }
+        log("requestPreallocatedRunId: requesting", requestUrl.toString());
         try {
-            const response = await fetch(runPreallocUrl, {
+            const response = await fetch(requestUrl.toString(), {
                 credentials: "include",
                 headers: {Accept: "application/json"},
             });
@@ -287,11 +513,49 @@
                 throw new Error(`Failed to preallocate run (${response.status})`);
             }
             const payload = await response.json();
-            return payload.run_id || null;
+            return payload || null;
         } catch (error) {
             console.warn("Unable to preallocate run", error);
             return null;
         }
+    };
+
+    const sendChatText = (text) => {
+        if (!socket || socket.readyState !== WebSocket.OPEN) {
+            return false;
+        }
+        appendMessage({
+            role: "operator",
+            direction: "out",
+            kind: userName,
+            text,
+            timestamp: new Date().toISOString(),
+            author: userName,
+        });
+        markPromptSentNow();
+        socket.send(JSON.stringify({type: "chat.message", text}));
+        if (activeRunStatus === "RUNNING") {
+            renderThinkingPlaceholder("thinking");
+        }
+        return true;
+    };
+
+    const rotateToFreshRun = async ({queuedText = null, reason = "", rotationCode = "unexpected_result"} = {}) => {
+        const priorRunId = activeRunId;
+        if (reason) {
+            appendSystemMessage(reason, "run_control");
+        }
+        clearStoredRunId();
+        activeRunId = null;
+        queuedMessageAfterRunRotate = queuedText;
+        const runId = await ensureRunId({fromRunId: priorRunId, rotationReason: rotationCode});
+        if (!runId) {
+            queuedMessageAfterRunRotate = null;
+            appendSystemMessage("Unable to start a fresh run right now.", "error");
+            return false;
+        }
+        connect();
+        return true;
     };
     window.addEventListener("beforeunload", cleanupAgentTabEntry);
     window.addEventListener("pagehide", cleanupAgentTabEntry);
@@ -308,10 +572,15 @@
     };
 
     const isCollapsibleTransportSystemMessage = (payload) => {
-        const text = typeof payload?.text === "string" ? payload.text.trim() : "";
+        const text = typeof payload?.text === "string" ? payload.text.toUpperCase().trim() : "";
         return (
             (payload?.role || "agent") === "system" &&
-            (text.startsWith("[WS Send]") || text.startsWith("[WS Rcv]"))
+            (
+                text.includes("[WS SEND]") ||
+                text.includes("[WS RCV]") ||
+                text.includes("[HTTP SEND]") ||
+                text.includes("[HTTP RCV]")
+            )
         );
     };
 
@@ -326,6 +595,295 @@
         );
         button.setAttribute("aria-expanded", expanded ? "true" : "false");
         button.title = expanded ? "Collapse" : "Expand";
+    };
+
+    let markdownRenderCounter = 0;
+
+    const createMarkdownPrefix = () => `chat-md-${++markdownRenderCounter}`;
+
+    const appendPlainText = (container, text, preserveLineBreaks = true) => {
+        const value = String(text || "");
+        if (!preserveLineBreaks || !value.includes("\n")) {
+            container.append(document.createTextNode(value));
+            return;
+        }
+        value.split("\n").forEach((part, index) => {
+            if (index > 0) {
+                container.append(document.createElement("br"));
+            }
+            if (part) {
+                container.append(document.createTextNode(part));
+            }
+        });
+    };
+
+    const appendInlineMarkdown = (container, text, options = {}) => {
+        const value = String(text || "");
+        const tokenPattern = /(\*\*([^*]+)\*\*)|(`([^`]+)`)|(\*([^*]+)\*)|(\[([^\]]+)\]\(([^)\s]+)\))|(\[\^([^\]]+)\])/g;
+        let lastIndex = 0;
+        let match = tokenPattern.exec(value);
+        while (match) {
+            if (match.index > lastIndex) {
+                appendPlainText(container, value.slice(lastIndex, match.index), options.preserveLineBreaks !== false);
+            }
+            if (match[1]) {
+                const strong = document.createElement("strong");
+                appendInlineMarkdown(strong, match[2], options);
+                container.append(strong);
+            } else if (match[3]) {
+                const code = document.createElement("code");
+                code.textContent = match[4] || "";
+                container.append(code);
+            } else if (match[5]) {
+                const em = document.createElement("em");
+                appendInlineMarkdown(em, match[6], options);
+                container.append(em);
+            } else if (match[7]) {
+                const href = String(match[9] || "").trim();
+                const label = match[8] || href;
+                if (/^(https?:|mailto:)/i.test(href)) {
+                    const link = document.createElement("a");
+                    link.href = href;
+                    link.target = "_blank";
+                    link.rel = "noopener noreferrer";
+                    appendInlineMarkdown(link, label, options);
+                    container.append(link);
+                } else {
+                    appendPlainText(container, match[0], options.preserveLineBreaks !== false);
+                }
+            } else if (match[10]) {
+                const footnoteId = match[11] || "note";
+                const sup = document.createElement("sup");
+                sup.className = "chat-md-footnote-ref";
+                const anchor = document.createElement("a");
+                anchor.href = `#${options.footnotePrefix || "chat-md"}-footnote-${footnoteId}`;
+                anchor.textContent = footnoteId;
+                sup.append(anchor);
+                container.append(sup);
+            }
+            lastIndex = tokenPattern.lastIndex;
+            match = tokenPattern.exec(value);
+        }
+        if (lastIndex < value.length) {
+            appendPlainText(container, value.slice(lastIndex), options.preserveLineBreaks !== false);
+        }
+    };
+
+    const isTableSeparator = (line) => /^\s*\|?(\s*:?-{3,}:?\s*\|)+\s*:?-{3,}:?\s*\|?\s*$/.test(line || "");
+
+    const splitTableRow = (line) => {
+        const normalized = String(line || "").trim().replace(/^\|/, "").replace(/\|$/, "");
+        return normalized.split("|").map((part) => part.trim());
+    };
+
+    const isBulletLine = (line) => /^\s*[-*+]\s+/.test(line || "");
+    const isOrderedLine = (line) => /^\s*\d+\.\s+/.test(line || "");
+    const isFootnoteLine = (line) => /^\[\^([^\]]+)\]:\s*(.*)$/.test(line || "");
+    const isHeadingLine = (line) => /^\s{0,3}#{1,6}\s+/.test(line || "");
+    const isFenceLine = (line) => /^```/.test(line || "");
+    const isQuoteLine = (line) => /^\s*>\s?/.test(line || "");
+
+    const isBlockStart = (line, nextLine) => {
+        if (!line || !line.trim()) {
+            return true;
+        }
+        return (
+            isHeadingLine(line) ||
+            isFenceLine(line) ||
+            isBulletLine(line) ||
+            isOrderedLine(line) ||
+            isQuoteLine(line) ||
+            isFootnoteLine(line) ||
+            (line.includes("|") && isTableSeparator(nextLine || ""))
+        );
+    };
+
+    const renderMarkdownInto = (container, text) => {
+        container.textContent = "";
+        container.classList.add("chat-markdown");
+        const prefix = createMarkdownPrefix();
+        const lines = String(text || "").replace(/\r\n?/g, "\n").split("\n");
+        const footnotes = [];
+        let index = 0;
+
+        const renderParagraph = (paragraphLines) => {
+            const paragraph = document.createElement("p");
+            appendInlineMarkdown(paragraph, paragraphLines.join("\n"), {footnotePrefix: prefix});
+            container.append(paragraph);
+        };
+
+        while (index < lines.length) {
+            const line = lines[index];
+            const nextLine = index + 1 < lines.length ? lines[index + 1] : "";
+            if (!line.trim()) {
+                index += 1;
+                continue;
+            }
+            if (isFootnoteLine(line)) {
+                const match = line.match(/^\[\^([^\]]+)\]:\s*(.*)$/);
+                const contentLines = [match?.[2] || ""];
+                index += 1;
+                while (index < lines.length) {
+                    const continuation = lines[index];
+                    if (!continuation.trim()) {
+                        index += 1;
+                        break;
+                    }
+                    if (/^\s{2,}|^\t/.test(continuation)) {
+                        contentLines.push(continuation.trim());
+                        index += 1;
+                        continue;
+                    }
+                    break;
+                }
+                footnotes.push({id: match?.[1] || String(footnotes.length + 1), text: contentLines.join(" ")});
+                continue;
+            }
+            if (isFenceLine(line)) {
+                const language = line.replace(/^```/, "").trim();
+                index += 1;
+                const codeLines = [];
+                while (index < lines.length && !isFenceLine(lines[index])) {
+                    codeLines.push(lines[index]);
+                    index += 1;
+                }
+                if (index < lines.length && isFenceLine(lines[index])) {
+                    index += 1;
+                }
+                const pre = document.createElement("pre");
+                const code = document.createElement("code");
+                if (language) {
+                    code.dataset.language = language;
+                }
+                code.textContent = codeLines.join("\n");
+                pre.append(code);
+                container.append(pre);
+                continue;
+            }
+            if (isHeadingLine(line)) {
+                const match = line.match(/^\s{0,3}(#{1,6})\s+(.*)$/);
+                const level = Math.min((match?.[1] || "#").length, 6);
+                const heading = document.createElement(`h${level}`);
+                appendInlineMarkdown(heading, match?.[2] || "", {footnotePrefix: prefix, preserveLineBreaks: false});
+                container.append(heading);
+                index += 1;
+                continue;
+            }
+            if (line.includes("|") && isTableSeparator(nextLine)) {
+                const table = document.createElement("table");
+                const thead = document.createElement("thead");
+                const tbody = document.createElement("tbody");
+                const headerCells = splitTableRow(line);
+                const headerRow = document.createElement("tr");
+                headerCells.forEach((cellText) => {
+                    const th = document.createElement("th");
+                    appendInlineMarkdown(th, cellText, {footnotePrefix: prefix, preserveLineBreaks: false});
+                    headerRow.append(th);
+                });
+                thead.append(headerRow);
+                table.append(thead);
+                index += 2;
+                while (index < lines.length && lines[index].trim() && lines[index].includes("|")) {
+                    const row = document.createElement("tr");
+                    splitTableRow(lines[index]).forEach((cellText) => {
+                        const td = document.createElement("td");
+                        appendInlineMarkdown(td, cellText, {footnotePrefix: prefix, preserveLineBreaks: false});
+                        row.append(td);
+                    });
+                    tbody.append(row);
+                    index += 1;
+                }
+                table.append(tbody);
+                container.append(table);
+                continue;
+            }
+            if (isBulletLine(line) || isOrderedLine(line)) {
+                const ordered = isOrderedLine(line);
+                const list = document.createElement(ordered ? "ol" : "ul");
+                while (index < lines.length) {
+                    const current = lines[index];
+                    if (!current.trim()) {
+                        index += 1;
+                        break;
+                    }
+                    if (ordered ? !isOrderedLine(current) : !isBulletLine(current)) {
+                        break;
+                    }
+                    const item = document.createElement("li");
+                    const markerPattern = ordered ? /^\s*\d+\.\s+/ : /^\s*[-*+]\s+/;
+                    const itemLines = [current.replace(markerPattern, "")];
+                    index += 1;
+                    while (index < lines.length) {
+                        const continuation = lines[index];
+                        if (!continuation.trim()) {
+                            break;
+                        }
+                        if (ordered ? isOrderedLine(continuation) : isBulletLine(continuation)) {
+                            break;
+                        }
+                        if (isBlockStart(continuation, index + 1 < lines.length ? lines[index + 1] : "")) {
+                            break;
+                        }
+                        itemLines.push(continuation.trim());
+                        index += 1;
+                    }
+                    appendInlineMarkdown(item, itemLines.join("\n"), {footnotePrefix: prefix});
+                    list.append(item);
+                }
+                container.append(list);
+                continue;
+            }
+            if (isQuoteLine(line)) {
+                const quoteLines = [];
+                while (index < lines.length && isQuoteLine(lines[index])) {
+                    quoteLines.push(lines[index].replace(/^\s*>\s?/, ""));
+                    index += 1;
+                }
+                const blockquote = document.createElement("blockquote");
+                renderMarkdownInto(blockquote, quoteLines.join("\n"));
+                container.append(blockquote);
+                continue;
+            }
+            const paragraphLines = [line];
+            index += 1;
+            while (index < lines.length) {
+                const current = lines[index];
+                const lookahead = index + 1 < lines.length ? lines[index + 1] : "";
+                if (!current.trim()) {
+                    break;
+                }
+                if (isBlockStart(current, lookahead)) {
+                    break;
+                }
+                paragraphLines.push(current);
+                index += 1;
+            }
+            renderParagraph(paragraphLines);
+        }
+
+        if (footnotes.length) {
+            const footnotesSection = document.createElement("section");
+            footnotesSection.className = "chat-md-footnotes";
+            const divider = document.createElement("hr");
+            const list = document.createElement("ol");
+            footnotes.forEach((footnote) => {
+                const item = document.createElement("li");
+                item.id = `${prefix}-footnote-${footnote.id}`;
+                appendInlineMarkdown(item, footnote.text, {footnotePrefix: prefix});
+                list.append(item);
+            });
+            footnotesSection.append(divider, list);
+            container.append(footnotesSection);
+        }
+    };
+
+    const setMessageBodyContent = (body, text, {markdown = true} = {}) => {
+        if (!markdown) {
+            body.classList.remove("chat-markdown");
+            body.textContent = text || "";
+            return;
+        }
+        renderMarkdownInto(body, text || "");
     };
 
     const createMessageElement = (payload) => {
@@ -359,9 +917,11 @@
         }
         metaTrail.append(timestamp);
 
-        const body = document.createElement("p");
+        const body = document.createElement("div");
         body.className = "chat-message-text";
-        body.textContent = payload.text || "";
+        setMessageBodyContent(body, payload.text || "", {
+            markdown: !isCollapsibleTransportSystemMessage(payload),
+        });
 
         if (isCollapsibleTransportSystemMessage(payload)) {
             article.classList.add("chat-message-transport-log");
@@ -423,7 +983,7 @@
         thinkingPhase = phase;
         const textEl = thinkingPlaceholder.querySelector(".chat-message-text");
         if (textEl) {
-            textEl.textContent = thinkingLabel(phase);
+            setMessageBodyContent(textEl, thinkingLabel(phase), {markdown: false});
         }
     };
 
@@ -543,6 +1103,71 @@
             .trim()
             .replace(/\s+/g, "_")
             .toUpperCase();
+
+    const buildToolFailureDetail = (payload, result) => {
+        const parts = [];
+        const rawStatus = String(payload?.status || "").trim();
+        const exitCode = payload?.exit_code;
+        const stderr = typeof payload?.stderr === "string" ? payload.stderr.trim() : "";
+        const resultChildStatus = String(result?.child_status || "").trim();
+        const childSummary = typeof result?.child_error_summary === "string" ? result.child_error_summary.trim() : "";
+        const failureSummary = typeof result?.child_failure?.summary === "string" ? result.child_failure.summary.trim() : "";
+        const recommendedAction = typeof result?.child_recommended_action === "string"
+            ? result.child_recommended_action.trim()
+            : "";
+
+        if (rawStatus) {
+            parts.push(`Tool status: ${rawStatus}`);
+        }
+        if (exitCode !== null && exitCode !== undefined && exitCode !== "") {
+            parts.push(`Exit code: ${exitCode}`);
+        }
+        if (resultChildStatus) {
+            parts.push(`Child status: ${resultChildStatus}`);
+        }
+        if (stderr) {
+            parts.push(`Error: ${stderr}`);
+        } else if (childSummary) {
+            parts.push(`Error: ${childSummary}`);
+        } else if (failureSummary) {
+            parts.push(`Error: ${failureSummary}`);
+        }
+        if (recommendedAction) {
+            parts.push(`Recommended action: ${recommendedAction}`);
+        }
+        return parts.join("\n");
+    };
+
+    const resolveToolDisplayState = (payload) => {
+        const data = payload || {};
+        const result = data.result && typeof data.result === "object" ? data.result : {};
+        const rawStatus = String(data.status || "COMPLETED").trim();
+        const normalizedStatus = getToolStatusKey(rawStatus);
+        const exitCode = data.exit_code;
+        const childStatus = getToolStatusKey(result.child_status || "");
+        const childFailed = Boolean(result.child_failed) || childStatus === "FAILED" || childStatus === "CANCELED";
+        const hasFailureCode = exitCode !== null && exitCode !== undefined && Number(exitCode) !== 0;
+        const hasFailureStatus = normalizedStatus === "FAILED";
+        const hasWarningStatus = normalizedStatus === "COMPLETED_WITH_WARNING";
+        const failureDetail = buildToolFailureDetail(data, result);
+
+        if (childFailed || hasFailureStatus || hasFailureCode) {
+            return {
+                statusText: "COMPLETED_WITH_FAILURE",
+                detail: failureDetail || result || data.stderr || data.error || data.detail || "",
+            };
+        }
+        if (hasWarningStatus) {
+            return {
+                statusText: "COMPLETED_WITH_WARNING",
+                detail: failureDetail || result || data.stderr || data.error || data.detail || "",
+            };
+        }
+        return {
+            statusText: rawStatus || "COMPLETED",
+            detail: result || data.stderr || data.error || data.detail || "",
+        };
+    };
 
     const createToolCard = (payload) => {
         const article = document.createElement("article");
@@ -676,6 +1301,9 @@
         if (card._detailEl && info) {
             setToolCardDetail(card, info);
         }
+        if (statusKey === "PENDING_APPROVAL") {
+            queueApprovalChime(toolCallId);
+        }
         if (card._approveBtn && card._denyBtn) {
             if (statusKey === "PENDING_APPROVAL") {
                 setApprovalButtonsState(card, "pending");
@@ -688,7 +1316,7 @@
     };
 
     const handleToolRequest = (payload) => {
-        console.log("tool_request run_id=", activeRunId);
+        debug("tool_request run_id=", activeRunId);
         if (!messagesEl) {
             return;
         }
@@ -703,16 +1331,17 @@
     };
 
     const handleToolStatus = (payload) => {
+        const display = resolveToolDisplayState(payload);
         updateToolCardStatus(
             payload.tool_call_id,
-            payload.status || "Queued",
-            payload.error || payload.detail || payload.approval_note,
+            display.statusText || payload.status || "Queued",
+            display.detail || payload.error || payload.detail || payload.approval_note,
         );
     };
 
     const handleToolResult = (payload) => {
         const data = payload?.data ? payload.data : payload;
-        console.log("[chat.js] tool_result DIAG:", {
+        debug("[tool_result DIAG]", {
             run_id: data?.run_id,
             tool_call_id: data?.tool_call_id,
             tool_name: data?.tool_name,
@@ -720,7 +1349,12 @@
             keys: data ? Object.keys(data) : null,
         });
 
-        updateToolCardStatus(data.tool_call_id, data?.status || "COMPLETED", data.result);
+        const display = resolveToolDisplayState(data);
+        updateToolCardStatus(
+            data.tool_call_id,
+            display.statusText || data?.status || "COMPLETED",
+            display.detail,
+        );
     };
 
     const handleToolDenied = (payload) => {
@@ -738,29 +1372,53 @@
         let payload;
         try {
             payload = JSON.parse(event.data);
-            console.log("[WS RCV] type=", payload?.type, "activeRunId=", activeRunId);
+            log("[RCV] type=", payload?.type, "activeRunId=", activeRunId);
 
         } catch (error) {
-            console.warn("Unable to parse agent chat payload", error);
+            warn("Unable to parse agent chat payload", error);
             return;
         }
         const isTransportLog =
             payload.type === "system" &&
             typeof payload.text === "string" &&
             (payload.text.includes("[WS") || payload.text.includes("[HTTP"));
-        if (isTransportLog && payload.text.includes("[WS Rcv]")) {
+        const transportTextUpper =
+            typeof payload.text === "string" ? payload.text.toUpperCase() : "";
+        if (isTransportLog && (
+            transportTextUpper.includes("[WS RCV]") ||
+            transportTextUpper.includes("[HTTP RCV]")
+        )) {
             setThinkingPhase("typing");
         }
 
         switch (payload.type) {
             case "connected":
+                syncRuntimeMetadata(payload);
                 activeRunId = payload.run_id || activeRunId;
-                console.log("[WS CONNECT] Connected with run_id:", activeRunId);
+                log("Connected with run_id:", activeRunId);
                 if (activeRunId) {
                     storeRunId(activeRunId);
                 }
                 setApprovalGrants(payload.approval_grants || []);
                 setRunStatus(payload.run_status || activeRunStatus);
+                if (payload.handoff) {
+                    const handoffKey = `${payload.handoff.predecessor_run_id || ""}:${payload.handoff.rotation_reason || ""}`;
+                    if (handoffKey && handoffKey !== lastHandoffNoticeKey) {
+                        appendSystemMessage(payload.handoff.notice || "Continuing prior work in a successor run.", "run_control");
+                        lastHandoffNoticeKey = handoffKey;
+                    }
+                }
+                if (shouldRotateRunForNextPrompt()) {
+                    clearStoredRunId();
+                    const statusMessage = activeRunStatus === "WAITING_FOR_SUBRUN"
+                        ? "This run is still waiting on a child run. Your next prompt will start a fresh run automatically."
+                        : `This run is ${activeRunStatus.toLowerCase()}. Your next prompt will start a fresh run automatically.`;
+                    appendSystemMessage(statusMessage, "run_control");
+                } else if (queuedMessageAfterRunRotate) {
+                    const queuedText = queuedMessageAfterRunRotate;
+                    queuedMessageAfterRunRotate = null;
+                    sendChatText(queuedText);
+                }
                 setStatus("Connected");
                 if (textarea) {
                     textarea.removeAttribute("disabled");
@@ -774,54 +1432,66 @@
                     text: payload.text || "",
                     timestamp: payload.timestamp,
                 });
-                console.log("[WS MESSAGE] Message appended");
+                log("[MESSAGE] Message appended");
                 return;
             case "tool_request":
                 handleToolRequest(payload);
                 setStatus("Tool requested");
-                console.log("[WS TOOL_REQUEST] tool_request run_id=", activeRunId, payload);
+                log("[TOOL_REQUEST] tool_request run_id=", activeRunId, payload);
                 return;
 
             case "debug_group_echo":
-                console.log("[WS] debug_group_echo received:", payload);
+                log("[debug_group_echo] received:", payload);
                 return;
             case "tool_call_completed":
-                console.log("[WS] tool_call_completed DIAG:", payload);
+                log("[tool_call_completed] DIAG:", payload);
                 return;
             case "tool_status":
                 handleToolStatus(payload.data || payload);
-                console.log("[WS] tool_status run_id=", activeRunId, payload);
+                log("[tool_status] run_id=", activeRunId, payload);
                 return;
             case "tool_result":
                 handleToolResult(payload);
                 setStatus("Connected");
-                console.log("[WS] tool_result run_id=", activeRunId, payload);
+                log("[tool_result] run_id=", activeRunId, payload);
                 return;
             case "tool_denied":
                 handleToolDenied(payload);
                 setStatus("Connected");
-                console.log("[WS] tool_denied run_id=", activeRunId, payload);
+                log("[tool_denied] run_id=", activeRunId, payload);
                 return;
             case "approval_grants":
                 setApprovalGrants(payload.grants || []);
-                console.log("[WS] approval_grants run_id=", activeRunId, payload);
+                log("[approval_grants] run_id=", activeRunId, payload);
                 return;
             case "pause_run_ack":
                 setRunStatus(payload.status || "PAUSED");
                 appendSystemMessage("Run paused. Messages will queue until you resume.", "run_control");
-                console.log("[WS] pause_run_ack run_id=", activeRunId, payload);
+                log("[pause_run_ack] run_id=", activeRunId, payload);
                 return;
             case "resume_run_ack":
                 setRunStatus(payload.status || "RUNNING");
                 appendSystemMessage("Run resumed.", "run_control");
-                console.log("[WS] resume_run_ack run_id=", activeRunId, payload);
+                log("[resume_run_ack] run_id=", activeRunId, payload);
                 return;
             case "cancel_run_ack":
                 setRunStatus(payload.status || "CANCELED");
                 appendSystemMessage("Run canceled.", "run_control");
-                console.log("[WS] cancel_run_ack run_id=", activeRunId, payload);
+                log("[cancel_run_ack] run_id=", activeRunId, payload);
                 return;
-            case ["error", "tool_error"]:
+            case "state_changed": {
+                const nextStatus = payload.data?.to || payload.to || payload.status;
+                if (nextStatus) {
+                    setRunStatus(nextStatus);
+                    if (shouldRotateRunForNextPrompt()) {
+                        clearStoredRunId();
+                    }
+                }
+                log("[state_changed] run_id=", activeRunId, payload);
+                return;
+            }
+            case "error":
+            case "tool_error":
                 appendMessage({
                     role: "system",
                     direction: "in",
@@ -829,8 +1499,10 @@
                     timestamp: payload.timestamp,
                     kind: "error",
                 });
-                setStatus("Error");
-                console.log("[WS ERROR] Payload = ", payload);
+                setRunStatus("FAILED");
+                clearStoredRunId();
+                setStatus("Connected");
+                log("[ERROR payload]", payload);
                 return;
             case "system":
                 appendMessage(
@@ -842,10 +1514,10 @@
                     },
                     {keepThinking: isTransportLog}
                 );
-                console.log("[WS] System Payload = ", payload);
+                log("[SYSTEM payload]", payload);
                 return;
             default:
-                console.log("[WS] Unhandled WS message:", payload);
+                log("[UNHANDLED message]", payload);
                 return;
         }
     };
@@ -931,7 +1603,7 @@
 
     const connect = () => {
         if (socket && socket.readyState === WebSocket.OPEN) {
-            console.log("[WS Close] WS was open. Closing it before connecting again.")
+            log("[CLOSE] Previous transport was open. Closing before reconnect.")
             socket.close();
         }
         setStatus("Connecting…");
@@ -940,11 +1612,11 @@
             ? `${wsUrl.includes("?") ? "&" : "?"}run=${encodeURIComponent(activeRunId)}`
             : "";
         const url = `${protocol}://${window.location.host}${wsUrl}${runQuery}`;
-        log("WS connecting url =", url, "activeRunId =", activeRunId);
-        console.log("[WS CREATE] Creating new socket", {url, run_id: activeRunId});
+        log("Transport connecting url =", url, "activeRunId =", activeRunId);
+        log("[CREATE] Creating new socket", {url, run_id: activeRunId});
         socket = new WebSocket(url);
         socket.onclose = (event) => {
-            console.warn("[WS CLOSE]", {
+            warn("[CLOSE]", {
                 code: event.code,
                 reason: event.reason,
                 wasClean: event.wasClean,
@@ -954,7 +1626,7 @@
             });
         };
         socket.onerror = (event) => {
-            console.error("[WS ERROR]", {
+            error("[ERROR]", {
                 event,
                 readyState: socket.readyState,
                 url: socket.url,
@@ -962,12 +1634,12 @@
             });
         };
         socket.addEventListener("open", () => {
-            console.log("[WS OPEN]", {url: socket.url, run_id: activeRunId});
+            log("[OPEN]", {url: socket.url, run_id: activeRunId});
             setStatus("Connected");
             if (textarea) {
                 textarea.removeAttribute("disabled");
             }
-            log("WS open event activeRunId =", activeRunId);
+            log("Transport open event activeRunId =", activeRunId);
         });
         socket.addEventListener("message", handleSocketMessage);
         socket.addEventListener("close", (event) => {
@@ -979,8 +1651,8 @@
             if (wasConnected) {
                 appendSystemMessage("Disconnected from the agent");
             }
-            log("WS close event code=", event.code, "reason=", event.reason, "activeRunId =", activeRunId);
-            console.warn("[WS CLOSE]", {
+            log("Transport close event code=", event.code, "reason=", event.reason, "activeRunId =", activeRunId);
+            warn("[CLOSE]", {
                 code: event.code,
                 reason: event.reason,
                 wasClean: event.wasClean,
@@ -990,8 +1662,8 @@
         });
         socket.addEventListener("error", () => {
             setStatus("Connection error");
-            log("WS error event activeRunId =", activeRunId);
-            console.error("[WS ERROR]", {url: socket.url, readyState: socket.readyState, run_id: activeRunId});
+            log("Transport error event activeRunId =", activeRunId);
+            error("[ERROR]", {url: socket.url, readyState: socket.readyState, run_id: activeRunId});
         });
     };
 
@@ -1000,25 +1672,24 @@
         connect();
     };
 
-    const sendMessage = () => {
-        if (!socket || socket.readyState !== WebSocket.OPEN) {
-            return;
-        }
+    const sendMessage = async () => {
         const text = textarea?.value?.trim();
         if (!text) {
             return;
         }
-        appendMessage({
-            role: "operator",
-            direction: "out",
-            kind: userName,
-            text,
-            timestamp: new Date().toISOString(),
-            author: userName,
-        });
-        socket.send(JSON.stringify({type: "chat.message", text}));
-        if (activeRunStatus === "RUNNING") {
-            renderThinkingPlaceholder("thinking");
+        if (shouldRotateRunForNextPrompt()) {
+            if (textarea) {
+                textarea.value = "";
+            }
+            await rotateToFreshRun({
+                queuedText: text,
+                reason: nextPromptRunRotationReason(),
+                rotationCode: nextPromptRunRotationCode(),
+            });
+            return;
+        }
+        if (!sendChatText(text)) {
+            return;
         }
         if (textarea) {
             textarea.value = "";
@@ -1032,7 +1703,7 @@
 
     connectionActionBtn?.addEventListener("click", () => {
         if (isConnected) {
-            console.log("[WS CLOSE] Closing WS.")
+            warn("[CLOSE] Closing socket.")
             socket?.close();
         } else {
             connect();
@@ -1055,14 +1726,14 @@
     });
 
     window.addEventListener("beforeunload", () => {
-        console.warn("[PAGE beforeunload]");
+        warn("[PAGE beforeunload]");
         if (socket && socket.readyState === WebSocket.OPEN) {
-            console.log("[WS CLOSE] Closing WS prior to unloading window.")
+            warn("[CLOSE] Closing socket prior to unloading window.")
             socket.close();
         }
     });
     window.addEventListener("pagehide", () => {
-        console.warn("[PAGE pagehide]");
+        warn("[PAGE pagehide]");
     });
     document.addEventListener("visibilitychange", () => {
         console.warn("[VISIBILITY]", document.visibilityState);

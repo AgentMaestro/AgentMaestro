@@ -1,6 +1,10 @@
 from django.contrib import admin
+from django.db.models import Count
+from django.utils.html import format_html, format_html_join
+from django.utils.safestring import mark_safe
 
-from memory.models import MemoryHealthSnapshot, MemoryRecord, ScheduledTask
+from core.admin_utils import format_datetime_eastern
+from memory.models import MemoryHealthSnapshot, MemoryRecord, RecurrenceRule, ScheduledTask, ScheduledTaskApproval
 
 
 @admin.register(MemoryRecord)
@@ -14,13 +18,80 @@ class MemoryRecordAdmin(admin.ModelAdmin):
         "pinned",
         "importance",
         "access_count",
-        "last_accessed_at",
-        "expires_at",
-        "updated_at",
+        "last_accessed_at_display",
+        "expires_at_display",
+        "updated_at_display",
     )
     list_filter = ("scope_type", "memory_kind", "source_kind", "pinned")
     search_fields = ("scope_id", "dedupe_key", "source_ref", "content", "summary")
     ordering = ("-pinned", "-updated_at")
+
+    @admin.display(description="Last Accessed")
+    def last_accessed_at_display(self, obj: MemoryRecord) -> str:
+        return format_datetime_eastern(obj.last_accessed_at)
+
+    @admin.display(description="Expires At")
+    def expires_at_display(self, obj: MemoryRecord) -> str:
+        return format_datetime_eastern(obj.expires_at)
+
+    @admin.display(description="Updated At")
+    def updated_at_display(self, obj: MemoryRecord) -> str:
+        return format_datetime_eastern(obj.updated_at)
+
+
+@admin.register(RecurrenceRule)
+class RecurrenceRuleAdmin(admin.ModelAdmin):
+    list_display = (
+        "name_or_summary",
+        "frequency",
+        "timezone",
+        "window_display",
+        "local_time_display",
+        "scheduled_task_count",
+        "is_active",
+        "updated_at_display",
+    )
+    list_filter = ("frequency", "timezone", "is_active")
+    search_fields = ("name", "timezone")
+    ordering = ("-updated_at",)
+    readonly_fields = ("summary", "scheduled_task_count")
+
+    @admin.display(description="Updated At")
+    def updated_at_display(self, obj: RecurrenceRule) -> str:
+        return format_datetime_eastern(obj.updated_at)
+
+    def get_queryset(self, request):
+        return super().get_queryset(request).annotate(_scheduled_task_count=Count("scheduled_tasks"))
+
+    @admin.display(description="Rule")
+    def name_or_summary(self, obj: RecurrenceRule):
+        return obj.name or obj.summary
+
+    @admin.display(description="Summary")
+    def summary(self, obj: RecurrenceRule):
+        if obj is None:
+            return "-"
+        return obj.summary
+
+    @admin.display(description="Window")
+    def window_display(self, obj: RecurrenceRule):
+        if obj.window_start_time and obj.window_end_time:
+            return f"{obj.window_start_time.isoformat(timespec='minutes')} - {obj.window_end_time.isoformat(timespec='minutes')}"
+        return "-"
+
+    @admin.display(description="Local Time")
+    def local_time_display(self, obj: RecurrenceRule):
+        if obj.local_time is not None:
+            return obj.local_time.isoformat(timespec="minutes")
+        if obj.run_minute is not None:
+            return f":{obj.run_minute:02d}"
+        return "-"
+
+    @admin.display(description="Tasks")
+    def scheduled_task_count(self, obj: RecurrenceRule):
+        if obj is None:
+            return 0
+        return getattr(obj, "_scheduled_task_count", obj.scheduled_tasks.count())
 
 
 @admin.register(ScheduledTask)
@@ -28,23 +99,130 @@ class ScheduledTaskAdmin(admin.ModelAdmin):
     list_display = (
         "title",
         "task_type",
-        "agent",
-        "owner",
+        "execution_mode",
         "enabled",
-        "timezone",
-        "local_time",
-        "next_run_at",
-        "last_run_at",
+        "recurrence_frequency",
+        "recurrence_timezone",
+        "recurrence_window",
+        "recurrence_summary_short",
+        "next_run_at_display",
+        "last_run_at_display",
+        "last_run",
+        "active_run",
         "failure_count",
     )
-    list_filter = ("task_type", "enabled", "timezone")
+    list_filter = ("task_type", "execution_mode", "enabled", "recurrence_rule__timezone", "recurrence_rule__frequency")
     search_fields = ("title", "agent__name", "owner__username", "last_result_summary", "last_error")
+    readonly_fields = ("recurrence_detail",)
+
+    @admin.display(description="Next Run")
+    def next_run_at_display(self, obj: ScheduledTask) -> str:
+        return format_datetime_eastern(obj.next_run_at)
+
+    @admin.display(description="Last Run")
+    def last_run_at_display(self, obj: ScheduledTask) -> str:
+        return format_datetime_eastern(obj.last_run_at)
+
+    def get_queryset(self, request):
+        return super().get_queryset(request).select_related(
+            "agent",
+            "owner",
+            "workspace",
+            "recurrence_rule",
+            "last_run",
+            "active_run",
+        )
+
+    @admin.display(description="Frequency")
+    def recurrence_frequency(self, obj: ScheduledTask):
+        return obj.recurrence_rule.get_frequency_display()
+
+    @admin.display(description="Timezone")
+    def recurrence_timezone(self, obj: ScheduledTask):
+        return obj.recurrence_rule.timezone
+
+    @admin.display(description="Window")
+    def recurrence_window(self, obj: ScheduledTask):
+        rule = obj.recurrence_rule
+        if rule.window_start_time and rule.window_end_time:
+            return f"{rule.window_start_time.isoformat(timespec='minutes')} - {rule.window_end_time.isoformat(timespec='minutes')}"
+        return "-"
+
+    @admin.display(description="Recurrence")
+    def recurrence_summary_short(self, obj: ScheduledTask):
+        return obj.recurrence_summary
+
+    @admin.display(description="Recurrence Details")
+    def recurrence_detail(self, obj: ScheduledTask):
+        if obj is None:
+            return "-"
+        rule = obj.recurrence_rule
+        lines = [
+            format_html("<strong>{}</strong>", rule.summary),
+            f"Frequency: {rule.get_frequency_display()}",
+            f"Timezone: {rule.timezone}",
+        ]
+        if rule.local_time is not None:
+            lines.append(f"Local time: {rule.local_time.isoformat(timespec='minutes')}")
+        if rule.run_minute is not None:
+            lines.append(f"Run minute: {rule.run_minute:02d}")
+        if rule.window_start_time and rule.window_end_time:
+            lines.append(
+                f"Window: {rule.window_start_time.isoformat(timespec='minutes')} - {rule.window_end_time.isoformat(timespec='minutes')}"
+            )
+        if rule.by_weekday:
+            lines.append(f"Weekdays: {', '.join(rule.by_weekday)}")
+        if rule.by_month_day:
+            lines.append(f"Month days: {', '.join(str(day) for day in rule.by_month_day)}")
+        if rule.week_of_month is not None and rule.weekday_of_month:
+            lines.append(f"Week-of-month: {rule.week_of_month} / {rule.weekday_of_month}")
+        if rule.by_month:
+            lines.append(f"Months: {', '.join(str(month) for month in rule.by_month)}")
+        return format_html_join(mark_safe("<br>"), "{}", ((line,) for line in lines))
+
+
+@admin.register(ScheduledTaskApproval)
+class ScheduledTaskApprovalAdmin(admin.ModelAdmin):
+    list_display = (
+        "scheduled_task",
+        "fingerprint_short",
+        "fingerprint_version",
+        "approved_by",
+        "approved_at_display",
+        "expires_at_display",
+        "revoked_at_display",
+        "use_count",
+        "last_used_at_display",
+    )
+    list_filter = ("task_type", "execution_mode", "approved_at", "expires_at", "revoked_at")
+    search_fields = ("scheduled_task__title", "fingerprint", "approved_by__username")
+    ordering = ("-approved_at",)
+
+    @admin.display(description="Approved At")
+    def approved_at_display(self, obj: ScheduledTaskApproval) -> str:
+        return format_datetime_eastern(obj.approved_at)
+
+    @admin.display(description="Expires At")
+    def expires_at_display(self, obj: ScheduledTaskApproval) -> str:
+        return format_datetime_eastern(obj.expires_at)
+
+    @admin.display(description="Revoked At")
+    def revoked_at_display(self, obj: ScheduledTaskApproval) -> str:
+        return format_datetime_eastern(obj.revoked_at)
+
+    @admin.display(description="Last Used")
+    def last_used_at_display(self, obj: ScheduledTaskApproval) -> str:
+        return format_datetime_eastern(obj.last_used_at)
+
+    @admin.display(description="Fingerprint")
+    def fingerprint_short(self, obj: ScheduledTaskApproval):
+        return obj.fingerprint[:12]
 
 
 @admin.register(MemoryHealthSnapshot)
 class MemoryHealthSnapshotAdmin(admin.ModelAdmin):
     list_display = (
-        "created_at",
+        "created_at_display",
         "retention_days",
         "compare_days",
         "total_records",
@@ -56,3 +234,8 @@ class MemoryHealthSnapshotAdmin(admin.ModelAdmin):
     list_filter = ("retention_days", "compare_days")
     search_fields = ("created_at",)
     ordering = ("-created_at",)
+
+    @admin.display(description="Created At")
+    def created_at_display(self, obj: MemoryHealthSnapshot) -> str:
+        return format_datetime_eastern(obj.created_at)
+

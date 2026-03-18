@@ -75,6 +75,27 @@ class MemoryBootstrapTests(TestCase):
             RunEvent.objects.filter(run=self.run, event_type=MEMORY_BOOTSTRAP_EVENT).count(),
         )
 
+    def test_bootstrap_includes_user_scope_memory(self):
+        remember(
+            scope_type="user",
+            scope_id=str(self.user.id),
+            memory_kind="semantic",
+            content="Scott is in Ocala, Florida. Report time in Ocala local time.",
+            summary="Ocala local time preference",
+            tags=["timezone", "location"],
+        )
+
+        result = bootstrap_memory_for_first_turn(
+            self.run,
+            self.agent,
+            "What time is it in Ocala right now?",
+        )
+
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertTrue(result.applied)
+        self.assertIn("Ocala local time preference", result.summary_text)
+
     def test_bootstrap_skips_non_substantive_turns(self):
         result = bootstrap_memory_for_first_turn(self.run, self.agent, "hi")
         self.assertIsNone(result)

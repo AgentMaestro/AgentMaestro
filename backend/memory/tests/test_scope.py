@@ -67,6 +67,16 @@ def test_resolve_user_scope(scope_entities):
     assert resolved.label == user.username
 
 
+def test_resolve_user_scope_accepts_case_insensitive_username(scope_entities):
+    user, _workspace, _agent = scope_entities
+
+    resolved = resolve_memory_scope(scope_type="user", scope_id=user.username.upper())
+
+    assert resolved.scope_type == MemoryRecord.ScopeType.USER
+    assert resolved.scope_id == str(user.pk)
+    assert resolved.label == user.username
+
+
 def test_invalid_scope_rejection(scope_entities):
     with pytest.raises(ValueError):
         resolve_memory_scope(scope_type="bad-scope", scope_id="123")

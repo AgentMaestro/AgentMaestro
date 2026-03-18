@@ -1,21 +1,25 @@
 from __future__ import annotations
 
+import logging
 import uuid
 from typing import Any, Dict, Optional
 
 from django.db import transaction
 from django.utils import timezone
 
-from runs.models import AgentRun, AgentStep, SubrunLink
+from core.services.limits import LimitKey, QUOTA_MANAGER
+from runs.models import AgentRun, AgentStep, RunEvent, SubrunLink
 from runs.services.events import append_event
+from runs.services.memory import append_run_note
 from runs.services.state import transition_run
 from runs.services.steps import append_step
-from core.services.limits import LimitKey, QUOTA_MANAGER
 
 STEP_CREATED_EVENT = "step_created"
 SUBRUN_SPAWN_EVENT = "subrun_spawned"
 SUBRUN_COMPLETED_EVENT = "subrun_completed"
 SUBRUN_CANCELLED_EVENT = "subrun_cancelled"
+SUBRUN_CIRCUIT_OPEN_EVENT = "subrun_circuit_open"
+HEADLESS_FAILURE_DIAGNOSTICS_EVENT = "headless_run_failure_diagnostics"
 
 FINAL_RUN_STATUSES = {
     AgentRun.Status.COMPLETED,
@@ -27,6 +31,39 @@ FAILURE_RUN_STATUSES = {
     AgentRun.Status.CANCELED,
 }
 MAX_PENDING_SUBRUNS_PER_PARENT = 4
+NETWORK_ERROR_SUBRUN_FAILURE_THRESHOLD = 2
+logger = logging.getLogger(__name__)
+
+
+def _normalize_join_policy(value: str) -> str:
+    normalized = str(value or SubrunLink.JoinPolicy.WAIT_ALL).strip().upper()
+    mapping = {
+        "WAITALL": SubrunLink.JoinPolicy.WAIT_ALL,
+        "WAIT_ALL": SubrunLink.JoinPolicy.WAIT_ALL,
+        "WAITANY": SubrunLink.JoinPolicy.WAIT_ANY,
+        "WAIT_ANY": SubrunLink.JoinPolicy.WAIT_ANY,
+        "QUORUM": SubrunLink.JoinPolicy.QUORUM,
+        "TIMEOUT": SubrunLink.JoinPolicy.TIMEOUT,
+    }
+    if normalized not in mapping:
+        raise RuntimeError(f"Unsupported join_policy: {value}")
+    return mapping[normalized]
+
+
+def _normalize_failure_policy(value: str) -> str:
+    normalized = str(value or SubrunLink.FailurePolicy.IGNORE_FAILURE).strip().upper()
+    mapping = {
+        "FAILFAST": SubrunLink.FailurePolicy.FAIL_FAST,
+        "FAIL_FAST": SubrunLink.FailurePolicy.FAIL_FAST,
+        "CANCELSIBLINGS": SubrunLink.FailurePolicy.CANCEL_SIBLINGS,
+        "CANCEL_SIBLINGS": SubrunLink.FailurePolicy.CANCEL_SIBLINGS,
+        "IGNORE": SubrunLink.FailurePolicy.IGNORE_FAILURE,
+        "IGNOREFAILURE": SubrunLink.FailurePolicy.IGNORE_FAILURE,
+        "IGNORE_FAILURE": SubrunLink.FailurePolicy.IGNORE_FAILURE,
+    }
+    if normalized not in mapping:
+        raise RuntimeError(f"Unsupported failure_policy: {value}")
+    return mapping[normalized]
 
 
 def _extract_link_metadata(link: Optional[SubrunLink]) -> Dict[str, Any]:
@@ -88,10 +125,30 @@ def _build_step_event_payload(step: AgentStep) -> Dict[str, Any]:
     }
 
 
-def _schedule_run_tick(run_id: str) -> None:
+def _count_network_error_subrun_failures(parent_run_id: str) -> int:
+    return (
+        RunEvent.objects.filter(
+            run__parent_run_id=parent_run_id,
+            event_type=HEADLESS_FAILURE_DIAGNOSTICS_EVENT,
+            payload__classification="network_error",
+        )
+        .values("run_id")
+        .distinct()
+        .count()
+    )
+
+
+def _schedule_run_execution(run_id: str) -> None:
+    run = AgentRun.objects.only("id", "execution_mode").get(id=run_id)
+    if run.execution_mode == AgentRun.ExecutionMode.HEADLESS:
+        from runs.tasks import execute_headless_run_task
+
+        execute_headless_run_task.delay(str(run.id))
+        return
+
     from runs.tasks import run_tick as run_tick_task
 
-    run_tick_task.delay(str(run_id))
+    run_tick_task.delay(str(run.id))
 
 
 @transaction.atomic
@@ -144,8 +201,10 @@ def spawn_subrun(
     join_policy: str = SubrunLink.JoinPolicy.WAIT_ALL,
     quorum: Optional[int] = None,
     timeout_seconds: Optional[int] = None,
-    failure_policy: str = SubrunLink.FailurePolicy.FAIL_FAST,
+    failure_policy: str = SubrunLink.FailurePolicy.IGNORE_FAILURE,
     group_id: Optional[str] = None,
+    schedule_child: bool = True,
+    child_execution_mode: Optional[str] = None,
 ) -> AgentRun:
     """
     Spawn a child run with a join policy; parents wait or resume according to the SubrunLink.
@@ -166,6 +225,9 @@ def spawn_subrun(
     }:
         raise RuntimeError(f"Cannot spawn a subrun from run {parent.status}")
 
+    join_policy = _normalize_join_policy(join_policy)
+    failure_policy = _normalize_failure_policy(failure_policy)
+
     correlation_identifier = uuid.uuid4()
     child = AgentRun.objects.create(
         workspace=parent.workspace,
@@ -174,6 +236,9 @@ def spawn_subrun(
         started_by=parent.started_by,
         status=AgentRun.Status.PENDING,
         channel=parent.channel,
+        execution_mode=child_execution_mode or parent.execution_mode,
+        trigger_kind=AgentRun.TriggerKind.SYSTEM,
+        trigger_ref=str(parent.id),
         input_text=input_text or "",
         max_steps=parent.max_steps,
         max_tool_calls=parent.max_tool_calls,
@@ -228,6 +293,7 @@ def spawn_subrun(
             "child_run_id": str(child.id),
             "input_text": child.input_text,
             "status": child.status,
+            "execution_mode": child.execution_mode,
             "group_id": str(group_uuid),
             "join_policy": join_policy,
             "quorum": quorum,
@@ -241,13 +307,14 @@ def spawn_subrun(
     if parent.status != AgentRun.Status.WAITING_FOR_SUBRUN:
         transition_run(run_id=parent_run_id, new_status=AgentRun.Status.WAITING_FOR_SUBRUN)
 
-    transaction.on_commit(lambda: _schedule_run_tick(str(child.id)))
+    if schedule_child:
+        transaction.on_commit(lambda: _schedule_run_execution(str(child.id)))
 
     return child
 
 
 @transaction.atomic
-def complete_subrun(*, child_run_id: str) -> Optional[str]:
+def complete_subrun(*, child_run_id: str, schedule_parent: bool = True) -> Optional[str]:
     """
     Resume the parent once its join condition is satisfied. Failure policies may short-circuit.
     """
@@ -293,9 +360,15 @@ def complete_subrun(*, child_run_id: str) -> Optional[str]:
             return None
         if link.failure_policy == SubrunLink.FailurePolicy.CANCEL_SIBLINGS:
             for sibling in active_links:
+                if sibling.child_run_id == child.id:
+                    continue
                 transition_run(run_id=str(sibling.child_run.id), new_status=AgentRun.Status.CANCELED)
-            transition_run(run_id=str(parent.id), new_status=AgentRun.Status.FAILED)
-            return None
+                AgentRun.objects.filter(id=sibling.child_run.id).update(
+                    error_summary=f"Canceled because sibling subrun {child.id} failed.",
+                    updated_at=timezone.now(),
+                )
+            active_links = []
+            completed_count = len(group_links)
 
     should_resume = False
     if link.join_policy == SubrunLink.JoinPolicy.WAIT_ANY:
@@ -312,7 +385,155 @@ def complete_subrun(*, child_run_id: str) -> Optional[str]:
 
     if should_resume:
         transition_run(run_id=str(parent.id), new_status=AgentRun.Status.RUNNING)
-        transaction.on_commit(lambda: _schedule_run_tick(str(parent.id)))
+        if schedule_parent:
+            transaction.on_commit(lambda: _schedule_run_execution(str(parent.id)))
         return str(parent.id)
 
     return None
+
+
+def run_subrun_flow(
+    *,
+    parent_run_id: str,
+    input_text: str,
+    metadata: Optional[Dict[str, Any]] = None,
+    join_policy: str = SubrunLink.JoinPolicy.WAIT_ALL,
+    quorum: Optional[int] = None,
+    timeout_seconds: Optional[int] = None,
+    failure_policy: str = SubrunLink.FailurePolicy.IGNORE_FAILURE,
+    group_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Spawn a child run and, for headless parents, execute the child inline so the
+    current planner/model round can continue with the child result.
+    """
+    if not str(input_text or "").strip():
+        raise RuntimeError("spawn_subrun requires a non-empty input_text.")
+
+    parent = AgentRun.objects.select_related("agent", "workspace", "started_by").get(id=parent_run_id)
+    network_error_failures = _count_network_error_subrun_failures(parent_run_id)
+    if network_error_failures >= NETWORK_ERROR_SUBRUN_FAILURE_THRESHOLD:
+        summary = (
+            "Subruns are unavailable for the rest of this run after repeated child failures "
+            f"classified as network_error ({network_error_failures} total)."
+        )
+        recommended_action = (
+            "Continue the task in the parent run without spawning more subruns until a new run "
+            "or connection is established."
+        )
+        append_event(
+            run_id=parent_run_id,
+            event_type=SUBRUN_CIRCUIT_OPEN_EVENT,
+            payload={
+                "classification": "network_error",
+                "failure_count": network_error_failures,
+                "threshold": NETWORK_ERROR_SUBRUN_FAILURE_THRESHOLD,
+                "summary": summary,
+                "recommended_action": recommended_action,
+            },
+            correlation_id=parent.correlation_id,
+        )
+        append_run_note(parent, summary)
+        return {
+            "parent_run_id": str(parent.id),
+            "parent_status": parent.status,
+            "child_run_id": "",
+            "child_status": "SKIPPED",
+            "child_execution_mode": AgentRun.ExecutionMode.HEADLESS,
+            "join_policy": join_policy,
+            "failure_policy": failure_policy,
+            "completed_inline": False,
+            "resumed_parent": False,
+            "child_final_text": "",
+            "child_error_summary": summary,
+            "child_failed": False,
+            "child_failure": {
+                "summary": summary,
+                "classification": "subrun_circuit_open",
+                "code": "",
+                "param": "",
+                "status": "",
+                "request_id": "",
+                "retryable": False,
+                "recommended_action": recommended_action,
+            },
+            "child_retryable": False,
+            "child_recommended_action": recommended_action,
+            "fallback_notice": (
+                "Subruns are unavailable for the rest of this run because repeated child runs failed "
+                "with network_error. Continue the task in the parent run without asking the user for "
+                "permission to proceed."
+            ),
+            "subrun_circuit_open": True,
+            "subrun_circuit_reason": "repeated_network_error",
+            "subrun_failure_count": network_error_failures,
+        }
+
+    inline_child_execution = AgentRun.ExecutionMode.HEADLESS
+    child = spawn_subrun(
+        parent_run_id=parent_run_id,
+        input_text=input_text,
+        metadata=metadata,
+        join_policy=join_policy,
+        quorum=quorum,
+        timeout_seconds=timeout_seconds,
+        failure_policy=failure_policy,
+        group_id=group_id,
+        schedule_child=False,
+        child_execution_mode=inline_child_execution,
+    )
+
+    from runs.services.headless import execute_headless_run
+    from runs.services.headless import get_headless_failure_details
+
+    logger.info(
+        "Executing subrun inline for tool flow parent_run=%s child_run=%s parent_execution_mode=%s child_execution_mode=%s",
+        parent_run_id,
+        child.id,
+        parent.execution_mode,
+        inline_child_execution,
+    )
+    execute_headless_run(str(child.id))
+    completed_inline = True
+    resumed_parent = complete_subrun(child_run_id=str(child.id), schedule_parent=False) == str(parent.id)
+
+    child.refresh_from_db()
+    parent.refresh_from_db()
+    failure_details = get_headless_failure_details(child) if child.status in FAILURE_RUN_STATUSES else None
+    if child.status in FAILURE_RUN_STATUSES and failure_details is None:
+        failure_details = {
+            "summary": child.error_summary or f"Child run finished with status {child.status}.",
+            "classification": "child_run_failed",
+            "code": "",
+            "param": "",
+            "status": "",
+            "request_id": "",
+            "retryable": False,
+            "recommended_action": "Review the child error summary and decide whether to retry or continue with partial results.",
+        }
+    child_failed = child.status in FAILURE_RUN_STATUSES
+    fallback_notice = ""
+    if child_failed:
+        fallback_notice = (
+            "Child subrun failed. Briefly acknowledge the failure, continue the task in the parent run "
+            "without asking the user for permission to proceed, and mention the child error summary when it "
+            "helps the user understand what failed."
+        )
+    return {
+        "parent_run_id": str(parent.id),
+        "parent_status": parent.status,
+        "child_run_id": str(child.id),
+        "child_status": child.status,
+        "child_execution_mode": child.execution_mode,
+        "join_policy": join_policy,
+        "failure_policy": failure_policy,
+        "completed_inline": completed_inline,
+        "resumed_parent": resumed_parent,
+        "child_final_text": child.final_text,
+        "child_error_summary": child.error_summary,
+        "child_failed": child_failed,
+        "child_failure": failure_details,
+        "child_retryable": bool((failure_details or {}).get("retryable")),
+        "child_recommended_action": str((failure_details or {}).get("recommended_action") or "").strip(),
+        "fallback_notice": fallback_notice,
+    }

@@ -10,6 +10,7 @@ from agentmaestro.asgi import application
 from agents.consumers import AgentChatConsumer
 from agents.models import Agent
 from core.models import Workspace, WorkspaceMembership
+from runs.models import AgentRun
 from tools.models import AgentToolGrant, Tool, ToolDefinition, ToolGroup, ToolRisk
 
 
@@ -125,6 +126,25 @@ async def test_agent_chat_consumer_parses_tool_args():
 
 @pytest.mark.asyncio
 @pytest.mark.django_db
+async def test_agent_chat_consumer_blocks_dispatch_while_waiting_for_subrun():
+    user = get_user_model().objects.create_user(username="waiting-subrun-user")
+    workspace = Workspace.objects.create(name="waiting-subrun-ws")
+    agent = Agent.objects.create(workspace=workspace, owner=user, name="Waiting Agent", soul="Prompt")
+    run = AgentRun.objects.create(
+        workspace=workspace,
+        agent=agent,
+        started_by=user,
+        status=AgentRun.Status.WAITING_FOR_SUBRUN,
+        input_text="parent run",
+    )
+    consumer = AgentChatConsumer(scope={"type": "websocket", "user": user, "url_route": {"kwargs": {"slug": agent.slug}}})
+    consumer.run_id = str(run.id)
+
+    assert await consumer._dispatch_blocked_by_run_status() is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.django_db
 async def test_agent_chat_consumer_push_sets_tool_call_future():
     user = get_user_model().objects.create_user(username="push-user")
     workspace = Workspace.objects.create(name="push-ws")
@@ -209,3 +229,83 @@ async def test_build_ws_input_items_resends_system_context_on_first_turn_after_c
     assert "Always announce reconnect readiness." in items[0]["content"][0]["text"]
     assert items[-1]["role"] == "user"
     assert items[-1]["content"][0]["text"] == "who are you?"
+
+@pytest.mark.django_db(transaction=True)
+def test_build_ws_input_items_preserves_bootstrap_system_message_on_first_turn():
+    user = get_user_model().objects.create_user(username="ws-bootstrap-user")
+    workspace = Workspace.objects.create(name="ws-bootstrap-ws")
+    agent = Agent.objects.create(
+        workspace=workspace,
+        owner=user,
+        name="Bootstrap Agent",
+        description="Keep the base system context first.",
+        soul="Preserve relevant prior memory.",
+    )
+    consumer = AgentChatConsumer(
+        scope={"type": "websocket", "user": user, "url_route": {"kwargs": {"slug": agent.slug}}}
+    )
+    consumer.agent = agent
+    consumer.model_name = "gpt-5-codex"
+    consumer.transport = "ws"
+    consumer.run_id = "run-bootstrap"
+    consumer.session = SimpleNamespace(previous_response_id="")
+    consumer.history = [
+        {"role": "system", "content": "Relevant prior memory for this run:\n- [user/semantic] Ocala local time preference"},
+        {"role": "user", "content": "What time is it in Ocala right now?"},
+    ]
+
+    consumer._ensure_system_context()
+    items = consumer._build_ws_input_items()
+
+    assert items[0]["role"] == "system"
+    assert "Keep the base system context first." in items[0]["content"][0]["text"]
+    assert items[1]["role"] == "system"
+    assert "Relevant prior memory for this run:" in items[1]["content"][0]["text"]
+    assert "Ocala local time preference" in items[1]["content"][0]["text"]
+    assert items[2]["role"] == "user"
+    assert items[2]["content"][0]["text"] == "What time is it in Ocala right now?"
+
+
+
+@pytest.mark.asyncio
+@pytest.mark.django_db(transaction=True)
+async def test_agent_chat_consumer_advertises_subrun_capability_when_granted(monkeypatch):
+    workspace = Workspace.objects.create(name="chat-subrun-workspace")
+    owner = get_user_model().objects.create_user(username="chat-subrun-owner")
+    agent = Agent.objects.create(
+        workspace=workspace,
+        owner=owner,
+        name="Subrun Agent",
+        soul="Delegate focused work when tools allow.",
+    )
+    group = ToolGroup.objects.create(name="subrun-group")
+    tool = Tool.objects.create(
+        name="spawn_subrun",
+        tool_group=group,
+        risk=ToolRisk.SAFE,
+        requires_approval=False,
+        released=True,
+    )
+    ToolDefinition.objects.create(workspace=workspace, tool=tool, enabled=True)
+    AgentToolGrant.objects.create(agent=agent, tool=tool, enabled=True)
+    WorkspaceMembership.objects.create(workspace=workspace, user=owner, role=WorkspaceMembership.Role.OPERATOR)
+
+    dummy_client = DummyClient()
+    monkeypatch.setattr("agents.consumers.get_client", lambda provider: dummy_client)
+
+    sessionid = _session_cookie_for_user(owner)
+    communicator = WebsocketCommunicator(
+        application,
+        f"/ws/agents/{agent.slug}/chat/",
+        headers=[(b"cookie", f"sessionid={sessionid}".encode())],
+    )
+    connected, _ = await communicator.connect()
+    assert connected
+    connected_event = await communicator.receive_json_from()
+
+    assert connected_event["type"] == "connected"
+    assert "Capability: Subruns" in connected_event["system_context"]
+    assert any(tool_payload["name"] == "spawn_subrun" for tool_payload in connected_event["tools"])
+    assert any(tool_payload["name"] == "spawn_subrun" for tool_payload in dummy_client.sent_tools)
+
+    await communicator.disconnect()

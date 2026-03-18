@@ -7,12 +7,7 @@ from typing import Any, Dict, Iterable, Sequence
 import pytest
 from django.conf import settings
 
-from llm.models import (
-    AgentRole,
-    LLMModelProfile,
-    LLMRun,
-    LLMToolCall,
-)
+from llm.models import AgentRole, LLMModelProfile, LLMRun, LLMToolCall
 from llm.services.runner import LLMRunner
 
 
@@ -20,26 +15,33 @@ pytestmark = pytest.mark.django_db(transaction=True)
 
 
 class FakeClient:
-    def __init__(self, responses: Sequence[Dict[str, Any]]):
+    def __init__(self, responses: Sequence[Dict[str, Any]], *, transport: str = "http"):
         self._responses = list(responses)
+        self.transport = transport
 
     async def complete(self, *args: Any, **kwargs: Any) -> Dict[str, Any]:
         if not self._responses:
             return {"text": "done", "tool_calls": [], "usage": {}}
         return self._responses.pop(0)
 
+    def resolve_transport(self) -> str:
+        return self.transport
+
+    def is_transient_error(self, exc: Exception) -> bool:
+        return False
+
 
 async def _identity_retry(func, **kwargs):
     return await func()
 
 
-def _make_profile(name_suffix: str | None = None) -> LLMModelProfile:
+def _make_profile(name_suffix: str | None = None, *, provider: str = "openai", model: str = "test-model") -> LLMModelProfile:
     suffix = name_suffix or uuid.uuid4().hex[:8]
     return LLMModelProfile.objects.create(
         name=f"reliability-{suffix}",
         agent_role=AgentRole.GENERIC,
-        provider="openai",
-        model="test-model",
+        provider=provider,
+        model=model,
         is_active=True,
     )
 
@@ -50,6 +52,20 @@ def _setup_runner(
     client_responses: Iterable[Dict[str, Any]],
     run_tool_stub,
 ) -> LLMRunner:
+    return _setup_runner_with_provider(
+        profile,
+        monkeypatch,
+        FakeClient(client_responses),
+        run_tool_stub,
+    )
+
+
+def _setup_runner_with_provider(
+    profile: LLMModelProfile,
+    monkeypatch,
+    client,
+    run_tool_stub,
+) -> LLMRunner:
     runner = LLMRunner()
 
     async def fake_resolve(self, *args, **kwargs):
@@ -57,7 +73,7 @@ def _setup_runner(
 
     monkeypatch.setattr(LLMRunner, "_resolve_profile", fake_resolve)
     monkeypatch.setattr("llm.services.runner.retry_with_backoff", _identity_retry)
-    monkeypatch.setattr("llm.services.runner.get_client", lambda provider: FakeClient(client_responses))
+    monkeypatch.setattr("llm.services.runner.get_client", lambda provider: client)
     monkeypatch.setattr("llm.services.runner.run_tool", run_tool_stub)
     return runner
 
@@ -160,9 +176,7 @@ def test_large_output_flags_truncated(monkeypatch, tools):
 @pytest.mark.parametrize("tools", [_simple_tool_list()])
 def test_ten_sequential_tool_calls(monkeypatch, tools):
     profile = _make_profile("session")
-    responses = [
-        _tool_call_response(f"session-{i}") for i in range(10)
-    ] + [{"text": "done", "tool_calls": [], "usage": {}}]
+    responses = [_tool_call_response(f"session-{i}") for i in range(10)] + [{"text": "done", "tool_calls": [], "usage": {}}]
 
     async def success_tool(*args, **kwargs):
         return {"ok": True, "result": {"index": True}}
@@ -181,3 +195,35 @@ def test_ten_sequential_tool_calls(monkeypatch, tools):
     assert result["tool_calls_executed"] >= 1
     run = LLMRun.objects.get(id=result["run_id"])
     assert LLMToolCall.objects.filter(run=run).count() == result["tool_calls_executed"]
+
+
+def test_gemini_http_path_completes_without_ws(monkeypatch):
+    profile = _make_profile("gemini", provider="gemini", model="gemini-2.5-pro")
+    client = FakeClient(
+        [
+            {
+                "text": "Gemini answer",
+                "tool_calls": [],
+                "usage": {"prompt_tokens": 12, "completion_tokens": 5, "total_tokens": 17},
+            }
+        ],
+        transport="http",
+    )
+
+    async def success_tool(*args, **kwargs):
+        return {"ok": True, "result": {"index": True}}
+
+    runner = _setup_runner_with_provider(profile, monkeypatch, client, success_tool)
+    result = asyncio.run(
+        runner.run(
+            prompt="Gemini prompt",
+            tools=[],
+            max_tool_rounds=1,
+        )
+    )
+
+    assert result["status"] == "completed"
+    assert result["text"] == "Gemini answer"
+    run = LLMRun.objects.get(id=result["run_id"])
+    assert run.provider == "gemini"
+    assert run.token_total == 17

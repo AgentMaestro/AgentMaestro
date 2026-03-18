@@ -206,6 +206,7 @@ CELERY_TASK_ROUTES = {
     "tools.execute_tool_call_async": {"queue": "tools"},
     "runs.tasks.reconcile_waiting_subruns": {"queue": "runs"},
     "runs.tasks.archive_completed_runs": {"queue": "runs"},
+    "runs.tasks.execute_headless_run": {"queue": "runs"},
     "comms.tasks.telegram_poll_scheduler": {"queue": "comms"},
     "comms.tasks.telegram_poll_once": {"queue": "comms"},
     "comms.tasks.expire_remote_approval_tickets_task": {"queue": "comms"},
@@ -253,6 +254,8 @@ REMOTE_APPROVAL_TTL_MINUTES = int(_env_value("REMOTE_APPROVAL_TTL_MINUTES") or "
 REMOTE_APPROVAL_EXPIRY_INTERVAL_SECONDS = int(_env_value("REMOTE_APPROVAL_EXPIRY_INTERVAL_SECONDS") or "60")
 SCHEDULED_TASK_INTERVAL_SECONDS = int(_env_value("SCHEDULED_TASK_INTERVAL_SECONDS") or "60")
 SCHEDULED_TASK_BATCH_LIMIT = int(_env_value("SCHEDULED_TASK_BATCH_LIMIT") or "10")
+HEADLESS_RUN_STALE_TIMEOUT_MINUTES = int(_env_value("HEADLESS_RUN_STALE_TIMEOUT_MINUTES") or "30")
+SCHEDULED_HEADLESS_APPROVAL_TTL_DAYS = int(_env_value("SCHEDULED_HEADLESS_APPROVAL_TTL_DAYS") or "30")
 
 MEMORY_RETENTION_ENABLED = (_env_value("MEMORY_RETENTION_ENABLED") or "0").lower() in {"1", "true", "yes"}
 MEMORY_RETENTION_DAYS = int(_env_value("MEMORY_RETENTION_DAYS") or "30")
@@ -323,15 +326,23 @@ LLM_DEFAULT_PROFILE_PLANNER = os.getenv("LLM_DEFAULT_PROFILE_PLANNER", "Maestro"
 LLM_DEFAULT_PROFILE_CODER = os.getenv("LLM_DEFAULT_PROFILE_CODER", "Apprentice")
 LLM_TIMEOUT_SECONDS = int(os.getenv("LLM_TIMEOUT_SECONDS", "60"))
 LLM_MAX_RETRIES = int(os.getenv("LLM_MAX_RETRIES", "3"))
+HEADLESS_RUN_MAX_TOOL_ROUNDS = int(os.getenv("HEADLESS_RUN_MAX_TOOL_ROUNDS", "4"))
+HEADLESS_RUN_MAX_DURATION_SECONDS = int(os.getenv("HEADLESS_RUN_MAX_DURATION_SECONDS", "1800"))
 
 # OPENAI KEY
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 OPENAI_WS_DEBUG = os.getenv("OPENAI_WS_DEBUG", "0")
 OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL", "https://api.openai.com")
-OPENAI_TRANSPORT = os.getenv("OPENAI_TRANSPORT", "http")
+OPENAI_TRANSPORT = os.getenv("OPENAI_TRANSPORT", "ws")
 OPENAI_WS_TIMEOUT_SECONDS = os.getenv("OPENAI_WS_TIMEOUT_SECONDS", "120")
 OPENAI_WS_IDLE_TIMEOUT_SECONDS = os.getenv("OPENAI_WS_IDLE_TIMEOUT_SECONDS", "1200")
 OPENAI_HTTP_MODE = os.getenv("OPENAI_HTTP_MODE", "responses")
+
+# GEMINI KEY
+GEMINI_API_KEY = _env_value("GEMINI_API_KEY", "")
+GEMINI_BASE_URL = _env_value("GEMINI_BASE_URL", "https://generativelanguage.googleapis.com/v1beta")
+GEMINI_TRANSPORT = _env_value("GEMINI_TRANSPORT", "http")
+GEMINI_HTTP_MODE = _env_value("GEMINI_HTTP_MODE", "responses")
 
 SCRUB_PROMPTS = os.getenv("SCRUB_PROMPTS", "1") != "0"
 SCRUB_PROMPTS_FOR_TESTS = os.getenv("SCRUB_PROMPTS_FOR_TESTS", "0") != "0"

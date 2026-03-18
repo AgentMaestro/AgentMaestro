@@ -26,6 +26,21 @@ class AgentRun(TimeStampedModel):
         TELEGRAM = "TELEGRAM", "Telegram"
         API = "API", "API"
 
+    class ExecutionMode(models.TextChoices):
+        INTERACTIVE = "interactive", "Interactive"
+        HEADLESS = "headless", "Headless"
+
+    class TriggerKind(models.TextChoices):
+        USER_CHAT = "user_chat", "User Chat"
+        SCHEDULED_TASK = "scheduled_task", "Scheduled Task"
+        SYSTEM = "system", "System"
+
+    class ApprovalMode(models.TextChoices):
+        NONE = "", "None"
+        REQUESTED = "requested", "Requested"
+        MANUAL = "manual", "Manual"
+        INHERITED = "inherited", "Inherited"
+
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     workspace = models.ForeignKey(
         Workspace,
@@ -63,6 +78,29 @@ class AgentRun(TimeStampedModel):
         default=Channel.DASHBOARD,
         db_index=True,
     )
+    execution_mode = models.CharField(
+        max_length=24,
+        choices=ExecutionMode.choices,
+        default=ExecutionMode.INTERACTIVE,
+        db_index=True,
+    )
+    trigger_kind = models.CharField(
+        max_length=24,
+        choices=TriggerKind.choices,
+        default=TriggerKind.USER_CHAT,
+        db_index=True,
+    )
+    trigger_ref = models.CharField(max_length=128, blank=True, default="", db_index=True)
+    delivery_target = models.CharField(max_length=64, blank=True, default="")
+    approval_mode = models.CharField(
+        max_length=24,
+        choices=ApprovalMode.choices,
+        blank=True,
+        default="",
+        db_index=True,
+    )
+    approval_fingerprint = models.CharField(max_length=64, blank=True, default="", db_index=True)
+    approval_source_ref = models.CharField(max_length=128, blank=True, default="")
     input_text = models.TextField(blank=True, default="")
     final_text = models.TextField(blank=True, default="")
     current_step_index = models.IntegerField(default=0)
@@ -85,6 +123,8 @@ class AgentRun(TimeStampedModel):
             models.Index(fields=["workspace", "status", "started_at"]),
             models.Index(fields=["agent", "started_at"]),
             models.Index(fields=["parent_run", "created_at"]),
+            models.Index(fields=["execution_mode", "trigger_kind", "started_at"]),
+            models.Index(fields=["trigger_kind", "trigger_ref", "started_at"]),
         ]
 
     def __str__(self):
@@ -153,7 +193,6 @@ class RunEvent(TimeStampedModel):
 
     def __str__(self):
         return f"{self.run_id}#{self.seq} {self.event_type}"
-
 
 
 class RunArchive(TimeStampedModel):
@@ -232,7 +271,7 @@ class SubrunLink(TimeStampedModel):
         TIMEOUT = "TIMEOUT", "Resume on timeout"
 
     class FailurePolicy(models.TextChoices):
-        FAIL_FAST = "FAIL_FAST", "Fail parent on child failure"
+        FAIL_FAST = "FAIL_FAST", "Fail parent on child failure (reserved for critical safety or security issues)"
         IGNORE_FAILURE = "IGNORE_FAILURE", "Ignore child failures"
         CANCEL_SIBLINGS = "CANCEL_SIBLINGS", "Cancel siblings on failure"
 
@@ -258,7 +297,7 @@ class SubrunLink(TimeStampedModel):
     failure_policy = models.CharField(
         max_length=32,
         choices=FailurePolicy.choices,
-        default=FailurePolicy.FAIL_FAST,
+        default=FailurePolicy.IGNORE_FAILURE,
     )
     metadata = models.JSONField(default=dict, blank=True)
 

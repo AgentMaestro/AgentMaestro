@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import re
 
 from agents.models import Agent
 from memory.services import search_memory
@@ -33,7 +34,8 @@ def bootstrap_memory_for_first_turn(run: AgentRun, agent: Agent, user_text: str)
     seen_ids: set[str] = set()
     searched_scopes: list[dict[str, str]] = []
 
-    for scope_type, scope_id, scope_label in _candidate_scopes(agent):
+    query_variants = _query_variants(query)
+    for scope_type, scope_id, scope_label in _candidate_scopes(run, agent):
         searched_scopes.append(
             {
                 "scope_type": scope_type,
@@ -41,17 +43,20 @@ def bootstrap_memory_for_first_turn(run: AgentRun, agent: Agent, user_text: str)
                 "scope_label": scope_label,
             }
         )
-        for record in search_memory(
-            query=query,
-            scope_type=scope_type,
-            scope_id=scope_id,
-            limit=3,
-        ):
-            record_id = str(record.id)
-            if record_id in seen_ids:
-                continue
-            seen_ids.add(record_id)
-            matched_records.append(record)
+        for query_variant in query_variants:
+            for record in search_memory(
+                query=query_variant,
+                scope_type=scope_type,
+                scope_id=scope_id,
+                limit=3,
+            ):
+                record_id = str(record.id)
+                if record_id in seen_ids:
+                    continue
+                seen_ids.add(record_id)
+                matched_records.append(record)
+                if len(matched_records) >= MAX_BOOTSTRAP_RESULTS:
+                    break
             if len(matched_records) >= MAX_BOOTSTRAP_RESULTS:
                 break
         if len(matched_records) >= MAX_BOOTSTRAP_RESULTS:
@@ -90,8 +95,10 @@ def bootstrap_memory_for_first_turn(run: AgentRun, agent: Agent, user_text: str)
     )
 
 
-def _candidate_scopes(agent: Agent) -> list[tuple[str, str, str]]:
+def _candidate_scopes(run: AgentRun, agent: Agent) -> list[tuple[str, str, str]]:
     scopes: list[tuple[str, str, str]] = []
+    if run.started_by_id:
+        scopes.append(("user", str(run.started_by_id), "run_started_by_id"))
     if agent.workspace_id:
         scopes.append(("sandbox", str(agent.workspace_id), "workspace_id"))
     workspace_name = str(getattr(agent.workspace, "name", "") or "").strip()
@@ -102,6 +109,24 @@ def _candidate_scopes(agent: Agent) -> list[tuple[str, str, str]]:
     if agent_slug:
         scopes.append(("agent", agent_slug, "agent_slug"))
     return scopes
+
+
+def _query_variants(text: str) -> list[str]:
+    normalized = str(text or "").strip()
+    if not normalized:
+        return []
+    variants = [normalized]
+    seen = {normalized.casefold()}
+    for token in re.findall(r"[a-zA-Z0-9_+-]+", normalized):
+        candidate = token.strip().lower()
+        if len(candidate) < 4:
+            continue
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+        variants.append(candidate)
+    return variants
+
 
 
 def _is_substantive(text: str) -> bool:

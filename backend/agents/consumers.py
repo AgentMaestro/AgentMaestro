@@ -1,7 +1,6 @@
 import asyncio
 import json
 import logging
-import os
 import re
 import time
 import uuid
@@ -15,15 +14,16 @@ from django.conf import settings
 from django.utils import timezone
 
 from agents.models import Agent
-from agents.utils import build_transport_status
+from agents.utils import (
+    build_transport_status,
+    format_provider_display,
+    normalize_provider_for_model,
+)
 from core.models import WorkspaceMembership
 from llm.models import LLMModelProfile
-from llm.services.providers.openai_ws import (
-    OpenAIResponsesWSException,
-    OpenAIResponsesWSPreviousResponseNotFound,
-)
 from llm.services.registry import get_client
 from llm.system_context import build_system_context
+from memory.remember_requests import capture_explicit_user_memory_request
 from runs.models import AgentRun, AgentStep
 from runs.services.recovery import cancel_run, pause_run, resume_run
 from scrubadub import Scrubber
@@ -32,9 +32,10 @@ from runs.services.event_builders import (
     build_chat_message_payload,
 )
 from runs.services.events import append_event
+from runs.services.handoff import build_handoff_system_note, get_run_handoff_payload
 from runs.services.memory_bootstrap import bootstrap_memory_for_first_turn
 from runs.services.steps import append_step
-from runs.services.input_items import build_input_items
+from runs.services.input_items import build_input_items, build_ws_request_input_items
 from runs.services.memory import get_or_create_run_memory
 from tools.models import ToolCall
 from tools.policy import ToolNotAllowedError, assert_tool_allowed, get_effective_tools
@@ -74,6 +75,7 @@ def _run_group(run_id: str) -> str:
 
 def _approvals_group(workspace_id: str) -> str:
     return f"approvals.{workspace_id}"
+
 
 
 @database_sync_to_async
@@ -217,6 +219,13 @@ def _set_run_previous_response_id(run_id: str, previous_response_id: str | None)
 
 
 @database_sync_to_async
+def _get_run_handoff(run_id: str) -> dict[str, object] | None:
+    if not run_id:
+        return None
+    return get_run_handoff_payload(run_id)
+
+
+@database_sync_to_async
 def _build_transport_status(agent: Agent):
     return build_transport_status(agent)
 
@@ -238,6 +247,17 @@ def _bootstrap_memory_for_first_turn(run_id: str, agent_id: str, user_text: str)
     run = AgentRun.objects.select_related("workspace", "agent").get(id=run_id)
     agent = Agent.objects.select_related("workspace").get(id=agent_id)
     return bootstrap_memory_for_first_turn(run, agent, user_text)
+
+
+@database_sync_to_async
+def _capture_explicit_user_memory(run_id: str, user_id: int | None, user_text: str):
+    if not run_id or not user_id or not user_text:
+        return None
+    return capture_explicit_user_memory_request(
+        user=user_id,
+        text=user_text,
+        source_ref=f"chat:{run_id}",
+    )
 
 
 @database_sync_to_async
@@ -277,8 +297,7 @@ def _normalize_repo_tree_args(args: dict[str, object]) -> dict[str, object]:
         return {}
 
     normalized = dict(args)
-
-    logger.info(f"Repo_tree args are:  {normalized}")
+    logger.info("Repo_tree args are:  %s", normalized)
 
     path_val = normalized.pop("path", None)
     abs_val = normalized.pop("absolute_root", None)
@@ -299,7 +318,7 @@ def _normalize_repo_tree_args(args: dict[str, object]) -> dict[str, object]:
 
     if source == "path":
         normalized["path"] = candidate_path
-        logger.info(f"repo_tree path is {normalized["path"]}")
+        logger.info(f"repo_tree path is {normalized['path']}")
 
     elif source == "absolute_root":
         logger.info("repo_tree source is an absolute_root")
@@ -321,6 +340,8 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
     model_name: str = ""
     transport: str = "http"
     use_ws: bool = False
+    provider: str = ""
+    provider_label: str = "Provider"
     history: list[dict[str, str]] = []
     session_tools: list[dict[str, object]] = []
     tool_definitions: list[dict[str, object]] = []
@@ -342,6 +363,7 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
         self._last_provider_call_id: str | None = None
         self._tool_output_payload: dict[str, object] | None = None
         self._awaiting_tool_output = False
+        self._system_context_marker = "_agentmaestro_system_context"
 
     async def _log_transport_traffic(self, label: str, data: object | None):
         if not data:
@@ -350,23 +372,46 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
             payload_text = json.dumps(data, ensure_ascii=False, default=str)
         except Exception:
             payload_text = str(data)
+        provider_label = self.provider_label or "Provider"
+        model_label = self.model_name or "unknown"
+        transport_label = self._transport_label()
+        provider_marker = f"[{provider_label}:{model_label}:{transport_label}]"
         await self.send_json(
             {
                 "type": "system",
-                "text": f"[{label}] {payload_text}",
+                "text": f"{provider_marker} [{str(label)}] {payload_text}",
                 "timestamp": timezone.now().isoformat(),
+                "provider": self.provider,
+                "provider_label": provider_label,
+                "model": model_label,
+                "transport": self.transport,
+                "transport_label": transport_label,
             }
         )
 
+    def _transport_label(self) -> str:
+        return "WS" if self.use_ws else "HTTP"
+
+    def _transport_name(self) -> str:
+        return "WebSocket" if self.use_ws else "HTTP"
+
+    def _runtime_transport_label(self) -> str:
+        provider_label = (self.provider_label or "Provider").strip() or "Provider"
+        model_label = self.model_name or "unknown"
+        return f"{provider_label}:{model_label}:{self._transport_label()}"
+
     async def connect(self):
         logger.info(
-            "WS CONNECT run=%s consumer=%s channel_name=%s",
+            "CONSUMER CONNECT provider=%s transport=%s model=%s run=%s consumer=%s channel_name=%s",
+            getattr(self, "provider", None),
+            self._transport_label() if hasattr(self, "transport") else "unknown",
+            getattr(self, "model_name", None),
             getattr(self, "run_id", None),
             id(self),
             getattr(self, "channel_name", None),
         )
         user = self.scope.get("user")
-        logger.info("WS connect START user=%s", getattr(user, "id", None))
+        logger.info("connect START user=%s", getattr(user, "id", None))
         slug = self.scope.get("url_route", {}).get("kwargs", {}).get("slug")
 
         if not user or not getattr(user, "is_authenticated", False) or not slug:
@@ -408,7 +453,7 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
         hydrated_previous_response_id = ""
 
         logger.info(
-            "WS connect parsed requested_run_id=%s raw_qs=%s",
+            "connect parsed requested_run_id=%s raw_qs=%s",
             requested_run_id,
             (self.scope.get("query_string") or b"").decode("utf-8", errors="ignore"),
         )
@@ -420,7 +465,7 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
                 if run:
                     reused_existing_run = True
                     logger.info(
-                        "WS reusing existing run from querystring",
+                        "Reusing existing run from querystring",
                         extra={"agent": str(agent.id), "run": str(run.id)},
                     )
             except Exception as e:
@@ -431,7 +476,7 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
             try:
                 run = await _create_agent_run(agent, user, timezone.now())
                 logger.info(
-                    "WS created new run",
+                    "Created new run",
                     extra={"agent": str(agent.id), "run": str(run.id)},
                 )
             except Exception as e:
@@ -442,27 +487,40 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
         hydrated_previous_response_id = str(getattr(run, "previous_response_id", "") or "").strip()
         layer = getattr(self, "channel_layer", None)
         logger.info(
-            "WS connect channel_layer=%s channel_name=%s run_id=%s",
+            "connect channel_layer=%s channel_name=%s run_id=%s",
             layer.__class__.__name__ if layer else None,
             getattr(self, "channel_name", None),
             self.run_id,
         )
         profile = await _get_profile(agent.policy_name)
-        provider = profile.provider if profile else getattr(settings, "LLM_PROVIDER", "openai")
+        configured_provider = profile.provider if profile else getattr(settings, "LLM_PROVIDER", "openai")
         model_name = profile.model if profile else agent.default_model
+        provider = normalize_provider_for_model(configured_provider, model_name)
+        if provider != configured_provider:
+            logger.info(
+                "Provider adjusted from %s to %s based on model %s",
+                configured_provider,
+                provider,
+                model_name,
+            )
         self.client = get_client(provider)
         self.model_name = model_name
-        self.transport = os.getenv(
-            "OPENAI_TRANSPORT", getattr(self.client, "transport", "http")
-        ).lower()
+        self.provider = provider
+        self.provider_label = format_provider_display(provider)
+        transport_resolver = getattr(self.client, "resolve_transport", None)
+        resolved_transport = (
+            transport_resolver() if callable(transport_resolver) else getattr(self.client, "transport", "http")
+        )
+        self.transport = (resolved_transport or "http").lower()
         self.use_ws = self.transport == "ws"
+        transport_label = self._transport_label()
+        runtime_label = f"{self.provider_label}:{self.model_name or 'unknown'}:{transport_label}"
         logger.debug(
-            "Opening OpenAI %s session for agent=%s run=%s model=%s provider=%s transport=%s",
-            "WS" if self.use_ws else "HTTP",
+            "Opening transport session for agent=%s provider=%s run=%s model=%s transport=%s",
             agent.slug,
+            self.provider,
             self.run_id,
             model_name,
-            provider,
             self.transport,
         )
         self.session = None
@@ -472,7 +530,9 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
                 self.session = await self.client.get_ws_session(
                     self.run_id, model_name, agent_id=str(agent.id)
                 )
-                session_previous_response_id = str(getattr(self.session, "previous_response_id", "") or "").strip()
+                session_previous_response_id = str(
+                    getattr(self.session, "previous_response_id", "") or ""
+                ).strip()
                 if hydrated_previous_response_id and not session_previous_response_id:
                     self.session.previous_response_id = hydrated_previous_response_id
                     restored_previous_response_id = True
@@ -486,23 +546,32 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
                     await _set_run_previous_response_id(self.run_id, session_previous_response_id)
             except Exception as exc:
                 logger.error(
-                    "OpenAI WS session error for agent %s: %s", agent.slug, exc, exc_info=True
+                    "Failed to establish transport session for provider=%s agent=%s run=%s model=%s: %s",
+                    self.provider,
+                    agent.slug,
+                    self.run_id,
+                    model_name,
+                    exc,
+                    exc_info=True,
                 )
                 await self.close(code=1011)
                 return
             logger.info(
-                "OpenAI WS session established for agent=%s run=%s model=%s",
+                "Transport session established for provider=%s agent=%s run=%s model=%s",
+                self.provider,
                 agent.slug,
                 self.run_id,
                 model_name,
             )
         else:
             logger.info(
-                "OpenAI HTTP transport ready for agent=%s run=%s model=%s",
+                "Transport ready for provider=%s agent=%s run=%s model=%s",
+                self.provider,
                 agent.slug,
                 self.run_id,
                 model_name,
             )
+        self.current_runtime_label = runtime_label
 
         effective_tools = await _get_effective_tools(agent, user)
         self.tools_meta = [
@@ -514,6 +583,12 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
             }
             for entry in effective_tools
         ]
+        logger.info(
+            "AgentChatConsumer effective tools agent=%s run=%s tools=%s",
+            agent.slug,
+            self.run_id,
+            [entry.tool.name for entry in effective_tools],
+        )
 
         tool_payloads = []
         for entry in effective_tools:
@@ -527,11 +602,15 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
 
         self.tool_definitions = tool_payloads
         if tool_payloads and self.use_ws:
-            self.session_tools = self.client.format_tool_definitions_for_responses(tool_payloads)
+            self.session_tools = self._format_ws_tool_definitions(tool_payloads)
         else:
             self.session_tools = []
 
         self.history = []
+        handoff_payload = await _get_run_handoff(self.run_id)
+        handoff_system_note = build_handoff_system_note(handoff_payload or {})
+        if handoff_system_note:
+            self.history.append({"role": "system", "content": handoff_system_note, "_handoff_context": True})
         self._ensure_system_context()
 
         run_group = _run_group(self.run_id)
@@ -567,7 +646,7 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
                 id(self),
             )
             logger.info(
-                "WS group_add OK run_group=%s approvals_group=%s",
+                "Transport group add OK run_group=%s approvals_group=%s",
                 run_group,
                 approvals_group,
             )
@@ -598,20 +677,30 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
         await self.accept()
         self._connected = True
         transport_status = await _build_transport_status(agent)
+        runtime_label = getattr(self, "current_runtime_label", None) or f"{self.provider_label}:{self.model_name or 'unknown'}:{self._transport_label()}"
         await self.send_json(
             {
                 "type": "connected",
+                "provider": self.provider,
+                "provider_label": self.provider_label,
                 "system_context": self.system_context or "",
                 "tools": self.tools_meta,
                 "transport_status": transport_status,
+                "transport": self.transport,
+                "transport_label": transport_label,
                 "run_id": self.run_id,
                 "model": model_name,
                 "approval_grants": await _get_active_tool_approval_grants(self.run_id),
                 "run_status": run.status,
+                "handoff": handoff_payload or None,
             }
         )
+        transport_detail = self._transport_name()
+        transport_runtime = self._transport_label()
         if reused_existing_run:
-            reconnect_text = "Reconnected to the existing run after a local browser disconnect."
+            reconnect_text = (
+                f"{self.provider_label} {model_name} {transport_detail} run reconnected after a local browser disconnect."
+            )
             if self.use_ws and (restored_previous_response_id or str(getattr(self.session, "previous_response_id", "") or "").strip()):
                 reconnect_text += " Responses continuity was restored from our saved provider cursor."
             elif self.use_ws:
@@ -624,21 +713,32 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
                     "timestamp": timezone.now().isoformat(),
                 }
             )
-        transport_detail = "WS" if self.use_ws else "HTTP"
-        system_detail = f"OpenAI {transport_detail} connected ({model_name})"
+        system_detail = (
+            f"{self.provider_label} provider '{model_name}' transport '{transport_detail}' connected on run {self.run_id}."
+        )
         await self.send_json(
             {
                 "type": "system",
                 "kind": "connection",
                 "text": system_detail,
                 "timestamp": timezone.now().isoformat(),
+                "provider": self.provider,
+                "provider_label": self.provider_label,
+                "model": model_name,
+                "transport": self.transport,
+                "transport_label": transport_runtime,
             }
         )
         await self._flush_pending_tool_results()
 
     async def disconnect(self, close_code):
+        provider = self.provider or "Provider"
+        transport_label = self._transport_label()
         logger.info(
-            "WS DISCONNECT run=%s consumer=%s channel_name=%s close_code=%s tool_result_flow=redis",
+            "CONSUMER DISCONNECT provider=%s transport=%s model=%s run=%s consumer=%s channel_name=%s close_code=%s tool_result_flow=redis",
+            provider,
+            transport_label,
+            self.model_name or "",
             getattr(self, "run_id", None),
             id(self),
             getattr(self, "channel_name", None),
@@ -647,7 +747,9 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
         if self.use_ws and self.client and self.run_id:
             agent_slug = self.agent.slug if self.agent else "unknown"
             logger.info(
-                "Preserving OpenAI WS session across browser disconnect for agent=%s run=%s previous_response_id=%s",
+                "Preserving session across browser disconnect for provider=%s transport=%s agent=%s run=%s previous_response_id=%s",
+                self.provider_label,
+                transport_label,
                 agent_slug,
                 self.run_id,
                 str(getattr(self.session, "previous_response_id", "") or "").strip(),
@@ -655,8 +757,10 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
         channel_layer = self.channel_layer
         channel_name = getattr(self, "channel_name", None)
         logger.info(
-            "WS disconnect close_code=%s run_id=%s channel_name=%s run_group=%s approvals_group=%s",
+            "Transport disconnect close_code=%s provider=%s transport=%s run_id=%s channel_name=%s run_group=%s approvals_group=%s",
             close_code,
+            provider,
+            transport_label,
             self.run_id,
             channel_name,
             self.workspace_group,
@@ -687,11 +791,17 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
                 {
                     "type": "system",
                     "kind": "connection",
-                    "text": f"Disconnect requested by {user_label}. Closing OpenAI session.",
+                    "text": f"Disconnect requested by {user_label}. Closing {self.provider_label} session.",
                     "timestamp": timezone.now().isoformat(),
                 }
             )
-            logger.info("Disconnect requested via WS for agent=%s run=%s", user_label, self.run_id)
+            logger.info(
+                "Disconnect requested via transport for agent=%s provider=%s transport=%s run=%s",
+                user_label,
+                self.provider_label,
+                self._transport_label(),
+                self.run_id,
+            )
             # TODO: integrate tool_disconnect events with the approvals/channel layer if needed.
             await self.close(code=1000)
             return
@@ -773,6 +883,7 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
         run_status = await self._current_run_status()
         if run_status in {
             AgentRun.Status.PAUSED,
+            AgentRun.Status.WAITING_FOR_SUBRUN,
             AgentRun.Status.WAITING_FOR_USER,
             AgentRun.Status.CANCELED,
             AgentRun.Status.COMPLETED,
@@ -824,8 +935,24 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
                 str(self.agent.id),
                 sanitized_text,
             )
+        explicit_memory = None
+        if self.run_id:
+            scope = getattr(self, "scope", {}) or {}
+            scope_user = scope.get("user") if isinstance(scope, dict) else None
+            user_id = getattr(scope_user, "id", None) or getattr(self.run, "started_by_id", None)
+            explicit_memory = await _capture_explicit_user_memory(
+                str(self.run_id),
+                user_id,
+                sanitized_text,
+            )
         if bootstrap_result and bootstrap_result.summary_text:
             self.history.append({"role": "system", "content": bootstrap_result.summary_text})
+        if explicit_memory is not None:
+            logger.info(
+                "Stored explicit user memory during chat intake run=%s memory_id=%s",
+                self.run_id,
+                explicit_memory.id,
+            )
         self.history.append({"role": "user", "content": sanitized_text})
         if persist:
             await _persist_chat_history_event(self.run_id or "", "user", sanitized_text)
@@ -889,21 +1016,28 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
         tools = self.session_tools if self.session_tools else None
         reconnect_attempts = 0
         max_reconnects = 1
-        logger.debug("WS dispatch run=%s tools=%s", self.run_id, bool(tools))
+        logger.debug(
+            "Transport dispatch run=%s transport=%s tools=%s",
+            self.run_id,
+            self._transport_label(),
+            bool(tools),
+        )
         while True:
             if await self._dispatch_blocked_by_run_status():
                 return
             if not self._tool_result_event.is_set():
                 logger.info(
-                    "WS dispatch waiting for tool output run=%s pending_tool_call_id=%s provider_call_id=%s ts=%s",
+                    "Transport dispatch waiting for tool output run=%s transport=%s pending_tool_call_id=%s provider_call_id=%s ts=%s",
                     self.run_id,
+                    self._transport_label(),
                     self._pending_tool_call_id,
                     self._pending_provider_call_id,
                     timezone.now().isoformat(),
                 )
                 logger.info(
-                    "WS dispatch yielding to push handler run=%s pending_tool_call_id=%s provider_call_id=%s",
+                    "Transport dispatch yielding to push handler run=%s transport=%s pending_tool_call_id=%s provider_call_id=%s",
                     self.run_id,
+                    self._transport_label(),
                     self._pending_tool_call_id,
                     self._pending_provider_call_id,
                 )
@@ -914,8 +1048,9 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
                 "input": input_items,
             }
             logger.debug(
-                "WS payload run=%s inputs=%s previous=%s tools=%s",
+                "Transport payload run=%s transport=%s inputs=%s previous=%s tools=%s",
                 self.run_id,
+                self._transport_label(),
                 len(input_items),
                 getattr(self.session, "previous_response_id", None),
                 len(tools or []),
@@ -935,8 +1070,9 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
                 payload_snapshot["previous_response_id"] = previous_id
             if self._last_tool_call_id:
                 logger.info(
-                    "WS response.create after tool call run=%s tool_call_id=%s provider_call_id=%s previous_response_id=%s tool_output_ready=%s ts=%s",
+                    "Transport response.create after tool call run=%s transport=%s tool_call_id=%s provider_call_id=%s previous_response_id=%s tool_output_ready=%s ts=%s",
                     self.run_id,
+                    self._transport_label(),
                     self._last_tool_call_id,
                     self._last_provider_call_id,
                     getattr(self.session, "previous_response_id", None),
@@ -946,7 +1082,10 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
                 self._last_tool_call_id = None
                 self._last_provider_call_id = None
                 self._tool_output_payload = None
-            await self._log_transport_traffic("WS Send", payload_snapshot)
+            await self._log_transport_traffic(
+                f"{self._transport_label()} SEND",
+                payload_snapshot,
+            )
             try:
                 logger.debug(
                     "WS input_items run=%s types=%s",
@@ -958,12 +1097,13 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
                     tools=tools,
                 )
                 await self._log_transport_traffic(
-                    "WS Rcv",
+                    f"{self._transport_label()} RCV",
                     response.get("raw") if isinstance(response, dict) else response,
                 )
                 logger.debug(
-                    "WS response run=%s status=%s tool_calls=%s",
+                    "Transport response run=%s transport=%s status=%s tool_calls=%s",
                     self.run_id,
+                    self._transport_label(),
                     response.get("status"),
                     len(response.get("tool_calls") or []),
                 )
@@ -971,23 +1111,22 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
                 if response_id:
                     await _set_run_previous_response_id(self.run_id or "", response_id)
                 self._include_system_context = False
-            except OpenAIResponsesWSPreviousResponseNotFound as exc:
-                if self.session:
-                    self.session.previous_response_id = None
-                await _set_run_previous_response_id(self.run_id or "", None)
-                await self._handle_ws_failure(
-                    exc,
-                    input_items,
-                    summary=True,
-                    attempt=reconnect_attempts + 1,
-                    max_attempts=max_reconnects + 1,
-                )
-                if reconnect_attempts >= max_reconnects:
+            except Exception as exc:
+                if self._is_previous_response_not_found(exc):
+                    if self.session:
+                        self.session.previous_response_id = None
+                    await _set_run_previous_response_id(self.run_id or "", None)
+                elif not self._is_ws_exception(exc):
+                    logger.exception(
+                        "Unexpected transport exception in dispatch run=%s transport=%s provider=%s model=%s",
+                        self.run_id,
+                        self._transport_label(),
+                        self.provider_label,
+                        self.model_name,
+                    )
                     await self._send_error_and_abort(exc)
                     return
-                reconnect_attempts += 1
-                continue
-            except OpenAIResponsesWSException as exc:
+
                 await self._handle_ws_failure(
                     exc,
                     input_items,
@@ -1005,8 +1144,9 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
             if tool_calls:
                 for call in tool_calls:
                     logger.info(
-                        "WS tool call run=%s name=%s call_id=%s",
+                        "Transport tool call run=%s transport=%s name=%s call_id=%s",
                         self.run_id,
+                        self._transport_label(),
                         call.get("name"),
                         call.get("call_id") or call.get("id"),
                     )
@@ -1014,8 +1154,9 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
                 continue
 
             logger.debug(
-                "WS assistant_text run=%s present=%s",
+                "Transport assistant_text run=%s transport=%s present=%s",
                 self.run_id,
+                self._transport_label(),
                 bool(response.get("text")),
             )
             assistant_text = response.get("text") or ""
@@ -1247,6 +1388,8 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
                 "type": "tool_request",
                 "tool_call_id": tool_call_id,
                 "tool_name": tool_name,
+                "tool_display_name": str((args or {}).get("display_label") or tool_name),
+                "display_summary": str((args or {}).get("display_summary") or ""),
                 "requires_approval": tool_call.requires_approval,
                 "awaiting_approval": tool_call.status == ToolCall.Status.PENDING_APPROVAL,
                 "risk": entry.risk,
@@ -1301,15 +1444,16 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
             model_name=self.model_name or agent.default_model,
             transport=self.transport,
             tool_names=self._tool_names(),
+            authenticated_user=getattr(self, "scope", {}).get("user") or getattr(self.run, "started_by", None),
         )
         self.system_context = context
         if not context:
             return
         for entry in self.history:
-            if entry.get("role") == "system":
+            if entry.get(self._system_context_marker):
                 entry["content"] = context
                 return
-        self.history.insert(0, {"role": "system", "content": context})
+        self.history.insert(0, {"role": "system", "content": context, self._system_context_marker: True})
 
     async def _flush_pending_tool_results(self, limit: int = 20) -> None:
         if not self.run_id:
@@ -1687,45 +1831,18 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
         )
 
     def _build_ws_input_items(self) -> list[dict[str, object]]:
-        previous_id = getattr(self.session, "previous_response_id", None)
-        if not previous_id:
-            return self._build_input_items()
-
-        # When continuing a Responses WS turn after a tool call, send only the
-        # staged tool outputs for the outstanding provider call. Re-sending the
-        # full system/user history together with previous_response_id duplicates
-        # the initial context on the continuation request.
-        if self.history and self.history[-1].get("role") == "tool":
-            tool_entries: list[dict[str, object]] = []
-            for entry in reversed(self.history):
-                if entry.get("role") != "tool":
-                    break
-                tool_entries.append(entry)
-            tool_entries.reverse()
-            return build_input_items(
-                tool_entries,
-                previous_response_id=previous_id,
-                outstanding_provider_call_id=(
-                    str(self._tool_output_payload.get("provider_call_id") or "").strip()
-                    if self._tool_output_payload
-                    else None
-                ),
-                run_id=self.run_id,
-            )
-
-        if self._include_system_context:
-            return self._build_input_items()
-
-        last_user = self._last_user_message()
-        if last_user:
-            return [
-                {
-                    "type": "message",
-                    "role": "user",
-                    "content": [{"type": "input_text", "text": last_user}],
-                }
-            ]
-        return self._build_input_items()
+        return build_ws_request_input_items(
+            self.history,
+            previous_response_id=getattr(self.session, "previous_response_id", None),
+            outstanding_provider_call_id=(
+                str(self._tool_output_payload.get("provider_call_id") or "").strip()
+                if self._tool_output_payload
+                else None
+            ),
+            include_system_context=self._include_system_context,
+            last_user_text=self._last_user_message(),
+            run_id=self.run_id,
+        )
 
     def _last_user_message(self) -> str | None:
         for entry in reversed(self.history):
@@ -1764,8 +1881,11 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
             max_attempts: int = 1,
     ) -> None:
         summary_text = self._summarize_input_items(input_items) if summary else ""
+        transport_label = self._transport_label()
         logger.warning(
-            "OpenAI WS reconnect triggered run=%s agent=%s reason=%s summary=%s",
+            "%s %s reconnect triggered run=%s agent=%s reason=%s summary=%s",
+            self.provider_label,
+            transport_label,
             self.run_id,
             self.agent.slug if self.agent else "unknown",
             exc,
@@ -1790,7 +1910,10 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
             )
             kind = "connection"
         else:
-            message = f"OpenAI WS connection hiccup: {exc}. Request_id={request_id}"
+            message = (
+                f"{self.provider_label} {transport_label} connection hiccup: {exc}. "
+                f"Request_id={request_id}"
+            )
             kind = "connection"
         await self.send_json(
             {
@@ -1811,7 +1934,17 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
             )
 
     async def _send_error_and_abort(self, exc: Exception) -> None:
-        logger.error("OpenAI WS giving up after retries for run=%s: %s", self.run_id, exc)
+        provider = self.provider_label or "Provider"
+        model = self.model_name or "unknown"
+        transport_label = self._transport_label()
+        logger.error(
+            "%s %s (%s) giving up after retries for run=%s: %s",
+            provider,
+            transport_label,
+            model,
+            self.run_id,
+            exc,
+        )
         await self.send_json(
             {
                 "type": "error",
@@ -1821,8 +1954,16 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
         )
 
     async def _send_http_error(self, exc: Exception) -> None:
-        logger.error("OpenAI HTTP call failed for run=%s agent=%s: %s", self.run_id,
-                     self.agent.slug if self.agent else "unknown", exc)
+        provider = self.provider_label or "Provider"
+        model = self.model_name or "unknown"
+        logger.error(
+            "%s HTTP call failed for run=%s model=%s agent=%s: %s",
+            provider,
+            self.run_id,
+            model,
+            self.agent.slug if self.agent else "unknown",
+            exc,
+        )
         await self.send_json(
             {
                 "type": "error",
@@ -1830,3 +1971,45 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
                 "timestamp": timezone.now().isoformat(),
             }
         )
+
+    def _format_ws_tool_definitions(self, tool_payloads: list[dict[str, object]]) -> list[dict[str, object]]:
+        formatter = getattr(self.client, "format_tool_definitions_for_responses", None)
+        if not callable(formatter):
+            return []
+        try:
+            response = formatter(tool_payloads)
+            return list(response) if response else []
+        except Exception:
+            logger.exception(
+                "Unable to format provider transport tool definitions run=%s provider=%s model=%s",
+                self.run_id,
+                self.provider_label,
+                self.model_name,
+            )
+            return []
+
+    def _is_ws_exception(self, exc: Exception) -> bool:
+        is_ws_exception = getattr(self.client, "is_ws_exception", None)
+        if callable(is_ws_exception):
+            try:
+                return bool(is_ws_exception(exc))
+            except Exception:
+                logger.exception(
+                    "Failed to evaluate ws exception for provider=%s model=%s",
+                    self.provider_label,
+                    self.model_name,
+                )
+        return False
+
+    def _is_previous_response_not_found(self, exc: Exception) -> bool:
+        is_prev_not_found = getattr(self.client, "is_previous_response_not_found", None)
+        if callable(is_prev_not_found):
+            try:
+                return bool(is_prev_not_found(exc))
+            except Exception:
+                logger.exception(
+                    "Failed to evaluate previous-response-not-found check for provider=%s model=%s",
+                    self.provider_label,
+                    self.model_name,
+                )
+        return False

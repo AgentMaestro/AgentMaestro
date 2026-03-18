@@ -131,7 +131,7 @@ def test_cancel_child_triggers_parent_policy():
     child.refresh_from_db()
 
     assert child.status == AgentRun.Status.CANCELED
-    assert parent.status == AgentRun.Status.FAILED
+    assert parent.status == AgentRun.Status.RUNNING
 
     event_types = list(
         RunEvent.objects.filter(run=parent).order_by("seq").values_list("event_type", flat=True)

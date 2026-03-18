@@ -34,7 +34,13 @@ def execute_tool_call_async(self, tool_call_id: str) -> None:
     try:
         logger.info("Celery invoking execute_tool_call for tool_call=%s run=%s", tool_call.id, tool_call.run_id)
         execute_tool_call(str(tool_call.id))
-        logger.info("Celery execute_tool_call finished tool_call=%s", tool_call.id)
+        tool_call.refresh_from_db(fields=["status", "run_id"])
+        logger.info(
+            "Celery execute_tool_call finished tool_call=%s run=%s status=%s - expecting tool_result_ready event",
+            tool_call.id,
+            tool_call.run_id,
+            tool_call.status,
+        )
     except Exception as exc:  # pragma: no cover
         logger.exception("Celery execute_tool_call raised for %s", tool_call_id)
         tool_call.status = ToolCall.Status.FAILED

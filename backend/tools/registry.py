@@ -114,6 +114,11 @@ _TOOL_EXAMPLES = {
         "cmd": ["cmd", "/C", "echo RUN_COMMAND_SMOKE_OK && dir C:\\Dev\\AgentMaestro\\toolrunner\\app\\tools"],
         "cwd": ".",
     },
+    "run_command_safe": {
+        "argv": ["python", "manage.py", "check"],
+        "cwd": ".",
+        "timeout_seconds": 60,
+    },
     "search_code": [
         {"query": "provider_call_id", "root": "backend", "include_globs": ["**/*.py"]},
         {"query": "provider_call_id", "root": "C:\\Dev\\AgentMaestro\\backend", "include_globs": ["**/*.py"]},
@@ -142,20 +147,63 @@ _TOOL_EXAMPLES = {
         "memory_kind": "semantic",
         "limit": 5,
     },
-    "schedule_task": {
-        "title": "daily weather report for Richmond, VA",
-        "task_type": "daily_weather_report",
-        "timezone": "America/New_York",
-        "local_time": "08:00",
-        "execution_payload": {
-            "location": "Richmond, VA",
-            "query": "site:weather.com Richmond VA daily and weekly weather forecast",
-            "source_domain": "weather.com"
+    "schedule_task": [
+        {
+            "title": "daily weather report for Richmond, VA",
+            "task_type": "daily_weather_report",
+            "execution_mode": "deterministic",
+            "timezone": "America/New_York",
+            "local_time": "08:00",
+            "execution_payload": {
+                "location": "Richmond, VA",
+                "query": "site:weather.com Richmond VA daily and weekly weather forecast",
+                "source_domain": "weather.com"
+            }
+        },
+        {
+            "title": "daily repo backup summary",
+            "task_type": "other_daily_task",
+            "execution_mode": "headless_run",
+            "recurrence": {
+                "timezone": "America/New_York",
+                "frequency": "daily",
+                "interval": 1,
+                "local_time": "05:00"
+            },
+            "execution_payload": {
+                "objective": "Create a backup commit for the repository and summarize the last 24 hours of work.",
+                "repo_dir": "C:/Dev/AgentMaestro",
+                "notes": "Use git status and git log, then create a concise backup commit if there are changes."
+            }
+        },
+        {
+            "title": "coach weather checks",
+            "task_type": "daily_weather_report",
+            "execution_mode": "deterministic",
+            "recurrence": {
+                "timezone": "America/New_York",
+                "frequency": "hourly",
+                "interval": 1,
+                "by_weekday": ["mon", "wed", "fri", "sat"],
+                "run_minute": 0,
+                "window_start_time": "09:00",
+                "window_end_time": "19:00"
+            },
+            "execution_payload": {
+                "location": "Richmond, VA",
+                "source_domain": "weather.com"
+            }
         }
-    },
+    ],
     "list_scheduled_tasks": {
         "enabled_only": True,
         "limit": 10
+    },
+    "spawn_subrun": {
+        "input_text": "Research the current weather outlook for Ocala tennis conditions and return a concise summary.",
+        "metadata": {"purpose": "focused research", "topic": "weather"},
+        "join_policy": "WAIT_ALL",
+        "failure_policy": "IGNORE_FAILURE"
     },
     "shell_exec": [
         {"cmd": ["powershell", "-NoProfile", "-Command", "Get-Location"], "cwd": "."},
@@ -165,6 +213,10 @@ _TOOL_EXAMPLES = {
         {"kind": "pytest", "pytest_args": ["toolrunner/app/tests/test_file_write.py"], "cwd": ".", "parse": "pytest", "timeout_ms": 600000},
         {"kind": "pytest", "pytest_args": ["C:\\Dev\\AgentMaestro\\toolrunner\\app\\tests\\test_file_write.py"], "cwd": "C:\\Dev\\AgentMaestro", "parse": "pytest", "timeout_ms": 600000},
     ],
+    "run_tests": {
+        "suites": ["backend"],
+        "timeout_seconds": 900,
+    },
     "typecheck_runner": [
         {"tool": "mypy", "cwd": ".", "args": ["backend"], "timeout_ms": 300000, "max_output_bytes": 262144},
         {"tool": "mypy", "cwd": "C:\\Dev\\AgentMaestro", "args": ["C:\\Dev\\AgentMaestro\\backend"], "timeout_ms": 300000, "max_output_bytes": 262144},
@@ -264,6 +316,17 @@ _TOOL_ADDITIONAL_DOCS = {
     "- `ruff_format` runs through `TOOLRUNNER_PYTHON`.\n"
     "- If `TOOLRUNNER_PYTHON` is unset, toolrunner falls back to `.venv` discovery before using plain `python`.\n"
     "- If `ruff` is missing, the tool reports the resolved interpreter path and source.",
+    "run_command_safe": "\n\nSAFE COMMAND NOTES:\n"
+    "- `argv` is required and must be a list of strings.\n"
+    "- Only allowlisted executables are supported: `python`, `pytest`, `ruff`, `mypy`, `uv`, and `django-admin`.\n"
+    "- `git` is explicitly blocked. Use the dedicated `git_*` tools instead.\n"
+    "- Shell composition, shell wrappers, package installs, migrations, dev servers, and other interactive or long-running commands are rejected.\n"
+    "- `cwd` must stay inside the active workspace root.\n",
+    "run_tests": "\n\nREPO TEST SCRIPT NOTES:\n"
+    "- `suites` is required and only accepts `backend`, `toolrunner`, or `all`.\n"
+    "- This tool only runs the repo-owned PowerShell test entrypoints.\n"
+    "- Git and arbitrary PowerShell execution are not supported here.\n"
+    "- If a suite only exposes `test.ps1`, the tool automatically falls back to that script.\n",
     "run_command": "\n\nCOMMAND ARGUMENT NOTES:\n"
     "- `cmd` is required and must be a list of strings.\n"
     "- Pass the executable and each argument as a separate list item.\n"
@@ -303,12 +366,25 @@ _TOOL_ADDITIONAL_DOCS = {
     "- Example semantic memory: `scope_type='sandbox'`, `scope_id='C:/Dev/AgentMaestro'`, `memory_kind='semantic'`, `dedupe_key='fact:backend-location'`, `content='Use apply_patch for manual edits.'`, `pinned=true`.\n"
     "- Example procedural memory: `scope_type='agent'`, `scope_id='<agent-id>'`, `memory_kind='procedural'`, `dedupe_key='procedure:test-runner'`, `content='When Telegram testing locally, clear the webhook and switch to polling first.'`.\n"
     "- Example episodic memory: `scope_type='user'`, `scope_id='<user-id>'`, `memory_kind='episodic'`, `dedupe_mode='none'`, `dedupe_key='scheduled-task-exec-bucket:<task-id>:daily-weather-report'`, `content='On March 13, 2026, Scott validated Telegram approvals end-to-end.'`, `expires_at='2026-03-31T23:59:59Z'`.",
+    "schedule_task": "\n\nSCHEDULING NOTES:\n"
+    "- `schedule_task` supports both built-in deterministic jobs and general headless recurring agent work.\n"
+    "- Use `task_type=daily_weather_report` with `execution_mode=deterministic` for the built-in weather scheduler.\n"
+    "- Use `task_type=other_daily_task` with `execution_mode=headless_run` for general recurring work such as backups, digests, maintenance, or delegated research.\n"
+    "- Prefer `recurrence` for anything more complex than a single daily wall-clock time.\n"
+    "- Use `title` and `execution_payload` to describe the recurring job clearly so the future headless run has enough context.\n",
     "search_memory": "\n\nMEMORY NOTES:\n"
     "- `search_memory` performs simple text lookup over durable memory records.\n"
     "- Narrow by `scope_type`, `scope_id`, and `memory_kind` when the target scope is known.\n"
     "- Example targeted lookup: `query='apply_patch edits'`, `scope_type='sandbox'`, `scope_id='C:/Dev/AgentMaestro'`.\n"
     "- Example procedural lookup: `query='telegram polling'`, `scope_type='agent'`, `scope_id='<agent-id>'`, `memory_kind='procedural'`.\n"
     "- Example episodic lookup: `query='validated Telegram approvals'`, `scope_type='user'`, `scope_id='<user-id>'`, `memory_kind='episodic'`.",
+    "spawn_subrun": "\n\nSUBRUN NOTES:\n"
+    "- `spawn_subrun` creates a child `AgentRun` attached to the current run.\n"
+    "- For headless parents, the child executes inline so the current planner/model round can continue with the child result.\n"
+    "- Keep child prompts focused and self-contained.\n"
+    "- Use `metadata` for operator-readable purpose labels, not large payloads.\n"
+    "- The default `join_policy` is `wait_all` and the default `failure_policy` is `ignore_failure`.\n"
+    "- Reserve `FAIL_FAST` for critical safety or security situations only.\n",
     "shell_exec": "\n\nPATH NOTES:\n"
     "- `cwd` may be absolute or repo-relative.\n"
     "- Repo-relative `cwd` values resolve from the repository root when one is provided in policy context.",
@@ -426,18 +502,38 @@ _TOOL_RESPONSE_FIELDS = {
     },
     "schedule_task": {
         "scheduled_task_id": "Durable scheduled-task identifier.",
+        "recurrence_rule_id": "Linked recurrence-rule identifier used to calculate future due times.",
         "title": "Stored human-friendly task title.",
         "task_type": "Echoes the stored task type.",
         "schedule_kind": "The recurring schedule model used by the task.",
+        "execution_mode": "Whether the task executes with the deterministic path or launches a headless agent run.",
         "timezone": "The IANA timezone used to calculate due times.",
-        "local_time": "The local wall-clock time the task runs each day.",
+        "local_time": "A compatibility wall-clock time derived from the recurrence rule.",
+        "recurrence_frequency": "The linked recurrence rule frequency.",
+        "recurrence_summary": "Human-readable recurrence description for operators and UIs.",
         "next_run_at": "The next UTC datetime when the task is due.",
         "enabled": "Whether the recurring task is active.",
         "source_memory_id": "The episodic memory record created to remember the scheduling request.",
     },
     "list_scheduled_tasks": {
         "count": "Number of scheduled tasks returned.",
-        "results": "Concise scheduled-task records ordered by next run time.",
+        "results": "Concise scheduled-task records ordered by next run time, including recurrence summaries and run linkage.",
+    },
+    "spawn_subrun": {
+        "parent_run_id": "The parent run that requested the child run.",
+        "parent_status": "The parent run status after the child finishes or is queued.",
+        "child_run_id": "The spawned child run identifier.",
+        "child_status": "The child run status after the tool completes.",
+        "child_execution_mode": "Whether the child runs headlessly or through the deterministic tick path.",
+        "join_policy": "The join policy applied to the parent/child relationship.",
+        "failure_policy": "The failure policy applied to the child group.",
+        "completed_inline": "True when the child was executed immediately inside the parent tool call.",
+        "resumed_parent": "True when the parent left WAITING_FOR_SUBRUN during the tool call.",
+        "child_final_text": "Final assistant text produced by the child when it completed inline.",
+        "child_error_summary": "Child error summary when the inline child failed or returned an error.",
+        "child_failure": "Structured child failure diagnostics including classification, request_id, retryable flag, and recommended action when available.",
+        "child_retryable": "True when the child failure looks transient and the parent may reasonably retry.",
+        "child_recommended_action": "Short operator/model guidance for what to do next after a child failure.",
     },
     "file_write": {
         "resolved_path": "The exact filesystem path that was ultimately written.",
@@ -475,6 +571,20 @@ _TOOL_RESPONSE_FIELDS = {
         "stderr": "Captured error output, if any.",
         "python_interpreter": "Interpreter path used for pytest mode.",
         "python_interpreter_source": "Whether the interpreter came from TOOLRUNNER_PYTHON or fallback discovery.",
+    },
+    "run_command_safe": {
+        "ok": "True when the bounded command completed successfully with exit code 0.",
+        "exit_code": "The process exit code, or null if execution was rejected or timed out.",
+        "stdout": "Captured standard output text.",
+        "stderr": "Captured standard error text or policy rejection message.",
+        "timed_out": "True when the process exceeded its timeout.",
+        "truncated": "True when stdout or stderr capture was truncated.",
+        "normalized_command": "Normalized argv that was validated and, if allowed, executed.",
+        "policy_reason": "Policy rejection reason when the request was blocked before execution.",
+    },
+    "run_tests": {
+        "ok": "True when every requested suite completed with exit code 0.",
+        "results": "Sequential per-suite execution results including script path, exit code, stdout, stderr, timeout, and duration.",
     },
     "format_runner": {
         "changed_files": "Files detected as changed by formatter output parsing.",
@@ -1003,19 +1113,42 @@ TOOL_REGISTRY = [
             },
             {
                 "name": "schedule_task",
-                "description": "Create a recurring task attached to the current agent and store the request as episodic memory.",
+                "description": "Create a recurring task attached to the current agent and store the request as episodic memory. Use deterministic mode for built-in weather automation. Use headless_run for general recurring agent work such as backups, digests, repo maintenance, or delegated research.",
                 "risk": ToolRisk.SAFE,
                 "args_schema": {
                     "type": "object",
                     "additionalProperties": False,
                     "properties": {
                         "title": {"type": "string"},
-                        "task_type": {"type": "string", "enum": ["daily_weather_report"]},
-                        "timezone": {"type": "string"},
-                        "local_time": {"type": "string", "description": "Daily local wall-clock time in HH:MM format."},
+                        "task_type": {"type": "string", "enum": ["daily_weather_report", "daily_email_check", "other_daily_task"]},
+                        "execution_mode": {"type": "string", "enum": ["deterministic", "headless_run"], "default": "deterministic"},
+                        "timezone": {"type": "string", "description": "Daily shorthand timezone. Optional when recurrence.timezone is provided."},
+                        "local_time": {"type": "string", "description": "Daily shorthand local wall-clock time in HH:MM format. Optional when recurrence is provided."},
+                        "recurrence": {
+                            "type": "object",
+                            "additionalProperties": False,
+                            "properties": {
+                                "name": {"type": "string"},
+                                "timezone": {"type": "string"},
+                                "frequency": {"type": "string", "enum": ["hourly", "daily", "weekly", "monthly", "quarterly", "semiannual", "annual"]},
+                                "interval": {"type": "integer", "minimum": 1},
+                                "by_weekday": {"type": "array", "items": {"type": "string", "enum": ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]}},
+                                "by_month_day": {"type": "array", "items": {"type": "integer", "minimum": 1, "maximum": 31}},
+                                "week_of_month": {"type": "integer", "enum": [1, 2, 3, 4, -1]},
+                                "weekday_of_month": {"type": "string", "enum": ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]},
+                                "by_month": {"type": "array", "items": {"type": "integer", "minimum": 1, "maximum": 12}},
+                                "local_time": {"type": "string"},
+                                "run_minute": {"type": "integer", "minimum": 0, "maximum": 59},
+                                "window_start_time": {"type": "string"},
+                                "window_end_time": {"type": "string"},
+                                "start_date": {"type": "string", "format": "date"},
+                                "end_date": {"type": "string", "format": "date"},
+                                "is_active": {"type": "boolean"}
+                            }
+                        },
                         "execution_payload": {"type": "object"},
                     },
-                    "required": ["task_type", "timezone", "local_time"],
+                    "required": ["task_type"],
                 },
                 "requires_approval": False,
                 "released": True,
@@ -1031,6 +1164,27 @@ TOOL_REGISTRY = [
                         "enabled_only": {"type": "boolean", "default": False},
                         "limit": {"type": "integer", "minimum": 1, "maximum": 50, "default": 10},
                     },
+                },
+                "requires_approval": False,
+                "released": True,
+            },
+            {
+                "name": "spawn_subrun",
+                "description": "Spawn a child run for focused research or delegated work and wait for its result.",
+                "risk": ToolRisk.SAFE,
+                "args_schema": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "input_text": {"type": "string"},
+                        "metadata": {"type": "object"},
+                        "join_policy": {"type": "string", "enum": ["WAIT_ALL", "WAIT_ANY", "QUORUM", "TIMEOUT"], "default": "WAIT_ALL"},
+                        "quorum": {"type": "integer", "minimum": 1},
+                        "timeout_seconds": {"type": "integer", "minimum": 1},
+                        "failure_policy": {"type": "string", "enum": ["FAIL_FAST", "CANCEL_SIBLINGS", "IGNORE_FAILURE"], "default": "IGNORE_FAILURE"},
+                        "group_id": {"type": "string"}
+                    },
+                    "required": ["input_text"],
                 },
                 "requires_approval": False,
                 "released": True,
@@ -1186,6 +1340,34 @@ TOOL_REGISTRY = [
                 "released": True,
             },
             {
+                "name": "run_command_safe",
+                "description": "Run a tightly bounded developer command without approval when it fits the safe allowlist and workspace policy.",
+                "risk": ToolRisk.SAFE,
+                "args_schema": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "argv": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Structured argv only. The first element is the executable and each following item is a separate argument.",
+                        },
+                        "cwd": {
+                            "type": "string",
+                            "description": "Repo-relative working directory inside the active workspace root.",
+                        },
+                        "timeout_seconds": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "description": "Optional bounded timeout in seconds. Defaults to 60.",
+                        },
+                    },
+                    "required": ["argv"],
+                },
+                "requires_approval": False,
+                "released": True,
+            },
+            {
                 "name": "search_code",
                 "description": "Search codebase for text patterns/regex.",
                 "risk": ToolRisk.ELEVATED,
@@ -1247,6 +1429,30 @@ TOOL_REGISTRY = [
                     "required": ["kind"],
                 },
                 "requires_approval": True,
+                "released": True,
+            },
+            {
+                "name": "run_tests",
+                "description": "Run one or more repo-owned PowerShell test scripts without arbitrary PowerShell execution.",
+                "risk": ToolRisk.SAFE,
+                "args_schema": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "suites": {
+                            "type": "array",
+                            "items": {"type": "string", "enum": ["backend", "toolrunner", "all"]},
+                            "description": "Requested repo test suites. Use `all` to run both sequentially.",
+                        },
+                        "timeout_seconds": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "description": "Optional timeout in seconds applied to each requested suite. Defaults to 900.",
+                        },
+                    },
+                    "required": ["suites"],
+                },
+                "requires_approval": False,
                 "released": True,
             },
             {

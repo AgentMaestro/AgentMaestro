@@ -1,5 +1,7 @@
 from django.contrib import admin
 
+from core.admin_utils import format_datetime_eastern
+
 from .models import LLMModelProfile, LLMRun, LLMMessage, LLMToolCall, ModelsAvailable
 
 
@@ -20,9 +22,13 @@ class RunIDFilter(admin.SimpleListFilter):
 
 @admin.register(LLMModelProfile)
 class LLMModelProfileAdmin(admin.ModelAdmin):
-    list_display = ("name", "agent_role", "provider", "model", "temperature", "is_active", "updated_at")
+    list_display = ("name", "agent_role", "provider", "model", "temperature", "is_active", "updated_at_display")
     list_filter = ("provider", "agent_role", "is_active")
     search_fields = ("name", "model")
+
+    @admin.display(description="Updated At")
+    def updated_at_display(self, obj: LLMModelProfile) -> str:
+        return format_datetime_eastern(obj.updated_at)
 
 
 @admin.register(LLMRun)
@@ -33,33 +39,49 @@ class LLMRunAdmin(admin.ModelAdmin):
         "provider",
         "model",
         "status",
-        "created_at",
+        "created_at_display",
         "profile",
     )
     list_filter = (RunIDFilter, "provider", "status", "profile")
     search_fields = ("id", "agent_name", "model")
     readonly_fields = ("created_at",)
 
+    @admin.display(description="Created At")
+    def created_at_display(self, obj: LLMRun) -> str:
+        return format_datetime_eastern(obj.created_at)
+
 
 @admin.register(LLMMessage)
 class LLMMessageAdmin(admin.ModelAdmin):
-    list_display = ("run", "role", "name", "created_at")
+    list_display = ("run", "role", "name", "created_at_display")
     list_filter = ("role",)
     search_fields = ("run__id", "content", "name")
     readonly_fields = ("created_at",)
 
+    @admin.display(description="Created At")
+    def created_at_display(self, obj: LLMMessage) -> str:
+        return format_datetime_eastern(obj.created_at)
+
 
 @admin.register(LLMToolCall)
 class LLMToolCallAdmin(admin.ModelAdmin):
-    list_display = ("run", "tool_name", "success", "created_at")
+    list_display = ("run", "tool_name", "success", "created_at_display")
     list_filter = ("tool_name", "success")
     search_fields = ("run__id", "tool_name")
     readonly_fields = ("created_at",)
 
+    @admin.display(description="Created At")
+    def created_at_display(self, obj: LLMToolCall) -> str:
+        return format_datetime_eastern(obj.created_at)
+
 
 @admin.register(ModelsAvailable)
 class ModelsAvailableAdmin(admin.ModelAdmin):
-    list_display = ("company", "api", "name", "updated_at")
+    list_display = ("company", "api", "name", "updated_at_display")
     list_filter = ("company", "api")
     search_fields = ("company", "name")
     readonly_fields = ("created_at",)
+
+    @admin.display(description="Updated At")
+    def updated_at_display(self, obj: ModelsAvailable) -> str:
+        return format_datetime_eastern(obj.updated_at)

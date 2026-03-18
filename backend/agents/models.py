@@ -285,7 +285,10 @@ class Agent(TimeStampedModel):
             return []
         try:
             queryset = (
-                ModelsAvailable.objects.filter(company__iexact="openai", api__iexact="responses")
+                ModelsAvailable.objects.filter(
+                    models.Q(company__iexact="openai", api__iexact="responses")
+                    | models.Q(company__iexact="google", api__iexact="gemini")
+                )
                 .order_by("name")
                 .values_list("name", flat=True)
             )
@@ -294,3 +297,4 @@ class Agent(TimeStampedModel):
         except Exception:
             return []
         return [str(name) for name in queryset if name]
+

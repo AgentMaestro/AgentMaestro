@@ -1,5 +1,7 @@
 from django.contrib import admin
 
+from core.admin_utils import format_datetime_eastern
+
 from .models import (
     ExternalIdentity,
     PendingPairing,
@@ -66,20 +68,50 @@ class CommsConversationAdmin(admin.ModelAdmin):
 
 @admin.register(PendingPairing)
 class PendingPairingAdmin(admin.ModelAdmin):
-    list_display = ("pair_code", "endpoint", "agent", "status", "created_at", "expires_at")
+    list_display = (
+        "pair_code",
+        "endpoint",
+        "agent",
+        "status",
+        "created_at_display",
+        "expires_at_display",
+    )
     list_filter = ("endpoint", "status")
     search_fields = ("pair_code", "claimed_chat_id")
+
+    @admin.display(description="Created At")
+    def created_at_display(self, obj: PendingPairing) -> str:
+        return format_datetime_eastern(obj.created_at)
+
+    @admin.display(description="Expires At")
+    def expires_at_display(self, obj: PendingPairing) -> str:
+        return format_datetime_eastern(obj.expires_at)
 
 
 @admin.register(CommsMessage)
 class CommsMessageAdmin(admin.ModelAdmin):
-    list_display = ("conversation", "direction", "created_at")
+    list_display = ("conversation", "direction", "created_at_display")
     list_filter = ("direction", "conversation__transport")
     search_fields = ("text",)
 
+    @admin.display(description="Created At")
+    def created_at_display(self, obj: CommsMessage) -> str:
+        return format_datetime_eastern(obj.created_at)
+
+
 @admin.register(RemoteApprovalTicket)
 class RemoteApprovalTicketAdmin(admin.ModelAdmin):
-    list_display = ("short_code", "transport", "tool_call", "status", "expires_at", "acted_by_label")
+    list_display = (
+        "short_code",
+        "transport",
+        "tool_call",
+        "status",
+        "expires_at_display",
+        "acted_by_label",
+    )
     list_filter = ("transport", "status")
     search_fields = ("short_code", "external_chat_id", "acted_by_label", "tool_call__tool_name")
 
+    @admin.display(description="Expires At")
+    def expires_at_display(self, obj: RemoteApprovalTicket) -> str:
+        return format_datetime_eastern(obj.expires_at)

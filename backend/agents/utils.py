@@ -1,8 +1,32 @@
+from typing import Optional
+
 from django.urls import reverse
 
 from comms.models import Transport, TransportEndpoint
 
 TELEGRAM_TRANSPORT_KEY = "telegram"
+
+
+def format_provider_display(provider: str | None) -> str:
+    normalized = (provider or "").strip()
+    lowercase = normalized.lower()
+    if lowercase == "openai":
+        return "OpenAI"
+    if lowercase == "gemini":
+        return "Gemini"
+    if normalized:
+        return normalized.title()
+    return "Provider"
+
+
+def normalize_provider_for_model(provider: str | None, model_name: str | None) -> str:
+    candidate = (provider or "").strip().lower()
+    model_candidate = (model_name or "").strip().lower()
+    if candidate == "openai" and model_candidate.startswith("gemini-"):
+        return "gemini"
+    if candidate in {"openai", "gemini"}:
+        return candidate
+    return candidate or "openai"
 
 
 def _get_telegram_transport() -> Transport | None:

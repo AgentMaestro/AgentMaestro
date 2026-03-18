@@ -8,3 +8,5 @@ pypatch==1.0.2
 jsonschema>=4.22.1
 coverage>=7.13.4
 mypy>=1.19.1
+
+trafilatura>=1.9,<2.0

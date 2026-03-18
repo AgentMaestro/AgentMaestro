@@ -12,10 +12,12 @@ from agents.models import Agent
 from core.models import Workspace, WorkspaceMembership
 from memory.health import build_memory_health_report
 from memory.models import MemoryHealthSnapshot, MemoryRecord, ScheduledTask
+from memory.scheduled_tasks import create_scheduled_task
 from memory.services import remember
 
 
 pytestmark = pytest.mark.django_db
+
 
 
 def _create_health_context():
@@ -33,6 +35,7 @@ def _create_health_context():
     return user, workspace, agent
 
 
+
 def test_build_memory_health_report_counts_and_trend_snapshot():
     user, workspace, agent = _create_health_context()
     remember(
@@ -45,7 +48,7 @@ def test_build_memory_health_report_counts_and_trend_snapshot():
         dedupe_key="fact:backend-location",
         source_kind="manual_remember",
     )
-    procedural = remember(
+    remember(
         agent=agent,
         memory_kind="procedural",
         content="Clear webhook before local polling tests.",
@@ -63,20 +66,18 @@ def test_build_memory_health_report_counts_and_trend_snapshot():
         dedupe_mode="exact",
         expires_at=timezone.now() - timedelta(minutes=5),
     )
-    ScheduledTask.objects.create(
-        workspace=workspace,
+    scheduled_task = create_scheduled_task(
         agent=agent,
         owner=user,
-        title="daily weather report for Richmond, VA",
         task_type=ScheduledTask.TaskType.DAILY_WEATHER_REPORT,
-        timezone="America/New_York",
-        local_time=timezone.localtime().time().replace(second=0, microsecond=0),
-        next_run_at=timezone.now() + timedelta(hours=1),
+        local_time_value="08:00",
+        timezone_name="America/New_York",
+        source_memory=episodic,
+        execution_payload={"location": "Richmond, VA", "source_domain": "weather.com"},
+    )
+    ScheduledTask.objects.filter(id=scheduled_task.id).update(
         last_run_at=timezone.now() - timedelta(hours=2),
         last_success_at=timezone.now() - timedelta(hours=2),
-        enabled=True,
-        failure_count=0,
-        source_memory=episodic,
     )
 
     baseline = MemoryHealthSnapshot.objects.create(
@@ -111,6 +112,7 @@ def test_build_memory_health_report_counts_and_trend_snapshot():
     assert MemoryHealthSnapshot.objects.count() == 2
 
 
+
 def test_memory_health_report_command_outputs_json_and_saves_snapshot():
     _user, workspace, _agent = _create_health_context()
     remember(
@@ -128,6 +130,7 @@ def test_memory_health_report_command_outputs_json_and_saves_snapshot():
     assert payload["memory"]["total_records"] == 1
     assert payload["snapshot"] is not None
     assert MemoryHealthSnapshot.objects.count() == 1
+
 
 
 def test_memory_health_report_alias_supports_no_save():

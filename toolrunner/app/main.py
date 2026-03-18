@@ -16,6 +16,7 @@ from .models import (
     CoverageArgs,
     ExecuteRequest,
     ExecuteResponse,
+    FetchUrlArgs,
     FileDeleteArgs,
     FilePatchArgs,
     FileReadArgs,
@@ -34,10 +35,13 @@ from .models import (
     PythonArgs,
     RepoTreeArgs,
     RunCommandArgs,
+    RunCommandSafeArgs,
+    RunTestsArgs,
     RunnerTestArgs,
     SearchCodeArgs,
     ShellArgs,
     TypecheckArgs,
+    WebSearchArgs,
 )
 from .run_manager import REPO_ROOT, RunContext, RunManager
 from .schemas import SchemaValidationError
@@ -48,6 +52,7 @@ from .tools import (
     delete_file,
     create_webhook,
     run_coverage,
+    run_fetch_url,
     run_formatter,
     run_git_add,
     run_git_apply,
@@ -58,11 +63,14 @@ from .tools import (
     run_git_log,
     run_git_push,
     run_git_status,
+    run_web_search,
     run_linters,
     list_repo_tree,
     list_search_code,
     read_file,
     run_command,
+    run_command_safe,
+    run_predefined_tests,
     run_python,
     run_shell,
     run_tests,
@@ -245,9 +253,29 @@ _TOOL_HANDLERS: dict[str, tuple[type[BaseModel], object]] = {
     "file_patch": (FilePatchArgs, lambda run_dir, parsed_args, payload: apply_patch(run_dir, parsed_args, payload.policy)),
     "repo_tree": (RepoTreeArgs, lambda run_dir, parsed_args, payload: list_repo_tree(run_dir, parsed_args, payload.policy)),
     "search_code": (SearchCodeArgs, lambda run_dir, parsed_args, payload: list_search_code(run_dir, parsed_args, payload.policy)),
+    "web_search": (WebSearchArgs, lambda run_dir, parsed_args, payload: run_web_search(run_dir, parsed_args, payload.policy)),
+    "fetch_url": (FetchUrlArgs, lambda run_dir, parsed_args, payload: run_fetch_url(run_dir, parsed_args, payload.policy)),
     "shell_exec": (ShellArgs, _run_shell_exec_tool),
     "python_exec": (PythonArgs, _run_python_exec_tool),
     "run_command": (RunCommandArgs, lambda run_dir, parsed_args, payload: run_command(run_dir, parsed_args, payload.policy)),
+    "run_command_safe": (
+        RunCommandSafeArgs,
+        lambda run_dir, parsed_args, payload: run_command_safe(
+            run_dir,
+            parsed_args,
+            payload.policy,
+            max_output_bytes=payload.limits.max_output_bytes,
+        ),
+    ),
+    "run_tests": (
+        RunTestsArgs,
+        lambda run_dir, parsed_args, payload: run_predefined_tests(
+            run_dir,
+            parsed_args,
+            payload.policy,
+            max_output_bytes=payload.limits.max_output_bytes,
+        ),
+    ),
     "test_runner": (RunnerTestArgs, lambda run_dir, parsed_args, payload: run_tests(run_dir, parsed_args, payload.policy)),
     "format_runner": (FormatArgs, lambda run_dir, parsed_args, payload: run_formatter(run_dir, parsed_args, payload.policy)),
     "coverage_runner": (CoverageArgs, lambda run_dir, parsed_args, payload: run_coverage(run_dir, parsed_args, payload.policy)),
@@ -292,6 +320,14 @@ def _apply_execute_limits(parsed_args: BaseModel, payload: ExecuteRequest) -> Ba
             updates["timeout_ms"] = limit_timeout_ms
         else:
             updates["timeout_ms"] = min(configured_timeout, limit_timeout_ms)
+
+    if "timeout_seconds" in model_fields:
+        configured_timeout_seconds = getattr(parsed_args, "timeout_seconds", None)
+        limit_timeout_seconds = payload.limits.timeout_s
+        if not isinstance(configured_timeout_seconds, int) or configured_timeout_seconds <= 0:
+            updates["timeout_seconds"] = limit_timeout_seconds
+        else:
+            updates["timeout_seconds"] = min(configured_timeout_seconds, limit_timeout_seconds)
 
     if "max_output_bytes" in model_fields:
         configured_output_limit = getattr(parsed_args, "max_output_bytes", None)

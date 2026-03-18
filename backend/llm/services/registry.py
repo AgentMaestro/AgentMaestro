@@ -1,5 +1,6 @@
 from django.conf import settings
 
+from .providers.gemini_client import GeminiClient
 from .providers.openai_client import OpenAIClient
 from .providers.ollama_client import OllamaClient
 
@@ -12,6 +13,8 @@ def get_client(provider: str):
         return _CLIENTS[provider_key]
     if provider_key == "openai":
         client = OpenAIClient()
+    elif provider_key == "gemini":
+        client = GeminiClient()
     elif provider_key == "ollama":
         client = OllamaClient()
     else:

@@ -8,11 +8,15 @@ from django.utils import timezone
 
 from agents.models import Agent
 from core.models import Workspace, WorkspaceMembership
+from llm.services.providers.openai_ws import OpenAIResponsesWSNetworkError
 from runs.models import AgentRun, RunEvent, SubrunLink
 from runs.services.subruns import (
+    HEADLESS_FAILURE_DIAGNOSTICS_EVENT,
+    SUBRUN_CIRCUIT_OPEN_EVENT,
     SUBRUN_COMPLETED_EVENT,
     SUBRUN_SPAWN_EVENT,
     complete_subrun,
+    run_subrun_flow,
     spawn_subrun,
 )
 
@@ -51,7 +55,7 @@ def test_spawn_subrun_creates_child_and_waits():
 
     link = SubrunLink.objects.get(child_run=child)
     assert link.join_policy == SubrunLink.JoinPolicy.WAIT_ALL
-    assert link.failure_policy == SubrunLink.FailurePolicy.FAIL_FAST
+    assert link.failure_policy == SubrunLink.FailurePolicy.IGNORE_FAILURE
 
     event_types = list(
         RunEvent.objects.filter(run=parent).order_by("seq").values_list("event_type", flat=True)
@@ -177,8 +181,181 @@ def test_failure_policy_cancel_siblings():
     result = complete_subrun(child_run_id=str(failing.id))
 
     parent.refresh_from_db()
-    assert parent.status == AgentRun.Status.FAILED
-    assert result is None
+    assert parent.status == AgentRun.Status.RUNNING
+    assert result == str(parent.id)
 
     children[1].refresh_from_db()
     assert children[1].status == AgentRun.Status.CANCELED
+
+
+@pytest.mark.django_db(transaction=True)
+def test_default_failure_policy_resumes_parent_after_failed_child():
+    parent = _make_run("ignore_failure_default")
+    child = spawn_subrun(parent_run_id=str(parent.id), input_text="child prompt")
+
+    child.status = AgentRun.Status.FAILED
+    child.ended_at = timezone.now()
+    child.error_summary = "transient network issue"
+    child.save(update_fields=["status", "ended_at", "error_summary", "updated_at"])
+
+    result = complete_subrun(child_run_id=str(child.id))
+
+    parent.refresh_from_db()
+    assert parent.status == AgentRun.Status.RUNNING
+    assert result == str(parent.id)
+
+
+@pytest.mark.django_db(transaction=True)
+def test_interactive_subrun_flow_executes_child_inline_and_returns_child_text(monkeypatch):
+    parent = _make_run("interactive_inline")
+
+    async def fake_run(self, **kwargs):
+        return {"run_id": "", "text": "Focused child summary", "status": "completed", "error": None}
+
+    monkeypatch.setattr("runs.services.headless.LLMRunner.run", fake_run)
+    monkeypatch.setattr("runs.services.headless.send_run_transport_message", lambda **kwargs: True)
+
+    from runs.services.subruns import run_subrun_flow
+
+    result = run_subrun_flow(
+        parent_run_id=str(parent.id),
+        input_text="Research the focused weather outlook for Ocala tennis conditions.",
+        metadata={"purpose": "focused research"},
+    )
+
+    parent.refresh_from_db()
+    child = AgentRun.objects.get(id=result["child_run_id"])
+
+    assert result["completed_inline"] is True
+    assert result["resumed_parent"] is True
+    assert result["child_final_text"] == "Focused child summary"
+    assert result["child_error_summary"] == ""
+    assert child.parent_run_id == parent.id
+    assert child.execution_mode == AgentRun.ExecutionMode.HEADLESS
+    assert child.status == AgentRun.Status.COMPLETED
+    assert child.final_text == "Focused child summary"
+    assert parent.status == AgentRun.Status.RUNNING
+
+
+@pytest.mark.django_db(transaction=True)
+def test_headless_subrun_flow_executes_child_inline_and_resumes_parent(monkeypatch):
+    parent = _make_run("headless_inline")
+    parent.execution_mode = AgentRun.ExecutionMode.HEADLESS
+    parent.trigger_kind = AgentRun.TriggerKind.SYSTEM
+    parent.save(update_fields=["execution_mode", "trigger_kind", "updated_at"])
+
+    async def fake_run(self, **kwargs):
+        return {"run_id": "", "text": "Focused child summary", "status": "completed", "error": None}
+
+    monkeypatch.setattr("runs.services.headless.LLMRunner.run", fake_run)
+    monkeypatch.setattr("runs.services.headless.send_run_transport_message", lambda **kwargs: True)
+
+    from runs.services.subruns import run_subrun_flow
+
+    result = run_subrun_flow(
+        parent_run_id=str(parent.id),
+        input_text="Research the focused weather outlook for Ocala tennis conditions.",
+        metadata={"purpose": "focused research"},
+    )
+
+    parent.refresh_from_db()
+    child = AgentRun.objects.get(id=result["child_run_id"])
+
+    assert result["completed_inline"] is True
+    assert result["resumed_parent"] is True
+    assert child.parent_run_id == parent.id
+    assert child.execution_mode == AgentRun.ExecutionMode.HEADLESS
+    assert child.status == AgentRun.Status.COMPLETED
+    assert parent.status == AgentRun.Status.RUNNING
+
+    event_types = list(
+        RunEvent.objects.filter(run=parent).order_by("seq").values_list("event_type", flat=True)
+    )
+    assert SUBRUN_SPAWN_EVENT in event_types
+    assert SUBRUN_COMPLETED_EVENT in event_types
+
+
+@pytest.mark.django_db(transaction=True)
+def test_inline_subrun_failure_returns_retryable_diagnostics(monkeypatch):
+    parent = _make_run("retryable_failure")
+
+    async def fake_run(self, **kwargs):
+        raise OpenAIResponsesWSNetworkError(
+            "OpenAI WS connection closed without a completed response",
+            request_id="req-subrun-123",
+            status=1006,
+        )
+
+    monkeypatch.setattr("runs.services.headless.LLMRunner.run", fake_run)
+    monkeypatch.setattr("runs.services.headless.send_run_transport_message", lambda **kwargs: True)
+
+    from runs.services.subruns import run_subrun_flow
+
+    result = run_subrun_flow(
+        parent_run_id=str(parent.id),
+        input_text="Research the focused weather outlook for Ocala tennis conditions.",
+        metadata={"purpose": "focused research"},
+    )
+
+    parent.refresh_from_db()
+
+    assert result["parent_status"] == AgentRun.Status.RUNNING
+    assert result["child_status"] == AgentRun.Status.FAILED
+    assert result["resumed_parent"] is True
+    assert result["child_retryable"] is True
+    assert result["child_failure"]["classification"] == "network_error"
+    assert result["child_failure"]["request_id"] == "req-subrun-123"
+
+
+@pytest.mark.django_db(transaction=True)
+def test_subrun_circuit_breaker_opens_after_two_network_failures(monkeypatch):
+    parent = _make_run("circuit_open")
+
+    for index in range(2):
+        child = AgentRun.objects.create(
+            workspace=parent.workspace,
+            agent=parent.agent,
+            parent_run=parent,
+            started_by=parent.started_by,
+            status=AgentRun.Status.FAILED,
+            execution_mode=AgentRun.ExecutionMode.HEADLESS,
+            trigger_kind=AgentRun.TriggerKind.SYSTEM,
+            input_text=f"failed child {index}",
+        )
+        RunEvent.objects.create(
+            run=child,
+            seq=1,
+            event_type=HEADLESS_FAILURE_DIAGNOSTICS_EVENT,
+            payload={
+                "summary": "OpenAI WS connection closed without a completed response",
+                "classification": "network_error",
+                "retryable": True,
+            },
+            correlation_id=child.correlation_id,
+        )
+
+    monkeypatch.setattr(
+        "runs.services.subruns.spawn_subrun",
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("spawn_subrun should not be called")),
+    )
+
+    result = run_subrun_flow(
+        parent_run_id=str(parent.id),
+        input_text="Research the next focus area sequentially.",
+        metadata={"purpose": "focused research"},
+    )
+
+    parent.refresh_from_db()
+
+    assert result["subrun_circuit_open"] is True
+    assert result["subrun_circuit_reason"] == "repeated_network_error"
+    assert result["subrun_failure_count"] == 2
+    assert result["child_run_id"] == ""
+    assert result["child_status"] == "SKIPPED"
+    assert result["parent_status"] == AgentRun.Status.RUNNING
+    assert parent.status == AgentRun.Status.RUNNING
+
+    event_types = list(
+        RunEvent.objects.filter(run=parent).order_by("seq").values_list("event_type", flat=True)
+    )
+    assert SUBRUN_CIRCUIT_OPEN_EVENT in event_types
