@@ -14,7 +14,7 @@ from django.utils.dateparse import parse_datetime
 from tools.models import ToolDefinition
 from tools.services.tool_validation import ToolArgumentValidationError, validate_required_tool_arguments
 
-_NATIVE_TOOL_NAMES = {"remember", "search_memory", "schedule_task", "list_scheduled_tasks", "spawn_subrun"}
+_NATIVE_TOOL_NAMES = {"remember", "search_memory", "schedule_task", "list_scheduled_tasks", "edit_scheduled_task", "disable_scheduled_task", "enable_scheduled_task", "spawn_subrun", "google_bridge"}
 
 
 def _sign(body: bytes, secret: bytes) -> tuple[str, str]:
@@ -54,7 +54,15 @@ def _coerce_expires_at(value: object):
 
 
 def _run_native_tool(tool_name: str, args: Dict[str, Any], orchestration_run_id: Optional[str]) -> Dict[str, Any]:
-    from memory.scheduled_tasks import create_scheduled_task, list_scheduled_tasks
+    from google_bridge.services.bridge import execute_google_task
+    from memory.scheduled_tasks import (
+        create_scheduled_task,
+        disable_scheduled_task,
+        enable_scheduled_task,
+        list_scheduled_tasks,
+        serialize_scheduled_task,
+        update_scheduled_task,
+    )
     from memory.services import remember as remember_memory
     from memory.services import search_memory as search_memory_records
     from runs.models import AgentRun
@@ -155,7 +163,7 @@ def _run_native_tool(tool_name: str, args: Dict[str, Any], orchestration_run_id:
         scheduled_task = create_scheduled_task(
             agent=run.agent,
             owner=run.started_by or run.agent.owner,
-            task_type=str(args.get("task_type") or "other_task"),
+            task_type="other_task",
             local_time_value=str(args.get("local_time") or "08:00"),
             timezone_name=str(args.get("timezone") or "UTC"),
             title=str(args.get("title") or ""),
@@ -180,6 +188,32 @@ def _run_native_tool(tool_name: str, args: Dict[str, Any], orchestration_run_id:
         }
         return {"ok": True, "result": result, "meta": {"native": True}, "error": None}
 
+    if tool_name in {"edit_scheduled_task", "disable_scheduled_task", "enable_scheduled_task"}:
+        from memory.models import ScheduledTask
+
+        scheduled_task_id = str(args.get("scheduled_task_id") or "").strip()
+        if not scheduled_task_id:
+            raise RuntimeError(f"{tool_name} requires scheduled_task_id.")
+        scheduled_task = ScheduledTask.objects.select_related("recurrence_rule").filter(id=scheduled_task_id, agent=run.agent).first()
+        if scheduled_task is None:
+            raise RuntimeError("Scheduled task not found for the current agent.")
+        if tool_name == "edit_scheduled_task":
+            updated = update_scheduled_task(
+                scheduled_task,
+                title=str(args.get("title")) if args.get("title") is not None else None,
+                enabled=args.get("enabled") if args.get("enabled") is not None else None,
+                execution_payload=dict(args.get("execution_payload") or {}) if args.get("execution_payload") is not None else None,
+                recurrence_config=dict(args.get("recurrence") or args.get("recurrence_config") or {}) if args.get("recurrence") is not None or args.get("recurrence_config") is not None else None,
+                local_time_value=str(args.get("local_time")) if args.get("local_time") is not None else None,
+                timezone_name=str(args.get("timezone")) if args.get("timezone") is not None else None,
+                delivery_target=str(args.get("delivery_target")) if args.get("delivery_target") is not None else None,
+            )
+        elif tool_name == "disable_scheduled_task":
+            updated = disable_scheduled_task(scheduled_task)
+        else:
+            updated = enable_scheduled_task(scheduled_task)
+        return {"ok": True, "result": serialize_scheduled_task(updated), "meta": {"native": True}, "error": None}
+
     if tool_name == "list_scheduled_tasks":
         scheduled_tasks = list_scheduled_tasks(
             agent=run.agent,
@@ -188,29 +222,7 @@ def _run_native_tool(tool_name: str, args: Dict[str, Any], orchestration_run_id:
         )
         result = {
             "count": len(scheduled_tasks),
-            "results": [
-                {
-                    "scheduled_task_id": str(task.id),
-                    "recurrence_rule_id": str(task.recurrence_rule_id),
-                    "title": task.title,
-                    "task_type": task.task_type,
-                    "schedule_kind": task.schedule_kind,
-                    "execution_mode": task.execution_mode,
-                    "timezone": task.timezone,
-                    "local_time": task.local_time.isoformat(timespec="minutes"),
-                    "recurrence_frequency": task.recurrence_rule.frequency,
-                    "recurrence_summary": task.recurrence_summary,
-                    "next_run_at": task.next_run_at.isoformat(),
-                    "enabled": task.enabled,
-                    "failure_count": task.failure_count,
-                    "last_run_id": str(task.last_run_id or ""),
-                    "active_run_id": str(task.active_run_id or ""),
-                    "last_run_at": task.last_run_at.isoformat() if task.last_run_at else "",
-                    "last_success_at": task.last_success_at.isoformat() if task.last_success_at else "",
-                    "last_result_summary": task.last_result_summary,
-                }
-                for task in scheduled_tasks
-            ],
+            "results": [serialize_scheduled_task(task) for task in scheduled_tasks],
         }
         return {"ok": True, "result": result, "meta": {"native": True}, "error": None}
 
@@ -226,6 +238,17 @@ def _run_native_tool(tool_name: str, args: Dict[str, Any], orchestration_run_id:
             group_id=str(args.get("group_id") or "") or None,
         )
         return {"ok": True, "result": result, "meta": {"native": True}, "error": None}
+
+    if tool_name == "google_bridge":
+        try:
+            result = execute_google_task(
+                payload=args or {},
+                workspace=run.workspace,
+                owner=run.started_by or run.agent.owner,
+            )
+        except Exception as exc:  # noqa: BLE001
+            return {"ok": False, "result": None, "meta": {"native": True}, "error": str(exc)}
+        return {"ok": bool(result.get("ok", True)), "result": result, "meta": {"native": True}, "error": None}
 
     raise RuntimeError(f"Unsupported native tool: {tool_name}")
 

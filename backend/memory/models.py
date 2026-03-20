@@ -145,10 +145,6 @@ class RecurrenceRule(TimeStampedModel):
 
 class ScheduledTask(TimeStampedModel):
     class TaskType(models.TextChoices):
-        DAILY_WEATHER_REPORT = "daily_weather_report", "Daily Weather Report"
-        DAILY_EMAIL_CHECK = "daily_email_check", "Daily Email Check"
-        DAILY_CALENDAR_CHECK = "daily_calendar_check", "Daily Calendar Check"
-        OTHER_DAILY_TASK = "other_daily_task", "Other Daily Task"
         OTHER_TASK = "other_task", "Other Task"
 
     class ScheduleKind(models.TextChoices):
@@ -159,7 +155,6 @@ class ScheduledTask(TimeStampedModel):
         PAIRED_TRANSPORT = "paired_transport", "Paired Transport"
 
     class ExecutionMode(models.TextChoices):
-        DETERMINISTIC = "deterministic", "Deterministic"
         HEADLESS_RUN = "headless_run", "Headless Run"
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)

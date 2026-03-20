@@ -2,13 +2,12 @@ from __future__ import annotations
 
 import logging
 import uuid
-from datetime import date, datetime, time, timedelta, timezone as dt_timezone
+from datetime import date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
 from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.db import transaction
-from django.db.models import Q
 from django.utils import timezone
 
 from memory.models import MemoryRecord, RecurrenceRule, ScheduledTask
@@ -34,10 +33,6 @@ class ScheduledTaskError(RuntimeError):
 
 
 class ScheduledTaskConfigurationError(ScheduledTaskError):
-    pass
-
-
-class ScheduledTaskExecutionError(ScheduledTaskError):
     pass
 
 
@@ -112,6 +107,92 @@ def create_scheduled_task(
         execution_payload=normalized_payload,
     )
 
+
+
+@transaction.atomic
+def update_scheduled_task(
+    scheduled_task: ScheduledTask,
+    *,
+    title: str | None = None,
+    enabled: bool | None = None,
+    execution_payload: dict | None = None,
+    recurrence_config: dict | None = None,
+    local_time_value: str | time | None = None,
+    timezone_name: str | None = None,
+    delivery_target: str | None = None,
+) -> ScheduledTask:
+    task = (
+        ScheduledTask.objects.select_for_update()
+        .select_related("recurrence_rule", "workspace", "agent", "owner")
+        .get(id=scheduled_task.id)
+    )
+    normalized_payload = dict(task.execution_payload or {})
+    if execution_payload is not None:
+        normalized_payload = dict(execution_payload or {})
+
+    recurrence_changed = recurrence_config is not None or local_time_value is not None or timezone_name is not None
+    if recurrence_changed:
+        new_rule = _resolve_recurrence_rule(
+            recurrence_rule=None,
+            recurrence_config=recurrence_config,
+            local_time_value=local_time_value,
+            timezone_name=timezone_name,
+            title=title if title is not None else task.title,
+            execution_payload=normalized_payload,
+        )
+        task.recurrence_rule = new_rule
+
+    if title is not None:
+        task.title = title.strip()
+    task.execution_payload = normalized_payload
+    if delivery_target is not None:
+        task.delivery_target = delivery_target
+    if enabled is not None:
+        task.enabled = bool(enabled)
+
+    if recurrence_changed or enabled is True:
+        next_run_at = compute_next_run_at(task.recurrence_rule, now=timezone.now())
+        if next_run_at is None:
+            raise ScheduledTaskConfigurationError("The supplied recurrence rule does not produce any future occurrences.")
+        task.next_run_at = next_run_at
+
+    task.full_clean()
+    task.save(
+        update_fields=[
+            "recurrence_rule",
+            "title",
+            "execution_payload",
+            "delivery_target",
+            "enabled",
+            "timezone",
+            "local_time",
+            "schedule_kind",
+            "next_run_at",
+            "updated_at",
+        ]
+    )
+    return task
+
+
+@transaction.atomic
+def disable_scheduled_task(scheduled_task: ScheduledTask) -> ScheduledTask:
+    task = ScheduledTask.objects.select_for_update().get(id=scheduled_task.id)
+    task.enabled = False
+    task.save(update_fields=["enabled", "updated_at"])
+    return task
+
+
+@transaction.atomic
+def enable_scheduled_task(scheduled_task: ScheduledTask) -> ScheduledTask:
+    task = ScheduledTask.objects.select_for_update().select_related("recurrence_rule").get(id=scheduled_task.id)
+    next_run_at = compute_next_run_at(task.recurrence_rule, now=timezone.now())
+    if next_run_at is None:
+        raise ScheduledTaskConfigurationError("The scheduled task recurrence does not produce any future occurrences.")
+    task.enabled = True
+    task.next_run_at = next_run_at
+    task.full_clean()
+    task.save(update_fields=["enabled", "next_run_at", "timezone", "local_time", "schedule_kind", "updated_at"])
+    return task
 
 
 def list_scheduled_tasks(*, agent=None, workspace=None, owner=None, enabled_only: bool = False, limit: int = 20):
@@ -275,6 +356,30 @@ def build_scheduled_task_execution_bucket_key(scheduled_task: ScheduledTask) -> 
     return f"{SCHEDULED_TASK_EXEC_BUCKET_PREFIX}:{scheduled_task.id}:{scheduled_task.task_type}"
 
 
+def serialize_scheduled_task(task: ScheduledTask) -> dict[str, object]:
+    return {
+        "scheduled_task_id": str(task.id),
+        "recurrence_rule_id": str(task.recurrence_rule_id),
+        "title": task.title,
+        "task_type": task.task_type,
+        "schedule_kind": task.schedule_kind,
+        "execution_mode": task.execution_mode,
+        "timezone": task.timezone,
+        "local_time": task.local_time.isoformat(timespec="minutes"),
+        "recurrence_frequency": task.recurrence_rule.frequency,
+        "recurrence_summary": task.recurrence_summary,
+        "next_run_at": task.next_run_at.isoformat(),
+        "enabled": task.enabled,
+        "failure_count": task.failure_count,
+        "last_run_id": str(task.last_run_id or ""),
+        "active_run_id": str(task.active_run_id or ""),
+        "last_run_at": task.last_run_at.isoformat() if task.last_run_at else "",
+        "last_success_at": task.last_success_at.isoformat() if task.last_success_at else "",
+        "last_result_summary": task.last_result_summary,
+        "last_error": task.last_error,
+    }
+
+
 
 def _resolve_recurrence_rule(
     *,
@@ -406,37 +511,15 @@ def _normalize_timezone_name(value: str) -> str:
 
 
 
-def ensure_scheduled_task_execution_mode(scheduled_task: ScheduledTask) -> tuple[str, bool]:
-    normalized = _normalize_execution_mode(
-        scheduled_task.execution_mode,
-    )
-    if normalized == scheduled_task.execution_mode:
-        return normalized, False
-    scheduled_task.execution_mode = normalized
-    scheduled_task.save(update_fields=["execution_mode", "updated_at"])
-    logger.warning(
-        "Corrected scheduled task execution mode task=%s type=%s execution_mode=%s",
-        scheduled_task.id,
-        scheduled_task.task_type,
-        normalized,
-    )
-    return normalized, True
-
-
-
 def _normalize_execution_mode(value: str, *, task_type: str | None = None) -> str:
     candidate = str(value or ScheduledTask.ExecutionMode.HEADLESS_RUN).strip().lower()
-    valid = {choice for choice, _label in ScheduledTask.ExecutionMode.choices}
-    if candidate not in valid:
-        raise ScheduledTaskConfigurationError(f"Unsupported execution mode '{value}'.")
-    if candidate != ScheduledTask.ExecutionMode.HEADLESS_RUN:
+    if candidate and candidate != ScheduledTask.ExecutionMode.HEADLESS_RUN:
         logger.warning(
-            "Coercing scheduled task execution mode to headless_run requested_mode=%s task_type=%s",
+            "Ignoring legacy scheduled task execution mode requested_mode=%s task_type=%s",
             candidate,
             task_type,
         )
-        return ScheduledTask.ExecutionMode.HEADLESS_RUN
-    return candidate
+    return ScheduledTask.ExecutionMode.HEADLESS_RUN
 
 
 
@@ -461,6 +544,14 @@ def _build_schedule_memory_content(
     execution_mode: str,
 ) -> str:
     payload_bits = []
+    if execution_payload.get("integration_kind"):
+        payload_bits.append(f"integration_kind={execution_payload['integration_kind']}")
+    if execution_payload.get("resource_kind"):
+        payload_bits.append(f"resource_kind={execution_payload['resource_kind']}")
+    if execution_payload.get("action_kind"):
+        payload_bits.append(f"action_kind={execution_payload['action_kind']}")
+    if execution_payload.get("operation"):
+        payload_bits.append(f"operation={execution_payload['operation']}")
     if execution_payload.get("location"):
         payload_bits.append(f"location={execution_payload['location']}")
     if execution_payload.get("query"):

@@ -109,7 +109,7 @@ LIMIT_CONFIGS: Dict[str, LimitConfig] = {
         key=LimitKey.CONCURRENT_TOOL_CALLS_RUN,
         name="concurrent tool calls (run)",
         limit_type=LimitType.CONCURRENCY,
-        concurrency_limit=1,
+        concurrency_limit=getattr(settings, "MAX_CONCURRENT_TOOL_CALLS_PER_RUN", 1),
         window_seconds=60,
         description="Max pending tool calls within a single run.",
     ),

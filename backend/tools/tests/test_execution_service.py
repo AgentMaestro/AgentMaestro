@@ -9,6 +9,7 @@ from agents.models import Agent
 from core.models import Workspace, WorkspaceMembership
 from runs.models import AgentRun, AgentStep
 from core.services.limits import LimitExceeded
+from memory.scheduled_tasks import create_scheduled_task
 from tools.models import ToolCall, ToolDefinition
 from tools.services.execution import ToolrunnerError, execute_tool_call
 from tools.services.quotas import release_tool_call_slots, acquire_tool_call_slots
@@ -431,3 +432,49 @@ def test_execute_native_schedule_task_skips_toolrunner_http(monkeypatch, fake_re
     assert tool_call.result["task_type"] == "other_task"
     assert tool_call.result["execution_mode"] == "headless_run"
     assert tool_call.result["scheduled_task_id"]
+
+
+@override_settings(
+    TOOLRUNNER_URL="http://example/v1/execute",
+    TOOLRUNNER_SECRET="test-secret",
+    TOOLRUNNER_TIMEOUT=5,
+    TOOLRUNNER_OUTPUT_LIMIT=128,
+    TOOLRUNNER_HTTP_TIMEOUT=10,
+)
+def test_execute_native_scheduled_task_management_tools_skip_toolrunner_http(monkeypatch, fake_result_bus):
+    def _fail_client(*args, **kwargs):
+        raise AssertionError("http client should not be used for native scheduling tools")
+
+    monkeypatch.setattr("tools.services.execution.httpx.Client", _fail_client)
+
+    for tool_name, tool_args, expected_enabled in [
+        ("edit_scheduled_task", {"title": "updated task", "enabled": False}, False),
+        ("disable_scheduled_task", {}, False),
+        ("enable_scheduled_task", {}, True),
+    ]:
+        tool_call = _build_test_run(f"native-{tool_name}")
+        scheduled_task = create_scheduled_task(
+            agent=tool_call.run.agent,
+            owner=tool_call.run.started_by or tool_call.run.agent.owner,
+            task_type="other_task",
+            local_time_value="05:00",
+            timezone_name="America/New_York",
+            title="daily repo backup summary",
+            execution_payload={
+                "objective": "Create a backup commit for the repository and summarize the last 24 hours of work.",
+                "repo_dir": "C:/Dev/AgentMaestro",
+            },
+        )
+        tool_call.tool_name = tool_name
+        tool_call.args = {"scheduled_task_id": str(scheduled_task.id), **tool_args}
+        tool_call.save(update_fields=["tool_name", "args", "updated_at"])
+        ToolDefinition.objects.create(workspace=tool_call.run.workspace, name=tool_name, enabled=True)
+
+        execute_tool_call(str(tool_call.id))
+
+        tool_call.refresh_from_db()
+        scheduled_task.refresh_from_db()
+        assert tool_call.status == ToolCall.Status.COMPLETED
+        assert tool_call.result["scheduled_task_id"] == str(scheduled_task.id)
+        assert tool_call.result["enabled"] is expected_enabled
+        assert scheduled_task.enabled is expected_enabled

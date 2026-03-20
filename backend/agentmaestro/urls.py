@@ -14,6 +14,8 @@ urlpatterns = [
 
     path("llm/", include(("llm.urls", "llm"), namespace="llm")),
 
+    path("google/", include(("google_bridge.urls", "google_bridge"), namespace="google_bridge")),
+
     # UI app
     path("ui/", include(("ui.urls", "ui"), namespace="ui")),
 

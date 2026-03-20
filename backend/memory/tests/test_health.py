@@ -69,7 +69,7 @@ def test_build_memory_health_report_counts_and_trend_snapshot():
     scheduled_task = create_scheduled_task(
         agent=agent,
         owner=user,
-        task_type=ScheduledTask.TaskType.DAILY_WEATHER_REPORT,
+        task_type=ScheduledTask.TaskType.OTHER_TASK,
         local_time_value="08:00",
         timezone_name="America/New_York",
         source_memory=episodic,

@@ -12,7 +12,7 @@ from llm.management.commands.llm_provider_matrix_smoke import (
 
 def test_provider_matrix_config_loads_defaults():
     config = _load_matrix_config(DEFAULT_CONFIG_PATH)
-    assert len(config["targets"]) == 3
+    assert len(config["targets"]) == 6
     assert len(config["scenarios"]) == 2
     assert config["rating"]["speed_weight"] == 0.4
     assert config["rating"]["quality_weight"] == 0.6

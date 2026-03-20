@@ -161,6 +161,12 @@ def _scrub_input_text(text: str | None) -> tuple[str, list[str]]:
     return sanitized, types
 
 
+def _is_email_only_scrub(secret_types: list[str]) -> bool:
+    if not secret_types:
+        return False
+    return all("email" in str(secret_type or "").strip().lower() for secret_type in secret_types)
+
+
 @database_sync_to_async
 def _record_denied_tool_call(
         *,
@@ -491,9 +497,12 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
         self._tool_result_event.set()
         self._pending_tool_call_id: str | None = None
         self._pending_provider_call_id: str | None = None
+        self._pending_provider_call_ids: set[str] = set()
         self._last_tool_call_id: str | None = None
         self._last_provider_call_id: str | None = None
         self._tool_output_payload: dict[str, object] | None = None
+        self._tool_output_payloads: list[dict[str, object]] = []
+        self._tool_output_provider_call_ids: list[str] = []
         self._awaiting_tool_output = False
         self._agents_md_bootstrap_complete = False
         self._response_chain_previous_id: str = ""
@@ -1174,13 +1183,15 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
         source_transport: str | None = None,
         author_label: str | None = None,
     ) -> None:
-        sanitized_text, secret_types = raw_text, []
+        prompt_text = raw_text
+        log_text = raw_text
+        secret_types = []
         if _should_scrub_prompts():
-            sanitized_text, secret_types = _scrub_input_text(raw_text)
-            if secret_types:
+            log_text, secret_types = _scrub_input_text(raw_text)
+            if secret_types and not _is_email_only_scrub(secret_types):
                 secret_list = ", ".join(sorted(set(secret_types)))
                 summary_text = (
-                    f"Maestro masked {len(secret_types)} secret(s) ({secret_list}) before sending and has your back."
+                    f"Maestro masked {len(secret_types)} secret(s) ({secret_list}) in logs and has your back."
                 )
                 await self.send_json(
                     {
@@ -1191,16 +1202,22 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
                     }
                 )
                 logger.info(
-                    "Masked secrets before sending message run=%s secrets=%s",
+                    "Masked secrets in logs for message run=%s secrets=%s",
                     self.run_id,
                     secret_list,
+                )
+            elif secret_types:
+                logger.info(
+                    "Masked email-like text in logs for message run=%s types=%s",
+                    self.run_id,
+                    ", ".join(sorted(set(secret_types))),
                 )
         bootstrap_result = None
         if self.run_id and self.agent:
             bootstrap_result = await _bootstrap_memory_for_first_turn(
                 str(self.run_id),
                 str(self.agent.id),
-                sanitized_text,
+                prompt_text,
             )
         explicit_memory = None
         if self.run_id:
@@ -1210,7 +1227,7 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
             explicit_memory = await _capture_explicit_user_memory(
                 str(self.run_id),
                 user_id,
-                sanitized_text,
+                prompt_text,
             )
         if bootstrap_result and bootstrap_result.summary_text:
             self.history.append({"role": "system", "content": bootstrap_result.summary_text})
@@ -1220,9 +1237,9 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
                 self.run_id,
                 explicit_memory.id,
             )
-        self.history.append({"role": "user", "content": sanitized_text})
+        self.history.append({"role": "user", "content": prompt_text})
         if persist:
-            await _persist_chat_history_event(self.run_id or "", "user", sanitized_text)
+            await _persist_chat_history_event(self.run_id or "", "user", prompt_text)
         if emit_message:
             await self.send_json(
                 {
@@ -1231,7 +1248,7 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
                     "direction": "out",
                     "author": author_label or ("You via Telegram" if source_transport else "You"),
                     "source_transport": source_transport or "",
-                    "text": sanitized_text,
+                    "text": prompt_text,
                     "timestamp": timezone.now().isoformat(),
                 }
             )
@@ -1241,7 +1258,7 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
                 user = self.scope.get("user")
                 await sync_to_async(send_run_transport_message)(
                     run_id=str(self.run_id),
-                    text=sanitized_text,
+                    text=prompt_text,
                     author_label=(getattr(user, "get_username", lambda: None)() or "user"),
                     control_payload={"event_type": "chat_message", "role": "user"},
                 )
@@ -1340,18 +1357,16 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
                 payload_snapshot["previous_response_id"] = previous_id
             if self._last_tool_call_id:
                 logger.info(
-                    "Transport response.create after tool call run=%s transport=%s tool_call_id=%s provider_call_id=%s previous_response_id=%s tool_output_ready=%s ts=%s",
+                    "Transport response.create after tool call run=%s transport=%s tool_call_id=%s provider_call_id=%s previous_response_id=%s tool_output_ready=%s tool_output_batch_size=%s ts=%s",
                     self.run_id,
                     self._transport_label(),
                     self._last_tool_call_id,
                     self._last_provider_call_id,
                     self._current_previous_response_id(),
-                    bool(self._tool_output_payload),
+                    bool(self._tool_output_payloads),
+                    len(self._tool_output_payloads),
                     timezone.now().isoformat(),
                 )
-                self._last_tool_call_id = None
-                self._last_provider_call_id = None
-                self._tool_output_payload = None
             await self._log_transport_traffic(
                 f"{self._transport_label()} SEND",
                 payload_snapshot,
@@ -1390,6 +1405,8 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
                         if self.session:
                             self.session.previous_response_id = normalized_response_id
                         await _set_run_previous_response_id(self.run_id or "", normalized_response_id)
+                if self._last_tool_call_id:
+                    self._clear_tool_output_context()
                 self._include_system_context = False
             except Exception as exc:
                 if self._is_previous_response_not_found(exc):
@@ -1505,7 +1522,7 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
                 self._response_chain_previous_id = None
                 if self.session:
                     self.session.previous_response_id = None
-                self._tool_output_payload = None
+                self._clear_tool_output_context()
                 await _set_run_previous_response_id(self.run_id or "", None)
                 return
 
@@ -1548,18 +1565,18 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
                     payload_snapshot["tools"] = tools_to_send
                 await self._log_transport_traffic("HTTP SEND", payload_snapshot)
                 try:
-                    response = await retry_with_backoff(
-                        lambda: self.client.complete(
-                            self.history,
-                            model=model,
-                            tools=tools_to_send,
-                            previous_response_id=self._current_previous_response_id(),
-                            outstanding_provider_call_id=(
-                                str(self._tool_output_payload.get("provider_call_id") or "").strip()
-                                if self._tool_output_payload
-                                else None
+                        response = await retry_with_backoff(
+                            lambda: self.client.complete(
+                                self.history,
+                                model=model,
+                                tools=tools_to_send,
+                                previous_response_id=self._current_previous_response_id(),
+                                outstanding_provider_call_id=(
+                                    self._tool_output_provider_call_ids[-1]
+                                    if self._tool_output_provider_call_ids
+                                    else None
+                                ),
                             ),
-                        ),
                         max_retries=int(
                             self._backup_retry_policy.get("retry_same_model_attempts", 1) or 0
                         ),
@@ -1678,7 +1695,7 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
                     self._response_chain_previous_id = None
                     if self.session:
                         self.session.previous_response_id = None
-                    self._tool_output_payload = None
+                    self._clear_tool_output_context()
                     await _set_run_previous_response_id(self.run_id or "", None)
                     return
 
@@ -1710,6 +1727,7 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
         call_id = str(raw_call_id).strip() if raw_call_id is not None else ""
         if not call_id:
             raise ValueError("No call_id present in _handle_tool_call")
+        self._pending_provider_call_ids.add(call_id)
         args = self._parse_tool_args(call.get("arguments"))
 
         #if tool_name == "repo_tree":
@@ -1734,6 +1752,7 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
                     "message": str(exc),
                 }
             )
+            self._pending_provider_call_ids.discard(call_id)
             return
 
         requires_approval = entry.requires_approval
@@ -1778,6 +1797,7 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
                     "message": str(exc),
                 }
             )
+            self._pending_provider_call_ids.discard(call_id)
             return
         except Exception:
             logger.exception(
@@ -1794,6 +1814,7 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
                     "message": "Failed to create tool call request.",
                 }
             )
+            self._pending_provider_call_ids.discard(call_id)
             return
 
         tool_call_id = str(tool_call.id)
@@ -1887,6 +1908,22 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
         entry["tool_calls"] = normalized_calls
         self.history.append(entry)
 
+    def _clear_tool_output_context(self) -> None:
+        self._last_tool_call_id = None
+        self._last_provider_call_id = None
+        self._tool_output_payload = None
+        self._tool_output_payloads = []
+        self._tool_output_provider_call_ids = []
+        self._pending_provider_call_ids.clear()
+
+    def _merge_tool_output_provider_call_ids(self, provider_call_ids: list[str]) -> None:
+        merged: list[str] = list(self._tool_output_provider_call_ids)
+        for provider_call_id in provider_call_ids:
+            normalized = str(provider_call_id or "").strip()
+            if normalized and normalized not in merged:
+                merged.append(normalized)
+        self._tool_output_provider_call_ids = merged
+
     def _current_previous_response_id(self) -> str | None:
         raw_chain_id = getattr(self, "_response_chain_previous_id", None)
         raw_session_id = getattr(self.session, "previous_response_id", None)
@@ -1972,6 +2009,7 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
         )
         last_payload: dict[str, object] | None = None
         agents_md_bootstrap_complete = self._agents_md_bootstrap_complete
+        staged_provider_call_ids: list[str] = []
         for payload in pending:
             tool_call_id = payload.get("tool_call_id")
             logger.debug(
@@ -1995,7 +2033,11 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
             provider_call_id = str(provider_call_id).strip() or None
             previous_response_id = self._current_previous_response_id()
             should_stage_for_provider = bool(provider_call_id and (previous_response_id or self.provider != "openai"))
+            if provider_call_id:
+                self._pending_provider_call_ids.discard(provider_call_id)
             if should_stage_for_provider:
+                staged_provider_call_ids.append(provider_call_id)
+                self._tool_output_payloads.append(payload)
                 self.history.append(
                     {
                         "role": "tool",
@@ -2076,11 +2118,15 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
             api_provider_call_id = last_payload.get("provider_call_id") or self._pending_provider_call_id
             self._last_provider_call_id = api_provider_call_id
             self._tool_output_payload = last_payload
+            self._merge_tool_output_provider_call_ids(staged_provider_call_ids)
             self._pending_tool_call_id = None
             self._pending_provider_call_id = None
-            self._awaiting_tool_output = False
-            if not self._tool_result_event.is_set():
-                self._tool_result_event.set()
+            self._awaiting_tool_output = bool(self._pending_provider_call_ids)
+            if self._pending_provider_call_ids:
+                self._tool_result_event.clear()
+            else:
+                if not self._tool_result_event.is_set():
+                    self._tool_result_event.set()
         elif self._awaiting_tool_output:
             logger.warning(
                 "No provider-eligible tool outputs available after flush run=%s pending_tool_call_id=%s pending_provider_call_id=%s previous_response_id=%s",
@@ -2089,10 +2135,11 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
                 self._pending_provider_call_id,
                 self._current_previous_response_id(),
             )
+            self._tool_output_provider_call_ids = []
             self._pending_tool_call_id = None
             self._pending_provider_call_id = None
-            self._awaiting_tool_output = False
-            if not self._tool_result_event.is_set():
+            self._awaiting_tool_output = bool(self._pending_provider_call_ids)
+            if not self._pending_provider_call_ids and not self._tool_result_event.is_set():
                 self._tool_result_event.set()
 
     def _parse_tool_args(self, payload: object | None) -> dict[str, object]:
@@ -2146,10 +2193,14 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
             "provider_call_id": provider_call_id,
             "result": payload,
         }
+        self._tool_output_payloads.append(self._tool_output_payload)
+        if provider_call_id not in self._tool_output_provider_call_ids:
+            self._tool_output_provider_call_ids.append(provider_call_id)
+        self._pending_provider_call_ids.discard(provider_call_id)
         self._pending_tool_call_id = None
         self._pending_provider_call_id = None
-        self._awaiting_tool_output = False
-        if not self._tool_result_event.is_set():
+        self._awaiting_tool_output = bool(self._pending_provider_call_ids)
+        if not self._pending_provider_call_ids and not self._tool_result_event.is_set():
             self._tool_result_event.set()
         logger.info(
             "Staged provider tool feedback run=%s tool_call_id=%s provider_call_id=%s payload_keys=%s",
@@ -2217,7 +2268,7 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
                 getattr(self, "run_id", None),
             )
             await self._flush_pending_tool_results()
-            if self._tool_output_payload:
+            if self._tool_output_payloads and not self._pending_provider_call_ids:
                 logger.info(
                     "tool_result_ready resuming provider dispatch run=%s tool_call_id=%s provider_call_id=%s",
                     getattr(self, "run_id", None),
@@ -2340,18 +2391,10 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
 
     def _build_input_items(self):
         previous_response_id = self._current_previous_response_id()
-        outstanding_provider_call_id = None
-        if self._tool_output_payload:
-            raw_provider_id = self._tool_output_payload.get("provider_call_id")
-            outstanding_provider_call_id = (
-                str(raw_provider_id).strip() or None
-                if raw_provider_id is not None
-                else None
-            )
         return build_input_items(
             self.history,
             previous_response_id=previous_response_id,
-            outstanding_provider_call_id=outstanding_provider_call_id,
+            outstanding_provider_call_ids=self._tool_output_provider_call_ids or None,
             run_id=self.run_id,
         )
 
@@ -2359,11 +2402,7 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
         return build_ws_request_input_items(
             self.history,
             previous_response_id=self._current_previous_response_id(),
-            outstanding_provider_call_id=(
-                str(self._tool_output_payload.get("provider_call_id") or "").strip()
-                if self._tool_output_payload
-                else None
-            ),
+            outstanding_provider_call_ids=self._tool_output_provider_call_ids or None,
             include_system_context=self._include_system_context,
             last_user_text=self._last_user_message(),
             run_id=self.run_id,

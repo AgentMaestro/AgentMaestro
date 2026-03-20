@@ -4,6 +4,11 @@ from copy import deepcopy
 import json
 from typing import Any, Dict, List
 
+from google_bridge.services.schema import (
+    GOOGLE_BRIDGE_TOOL_EXAMPLES,
+    GOOGLE_BRIDGE_TOOL_NAME,
+    GOOGLE_BRIDGE_TOOL_RESPONSE_FIELDS,
+)
 from tools.registry import TOOL_REGISTRY as CANONICAL_TOOL_REGISTRY
 
 
@@ -56,6 +61,10 @@ _FALLBACK_TOOL_NAMES = [
     "remember",
     "search_memory",
     "schedule_task",
+    "edit_scheduled_task",
+    "disable_scheduled_task",
+    "enable_scheduled_task",
+    GOOGLE_BRIDGE_TOOL_NAME,
     "list_scheduled_tasks",
     "spawn_subrun",
     "file_read",
@@ -202,7 +211,7 @@ _TOOL_TEMPLATES: Dict[str, Dict[str, Any]] = {
         },
         {
             "title": "weekly digest",
-            "task_type": "other_daily_task",
+            "task_type": "other_task",
             "execution_mode": "headless_run",
             "recurrence": {
                 "timezone": "America/New_York",
@@ -218,7 +227,7 @@ _TOOL_TEMPLATES: Dict[str, Dict[str, Any]] = {
         },
         {
             "title": "daily maintenance digest",
-            "task_type": "other_daily_task",
+            "task_type": "other_task",
             "execution_mode": "headless_run",
             "recurrence": {
                 "timezone": "America/New_York",
@@ -235,6 +244,24 @@ _TOOL_TEMPLATES: Dict[str, Dict[str, Any]] = {
             }
         }
     ],
+    "edit_scheduled_task": {
+        "scheduled_task_id": "scheduled-task-id-from-list",
+        "title": "daily repo backup summary",
+        "enabled": True,
+        "timezone": "America/New_York",
+        "local_time": "05:30",
+        "execution_payload": {
+            "objective": "Create a backup commit for the repository and summarize the last 24 hours of work.",
+            "repo_dir": "C:/Dev/AgentMaestro",
+        },
+    },
+    "disable_scheduled_task": {
+        "scheduled_task_id": "scheduled-task-id-from-list"
+    },
+    "enable_scheduled_task": {
+        "scheduled_task_id": "scheduled-task-id-from-list"
+    },
+    GOOGLE_BRIDGE_TOOL_NAME: deepcopy(GOOGLE_BRIDGE_TOOL_EXAMPLES),
     "list_scheduled_tasks": {
         "enabled_only": True,
         "limit": 10
@@ -383,7 +410,7 @@ _TOOL_RESPONSE_FIELDS: Dict[str, Dict[str, str]] = {
         "title": "Stored human-friendly task title.",
         "task_type": "Echoes the stored task type.",
         "schedule_kind": "The recurring schedule model used by the task.",
-        "execution_mode": "Whether the task executes with the deterministic path or launches a headless agent run.",
+        "execution_mode": "The scheduled-task execution mode, always headless_run.",
         "timezone": "The IANA timezone used to calculate due times.",
         "local_time": "A compatibility wall-clock time derived from the recurrence rule.",
         "recurrence_frequency": "The linked recurrence rule frequency.",
@@ -392,16 +419,46 @@ _TOOL_RESPONSE_FIELDS: Dict[str, Dict[str, str]] = {
         "enabled": "Whether the recurring task is active.",
         "source_memory_id": "The episodic memory record created to remember the scheduling request.",
     },
+    "edit_scheduled_task": {
+        "scheduled_task_id": "Scheduled-task identifier returned by list_scheduled_tasks or schedule_task.",
+        "title": "Updated human-friendly task title.",
+        "enabled": "Whether the recurring task is active after the edit.",
+        "recurrence_rule_id": "Linked recurrence-rule identifier after any recurrence change.",
+        "schedule_kind": "The recurring schedule model used by the task.",
+        "execution_mode": "The scheduled-task execution mode, always headless_run.",
+        "timezone": "The IANA timezone used to calculate due times.",
+        "local_time": "A compatibility wall-clock time derived from the recurrence rule.",
+        "recurrence_summary": "Human-readable recurrence description for operators and UIs.",
+        "next_run_at": "The next UTC datetime when the task is due.",
+        "last_result_summary": "The last completion summary if available.",
+        "last_error": "The last recorded scheduling error if available.",
+    },
+    "disable_scheduled_task": {
+        "scheduled_task_id": "Scheduled-task identifier returned by list_scheduled_tasks or schedule_task.",
+        "enabled": "Always false after the disable operation.",
+        "next_run_at": "The next UTC datetime remains stored for future re-enable operations.",
+        "last_result_summary": "The last completion summary if available.",
+        "last_error": "The last recorded scheduling error if available.",
+    },
+    "enable_scheduled_task": {
+        "scheduled_task_id": "Scheduled-task identifier returned by list_scheduled_tasks or schedule_task.",
+        "enabled": "Always true after the enable operation.",
+        "next_run_at": "The recomputed next UTC datetime after re-enabling.",
+        "last_result_summary": "The last completion summary if available.",
+        "last_error": "The last recorded scheduling error if available.",
+    },
+    GOOGLE_BRIDGE_TOOL_NAME: GOOGLE_BRIDGE_TOOL_RESPONSE_FIELDS,
     "list_scheduled_tasks": {
         "count": "Number of scheduled tasks returned.",
-        "results": "Concise scheduled-task records ordered by next run time, including execution mode and run linkage.",
+        "results": "Concise scheduled-task records ordered by next run time, including scheduled_task_id, execution mode, and run linkage.",
+        "scheduled_task_id": "Stable task identifier included in each result row for follow-up edit, disable, or enable actions.",
     },
     "spawn_subrun": {
         "parent_run_id": "The parent run that requested the child run.",
         "parent_status": "The parent run status after the child finishes or is queued.",
         "child_run_id": "The spawned child run identifier.",
         "child_status": "The child run status after the tool completes.",
-        "child_execution_mode": "Whether the child runs headlessly or through the deterministic tick path.",
+        "child_execution_mode": "Whether the child runs headlessly or under a matching run execution mode.",
         "join_policy": "The join policy applied to the parent/child relationship.",
         "failure_policy": "The failure policy applied to the child group.",
         "completed_inline": "True when the child was executed immediately inside the parent tool call.",
@@ -657,10 +714,28 @@ _TOOL_ADDITIONAL_DOCS: Dict[str, str] = {
     "- Example episodic memory: `scope_type='user'`, `scope_id='<user-id>'`, `memory_kind='episodic'`, `dedupe_mode='none'`, `dedupe_key='scheduled-task-exec-bucket:<task-id>:daily-weather-report'`, `content='On March 13, 2026, Scott validated Telegram approvals end-to-end.'`, `expires_at='2026-03-31T23:59:59Z'`.",
     "schedule_task": "\n\nSCHEDULING NOTES:\n"
     "- `schedule_task` creates recurring headless agent work.\n"
-    "- Use `execution_mode=headless_run` and choose a descriptive `task_type` such as `other_task` or `other_daily_task`.\n"
+    "- Scheduled work runs headlessly. Use `task_type=other_task` and put structured intent in `execution_payload`.\n"
     "- Scheduled runs inherit the agent's backup models and retry policy, so backup failover applies automatically.\n"
     "- Prefer `recurrence` for anything more complex than a single daily wall-clock time.\n"
-    "- Use `title` and `execution_payload` to describe the recurring job clearly so the future headless run has enough context.\n",
+    "- Use `title` and `execution_payload` to describe the recurring job clearly so the future headless run has enough context.\n"
+    "- `list_scheduled_tasks` already returns `scheduled_task_id`, so use that identifier for future edit, disable, or enable operations.\n",
+    "edit_scheduled_task": "\n\nSCHEDULING NOTES:\n"
+    "- `edit_scheduled_task` updates an existing scheduled task without creating a new one.\n"
+    "- Use `scheduled_task_id` from `list_scheduled_tasks` or `schedule_task` to target the task.\n"
+    "- You may update the title, recurrence, timezone, local_time, enabled state, delivery target, or execution payload.\n",
+    "disable_scheduled_task": "\n\nSCHEDULING NOTES:\n"
+    "- `disable_scheduled_task` is the soft-delete path for scheduled tasks.\n"
+    "- It sets `enabled=false` and preserves the existing task record for later re-enabling.\n"
+    "- Use `scheduled_task_id` from `list_scheduled_tasks` or `schedule_task`.\n",
+    "enable_scheduled_task": "\n\nSCHEDULING NOTES:\n"
+    "- `enable_scheduled_task` reactivates a disabled task and recomputes its next run time from the stored recurrence rule.\n"
+    "- Use `scheduled_task_id` from `list_scheduled_tasks` or `schedule_task`.\n",
+    GOOGLE_BRIDGE_TOOL_NAME: "\n\nGOOGLE BRIDGE NOTES:\n"
+    "- Use this tool for direct Google Gmail/Calendar reads and writes from the agent, plus Gmail draft/send/trash/delete workflows.\n"
+    "- The payload is JSON-in / JSON-out and matches the same bridge contract used by scheduled headless runs.\n"
+    "- Current execution supports Gmail reads, Gmail draft/send/trash/delete, and Calendar reads/create/update/delete. Future Google surfaces can reuse the same tool name and payload contract.\n"
+    "- For Gmail trash/delete, never use read as a lookup step. Use the latest list result's message_id directly whenever possible. A Gmail query is only acceptable when it uniquely matches one message, and it should go directly to trash/delete.\n"
+    "- Use `steps` for ordered multi-step plans when you need to combine multiple Google reads in one call.\n",
     "search_memory": "\n\nMEMORY NOTES:\n"
     "- `search_memory` performs simple text lookup over durable memory records.\n"
     "- Narrow by `scope_type`, `scope_id`, and `memory_kind` when the target scope is known.\n"

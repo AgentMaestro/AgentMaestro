@@ -10,6 +10,8 @@ For the full list of settings and their values, see
 https://docs.djangoproject.com/en/4.2/ref/settings/
 """
 
+import ast
+import json
 from datetime import timedelta
 from pathlib import Path
 import os
@@ -45,6 +47,22 @@ def _env_value(key: str, default: str = "") -> str:
     if explicit is not None:
         return explicit
     return _ENV_FILE_VALUES.get(key, default)
+
+
+def _env_json_list(key: str, default: list[str] | None = None) -> list[str]:
+    raw = _env_value(key, "")
+    if not raw:
+        return list(default or [])
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        try:
+            parsed = ast.literal_eval(raw)
+        except (ValueError, SyntaxError):
+            return [item.strip() for item in raw.split(",") if item.strip()]
+    if isinstance(parsed, list):
+        return [str(item).strip() for item in parsed if str(item).strip()]
+    return list(default or [])
 
 
 # Quick-start development settings - unsuitable for production
@@ -84,6 +102,7 @@ INSTALLED_APPS = [
     'llm',
     'control',
     'comms',
+    'google_bridge',
 ]
 
 MIDDLEWARE = [
@@ -225,6 +244,9 @@ ARCHIVE_COMPACT_EVENTS = os.getenv("ARCHIVE_COMPACT_EVENTS", "true").lower() in 
 }
 
 RECONCILE_INTERVAL = int(os.getenv("RECONCILE_INTERVAL", "30"))
+# Tool-call concurrency is intentionally configured via the toolrunner-prefixed env var
+# so the worker-side limit is obvious in deployment configs.
+MAX_CONCURRENT_TOOL_CALLS_PER_RUN = int(_env_value("TOOLRUNNER_MAX_CONCURRENT_TOOL_CALLS_PER_RUN") or "1")
 
 TELEGRAM_ENABLE_POLLING = (_env_value("TELEGRAM_ENABLE_POLLING") or "0").lower() in {
     "1",
@@ -232,14 +254,7 @@ TELEGRAM_ENABLE_POLLING = (_env_value("TELEGRAM_ENABLE_POLLING") or "0").lower()
     "yes",
 }
 TELEGRAM_POLL_INTERVAL_SECONDS = int(_env_value("TELEGRAM_POLL_INTERVAL_SECONDS") or "5")
-_TELEGRAM_POLL_TIMEOUT_SECONDS_RAW = int(_env_value("TELEGRAM_POLL_TIMEOUT_SECONDS") or "25")
-if TELEGRAM_POLL_INTERVAL_SECONDS > 1:
-    TELEGRAM_POLL_TIMEOUT_SECONDS = max(
-        1,
-        min(_TELEGRAM_POLL_TIMEOUT_SECONDS_RAW, TELEGRAM_POLL_INTERVAL_SECONDS - 1),
-    )
-else:
-    TELEGRAM_POLL_TIMEOUT_SECONDS = 1
+TELEGRAM_POLL_TIMEOUT_SECONDS = max(1, int(_env_value("TELEGRAM_POLL_TIMEOUT_SECONDS") or "5"))
 TELEGRAM_POLL_TIMEOUT_RETRIES = int(_env_value("TELEGRAM_POLL_TIMEOUT_RETRIES") or "1")
 TELEGRAM_POLL_LOCK_TIMEOUT_SECONDS = int(_env_value("TELEGRAM_POLL_LOCK_TIMEOUT_SECONDS") or "30")
 TELEGRAM_POLL_LOCK_REDIS_URL = (
@@ -256,6 +271,22 @@ SCHEDULED_TASK_INTERVAL_SECONDS = int(_env_value("SCHEDULED_TASK_INTERVAL_SECOND
 SCHEDULED_TASK_BATCH_LIMIT = int(_env_value("SCHEDULED_TASK_BATCH_LIMIT") or "10")
 HEADLESS_RUN_STALE_TIMEOUT_MINUTES = int(_env_value("HEADLESS_RUN_STALE_TIMEOUT_MINUTES") or "30")
 SCHEDULED_HEADLESS_APPROVAL_TTL_DAYS = int(_env_value("SCHEDULED_HEADLESS_APPROVAL_TTL_DAYS") or "30")
+
+GOOGLE_CLIENT_ID = _env_value("GOOGLE_CLIENT_ID")
+GOOGLE_CLIENT_SECRET = _env_value("GOOGLE_CLIENT_SECRET")
+GOOGLE_REDIRECT_URI = _env_value("GOOGLE_REDIRECT_URI")
+GOOGLE_OAUTH_SCOPES = _env_json_list(
+    "GOOGLE_OAUTH_SCOPES",
+    [
+        "openid",
+        "email",
+        "profile",
+        "https://www.googleapis.com/auth/gmail.readonly",
+        "https://www.googleapis.com/auth/gmail.modify",
+        "https://www.googleapis.com/auth/calendar.readonly",
+        "https://www.googleapis.com/auth/calendar",
+    ],
+)
 
 MEMORY_RETENTION_ENABLED = (_env_value("MEMORY_RETENTION_ENABLED") or "0").lower() in {"1", "true", "yes"}
 MEMORY_RETENTION_DAYS = int(_env_value("MEMORY_RETENTION_DAYS") or "30")

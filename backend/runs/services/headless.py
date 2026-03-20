@@ -177,6 +177,85 @@ def build_scheduled_task_objective(scheduled_task: ScheduledTask) -> tuple[str, 
     return objective, prompt
 
 
+def _execute_google_bridge_scheduled_task(run: AgentRun, scheduled_task: ScheduledTask) -> AgentRun | None:
+    payload = dict(scheduled_task.execution_payload or {})
+    if str(payload.get("integration_kind") or "").strip().lower() != "google":
+        return None
+
+    from google_bridge.services.bridge import execute_google_task
+
+    try:
+        result = execute_google_task(
+            payload=payload,
+            workspace=run.workspace,
+            owner=run.started_by or run.agent.owner,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.exception(
+            "%s google_bridge_failure run=%s scheduled_task=%s error=%s",
+            HEADLESS_RUN_LOG_PREFIX,
+            run.id,
+            scheduled_task.id,
+            exc,
+        )
+        append_event(
+            run_id=str(run.id),
+            event_type="google_bridge_task_failed",
+            payload={
+                "scheduled_task_id": str(scheduled_task.id),
+                "integration_kind": "google",
+                "error": str(exc),
+            },
+            broadcast_to_run=False,
+            correlation_id=run.correlation_id,
+        )
+        return finalize_headless_run(
+            run_id=str(run.id),
+            success=False,
+            error_text=str(exc),
+            scheduled_task=scheduled_task,
+        )
+
+    summary_text = str(result.get("summary_text") or "").strip() or "Google bridge task completed."
+    accounts = result.get("accounts") or result.get("account") or {}
+    append_event(
+        run_id=str(run.id),
+        event_type="google_bridge_task_completed",
+        payload={
+            "scheduled_task_id": str(scheduled_task.id),
+            "integration_kind": str(result.get("integration_kind") or "google"),
+            "resource_kind": str(result.get("resource_kind") or ""),
+            "action_kind": str(result.get("action_kind") or ""),
+            "operation": str(result.get("operation") or ""),
+            "summary_text": summary_text,
+            "result": result.get("result") or {},
+            "accounts": accounts,
+        },
+        broadcast_to_run=False,
+        correlation_id=run.correlation_id,
+    )
+    append_step(
+        run_id=str(run.id),
+        kind=AgentStep.Kind.ACTION,
+        payload={
+            "integration_kind": "google",
+            "resource_kind": str(result.get("resource_kind") or ""),
+            "action_kind": str(result.get("action_kind") or ""),
+            "operation": str(result.get("operation") or ""),
+            "summary_text": summary_text,
+            "result": result.get("result") or {},
+            "accounts": accounts,
+        },
+        correlation_id=str(run.correlation_id),
+    )
+    return finalize_headless_run(
+        run_id=str(run.id),
+        success=True,
+        final_text=summary_text,
+        scheduled_task=scheduled_task,
+    )
+
+
 def create_headless_run(
     *,
     agent,
@@ -425,6 +504,9 @@ def execute_headless_run(run_id: str) -> AgentRun:
         broadcast_to_run=False,
         correlation_id=run.correlation_id,
     )
+    google_bridge_run = _execute_google_bridge_scheduled_task(run, scheduled_task) if scheduled_task is not None else None
+    if google_bridge_run is not None:
+        return google_bridge_run
     append_step(
         run_id=str(run.id),
         kind=AgentStep.Kind.MODEL_CALL,

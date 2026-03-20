@@ -37,7 +37,7 @@ class BuildSystemContextTests(TestCase):
         assert "If this is the first turn of a new run and the repository `AGENTS.md` file is available" in context
         assert "If the user asks what tools are available or how many tools you have" in context
         assert "Capability: Scheduling" in context
-        assert "task_type=other_daily_task" in context
+        assert "task_type=other_task" in context
         assert "Capability: User Memory Scope" in context
         assert "Capability: Subruns" in context
         assert "Canonical user id:" in context

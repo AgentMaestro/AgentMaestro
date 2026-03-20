@@ -76,3 +76,20 @@ class ToolSchemaCoverageTests(TestCase):
         fallback_names = {tool["name"] for tool in get_tool_schemas()}
         self.assertIn("run_command_safe", fallback_names)
         self.assertIn("run_tests", fallback_names)
+
+    def test_google_bridge_tool_is_registered(self):
+        registry_tools = {tool["name"]: tool for group in TOOL_REGISTRY for tool in group["tools"]}
+        fallback_names = {tool["name"] for tool in get_tool_schemas()}
+
+        self.assertIn("google_bridge", registry_tools)
+        self.assertIn("google_bridge", fallback_names)
+        self.assertFalse(registry_tools["google_bridge"]["requires_approval"])
+
+    def test_scheduled_task_management_tools_are_registered(self):
+        registry_tools = {tool["name"]: tool for group in TOOL_REGISTRY for tool in group["tools"]}
+        fallback_names = {tool["name"] for tool in get_tool_schemas()}
+
+        for tool_name in {"schedule_task", "edit_scheduled_task", "disable_scheduled_task", "enable_scheduled_task", "list_scheduled_tasks"}:
+            self.assertIn(tool_name, registry_tools)
+            self.assertIn(tool_name, fallback_names)
+            self.assertFalse(registry_tools[tool_name]["requires_approval"])

@@ -175,6 +175,7 @@ def build_ws_request_input_items(
     *,
     previous_response_id: str | None = None,
     outstanding_provider_call_id: str | None = None,
+    outstanding_provider_call_ids: Iterable[str] | None = None,
     include_system_context: bool = True,
     last_user_text: str | None = None,
     run_id: str | None = None,
@@ -205,7 +206,9 @@ def build_ws_request_input_items(
             tool_entries,
             previous_response_id=previous_response_id,
             outstanding_provider_call_id=outstanding_provider_call_id,
-            outstanding_provider_call_ids=provider_call_ids,
+            outstanding_provider_call_ids=(
+                list(outstanding_provider_call_ids) if outstanding_provider_call_ids else provider_call_ids
+            ),
             run_id=run_id,
         )
         logger.info(
@@ -218,7 +221,12 @@ def build_ws_request_input_items(
         return items
 
     if include_system_context:
-        items = build_input_items(history, run_id=run_id)
+        items = build_input_items(
+            history,
+            outstanding_provider_call_id=outstanding_provider_call_id,
+            outstanding_provider_call_ids=outstanding_provider_call_ids,
+            run_id=run_id,
+        )
         logger.info(
             "Built WS request input items run=%s mode=full_history_with_continuity items=%d previous_response_id=%s",
             run_id,
@@ -244,7 +252,12 @@ def build_ws_request_input_items(
         )
         return items
 
-    items = build_input_items(history, run_id=run_id)
+    items = build_input_items(
+        history,
+        outstanding_provider_call_id=outstanding_provider_call_id,
+        outstanding_provider_call_ids=outstanding_provider_call_ids,
+        run_id=run_id,
+    )
     logger.info(
         "Built WS request input items run=%s mode=fallback_full_history items=%d previous_response_id=%s",
         run_id,

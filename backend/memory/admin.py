@@ -102,19 +102,24 @@ class ScheduledTaskAdmin(admin.ModelAdmin):
         "task_type",
         "execution_mode",
         "enabled",
+        "integration_kind_short",
+        "resource_kind_short",
+        "account_scope_short",
         "recurrence_frequency",
         "recurrence_timezone",
         "recurrence_window",
         "recurrence_summary_short",
         "next_run_at_display",
         "last_run_at_display",
+        "last_result_summary_short",
+        "last_error_short",
         "last_run",
         "active_run",
         "failure_count",
     )
     list_filter = ("task_type", "execution_mode", "enabled", "recurrence_rule__timezone", "recurrence_rule__frequency")
     search_fields = ("title", "agent__name", "owner__username", "last_result_summary", "last_error")
-    readonly_fields = ("recurrence_detail",)
+    readonly_fields = ("recurrence_detail", "google_intent_detail")
 
     @admin.display(description="Next Run")
     def next_run_at_display(self, obj: ScheduledTask) -> str:
@@ -153,6 +158,28 @@ class ScheduledTaskAdmin(admin.ModelAdmin):
     def recurrence_summary_short(self, obj: ScheduledTask):
         return obj.recurrence_summary
 
+    @admin.display(description="Integration")
+    def integration_kind_short(self, obj: ScheduledTask):
+        return str(obj.execution_payload.get("integration_kind") or "-").strip() or "-"
+
+    @admin.display(description="Resource")
+    def resource_kind_short(self, obj: ScheduledTask):
+        return str(obj.execution_payload.get("resource_kind") or "-").strip() or "-"
+
+    @admin.display(description="Scope")
+    def account_scope_short(self, obj: ScheduledTask):
+        return str(obj.execution_payload.get("account_scope") or "-").strip() or "-"
+
+    @admin.display(description="Last Result")
+    def last_result_summary_short(self, obj: ScheduledTask):
+        text = str(obj.last_result_summary or "").strip()
+        return text[:90] + ("..." if len(text) > 90 else "") if text else "-"
+
+    @admin.display(description="Last Error")
+    def last_error_short(self, obj: ScheduledTask):
+        text = str(obj.last_error or "").strip()
+        return text[:90] + ("..." if len(text) > 90 else "") if text else "-"
+
     @admin.display(description="Recurrence Details")
     def recurrence_detail(self, obj: ScheduledTask):
         if obj is None:
@@ -179,6 +206,30 @@ class ScheduledTaskAdmin(admin.ModelAdmin):
             lines.append(f"Week-of-month: {rule.week_of_month} / {rule.weekday_of_month}")
         if rule.by_month:
             lines.append(f"Months: {', '.join(str(month) for month in rule.by_month)}")
+        return format_html_join(mark_safe("<br>"), "{}", ((line,) for line in lines))
+
+    @admin.display(description="Google Intent")
+    def google_intent_detail(self, obj: ScheduledTask):
+        payload = dict(obj.execution_payload or {})
+        lines = [
+            "Google intent summary",
+            f"integration_kind: {payload.get('integration_kind', '-') or '-'}",
+            f"resource_kind: {payload.get('resource_kind', '-') or '-'}",
+            f"action_kind: {payload.get('action_kind', '-') or '-'}",
+            f"operation: {payload.get('operation', '-') or '-'}",
+            f"account_scope: {payload.get('account_scope', '-') or '-'}",
+        ]
+        steps = list(payload.get("steps") or [])
+        if steps:
+            lines.append(f"steps: {len(steps)}")
+            for index, step in enumerate(steps, start=1):
+                lines.append(
+                    f"step {index}: {step.get('resource_kind', '-') or '-'} / {step.get('action_kind', '-') or '-'} / {step.get('operation', '-') or '-'} / scope={step.get('account_scope', '-') or '-'}"
+                )
+        elif payload.get("integration_kind") == "google":
+            lines.append("steps: 1 (implicit)")
+        else:
+            lines.append("steps: -")
         return format_html_join(mark_safe("<br>"), "{}", ((line,) for line in lines))
 
 

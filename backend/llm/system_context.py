@@ -150,8 +150,9 @@ def _build_capability_notices(tool_names: Iterable[str]) -> list[str]:
             "Capability: Scheduling\n"
             "- The `schedule_task` tool is available in this run.\n"
             "- Do not say scheduling is unavailable when `schedule_task` is listed as available.\n"
-            "- Use `execution_mode=headless_run` for scheduled work.\n"
-            "- Choose a descriptive `task_type` such as `other_task` or `other_daily_task` for the job label.\n"
+            "- Scheduled work runs headlessly; use `execution_mode=headless_run` only for compatibility if needed.\n"
+            "- Use `task_type=other_task` for the job label.\n"
+            "- Put structured task intent in `execution_payload`.\n"
             "- Use `recurrence` for complex schedules; use `timezone` and `local_time` only for simple once-per-day schedules."
         )
     if "remember" in names or "search_memory" in names:

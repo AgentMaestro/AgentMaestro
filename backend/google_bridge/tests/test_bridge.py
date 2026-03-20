@@ -1,0 +1,864 @@
+from datetime import timedelta
+
+import pytest
+from django.contrib.auth import get_user_model
+from django.utils import timezone
+
+from core.models import Workspace
+from google_bridge.models import GoogleAccount
+from google_bridge.services.bridge import (
+    GoogleBridgeTaskError,
+    build_google_task_objective,
+    execute_google_task,
+    normalize_google_payload,
+)
+from google_bridge.services.schema import build_google_bridge_args_schema
+
+
+pytestmark = pytest.mark.django_db
+
+
+def _make_account():
+    User = get_user_model()
+    user = User.objects.create_user(username="googlebridge", password="x")
+    workspace = Workspace.objects.create(name="Google Bridge Workspace")
+    account = GoogleAccount.objects.create(
+        workspace=workspace,
+        owner=user,
+        google_subject="sub-123",
+        email="user@example.com",
+        scopes=["https://www.googleapis.com/auth/gmail.readonly"],
+        token_expires_at=timezone.now() + timedelta(hours=1),
+        is_active=True,
+    )
+    account.set_tokens(access_token="access", refresh_token="refresh")
+    account.save()
+    return workspace, user, account
+
+
+def test_normalize_google_payload_accepts_read_only_contract():
+    payload = normalize_google_payload(
+        {
+            "integration_kind": "google",
+            "resource_kind": "gmail",
+            "action_kind": "read",
+            "operation": "list",
+            "query": "inbox newer_than:1d",
+            "max_results": 5,
+        }
+    )
+
+    assert payload["integration_kind"] == "google"
+    assert payload["resource_kind"] == "gmail"
+    assert payload["action_kind"] == "read"
+    assert payload["operation"] == "list"
+    assert payload["max_results"] == 5
+
+
+def test_normalize_google_payload_accepts_step_plan():
+    payload = normalize_google_payload(
+        {
+            "integration_kind": "google",
+            "account_scope": "primary",
+            "steps": [
+                {
+                    "resource_kind": "gmail",
+                    "action_kind": "read",
+                    "operation": "list",
+                    "query": "inbox newer_than:1d",
+                },
+                {
+                    "resource_kind": "calendar",
+                    "action_kind": "read",
+                    "operation": "list",
+                    "calendar_id": "primary",
+                },
+            ],
+        }
+    )
+
+    assert len(payload["steps"]) == 2
+    assert payload["resource_kind"] == "gmail"
+    assert payload["steps"][1]["resource_kind"] == "calendar"
+
+
+def test_execute_google_task_requires_connection():
+    with pytest.raises(GoogleBridgeTaskError, match="No active Google account connection is available"):
+        execute_google_task(payload={"integration_kind": "google", "resource_kind": "gmail", "action_kind": "read"})
+
+
+def test_execute_google_task_returns_json_summary(monkeypatch):
+    workspace, user, account = _make_account()
+
+    class FakeClient:
+        def __init__(self, connection):
+            self.connection = connection
+
+        def list_gmail_messages(self, *, query: str = "", label_ids: list[str] | None = None, max_results: int = 10):
+            return {"messages": [{"id": "msg-1"}], "resultSizeEstimate": 1}
+
+    monkeypatch.setattr("google_bridge.services.bridge.GoogleBridgeClient", FakeClient)
+
+    result = execute_google_task(
+        payload={
+            "integration_kind": "google",
+            "resource_kind": "gmail",
+            "action_kind": "read",
+            "operation": "list",
+            "query": "inbox newer_than:1d",
+            "max_results": 5,
+        },
+        workspace=workspace,
+        owner=user,
+        account=account,
+    )
+
+    assert result["ok"] is True
+    assert result["integration_kind"] == "google"
+    assert result["resource_kind"] == "gmail"
+    assert result["action_kind"] == "read"
+    assert result["operation"] == "list"
+    assert result["result"]["messages"][0]["id"] == "msg-1"
+    assert "Found 1 Gmail messages" in result["summary_text"]
+    assert "use google_bridge with operation=read" in result["summary_text"].lower()
+
+
+def test_execute_google_task_creates_gmail_draft(monkeypatch):
+    workspace, user, account = _make_account()
+
+    captured: dict[str, object] = {}
+
+    class FakeClient:
+        def __init__(self, connection):
+            self.connection = connection
+
+        def create_gmail_draft(self, *, to: list[str], subject: str = "", body: str = "", cc: list[str] | None = None, bcc: list[str] | None = None, thread_id: str = ""):
+            captured["to"] = to
+            captured["subject"] = subject
+            captured["body"] = body
+            captured["cc"] = cc
+            captured["bcc"] = bcc
+            captured["thread_id"] = thread_id
+            return {"draft": {"id": "draft-1", "message": {"id": "msg-1", "threadId": "thread-1"}}}
+
+    monkeypatch.setattr("google_bridge.services.bridge.GoogleBridgeClient", FakeClient)
+
+    result = execute_google_task(
+        payload={
+            "integration_kind": "google",
+            "resource_kind": "gmail",
+            "action_kind": "draft",
+            "operation": "create",
+            "account_scope": "primary",
+            "email": "user@example.com",
+            "to": ["friend@example.com"],
+            "subject": "Draft subject",
+            "body": "Draft body",
+            "thread_id": "thread-1",
+        },
+        workspace=workspace,
+        owner=user,
+        account=account,
+    )
+
+    assert captured["to"] == ["friend@example.com"]
+    assert captured["subject"] == "Draft subject"
+    assert result["action_kind"] == "draft"
+    assert result["operation"] == "create"
+    assert "Gmail draft created" in result["summary_text"]
+    assert "Draft ID: draft-1" in result["summary_text"]
+
+
+def test_execute_google_task_sends_gmail_message(monkeypatch):
+    workspace, user, account = _make_account()
+
+    captured: dict[str, object] = {}
+
+    class FakeClient:
+        def __init__(self, connection):
+            self.connection = connection
+
+        def send_gmail_message(self, *, to: list[str], subject: str = "", body: str = "", cc: list[str] | None = None, bcc: list[str] | None = None, thread_id: str = ""):
+            captured["to"] = to
+            captured["subject"] = subject
+            captured["body"] = body
+            captured["cc"] = cc
+            captured["bcc"] = bcc
+            captured["thread_id"] = thread_id
+            return {"id": "msg-123", "threadId": "thread-123"}
+
+    monkeypatch.setattr("google_bridge.services.bridge.GoogleBridgeClient", FakeClient)
+
+    result = execute_google_task(
+        payload={
+            "integration_kind": "google",
+            "resource_kind": "gmail",
+            "action_kind": "send",
+            "operation": "send",
+            "account_scope": "primary",
+            "email": "user@example.com",
+            "to": ["friend@example.com"],
+            "subject": "Send subject",
+            "body": "Send body",
+        },
+        workspace=workspace,
+        owner=user,
+        account=account,
+    )
+
+    assert captured["to"] == ["friend@example.com"]
+    assert captured["subject"] == "Send subject"
+    assert result["action_kind"] == "send"
+    assert result["operation"] == "send"
+    assert "Gmail message sent" in result["summary_text"]
+    assert "Message ID: msg-123" in result["summary_text"]
+
+
+def test_execute_google_task_trashes_gmail_message(monkeypatch):
+    workspace, user, account = _make_account()
+
+    captured: dict[str, object] = {}
+
+    class FakeClient:
+        def __init__(self, connection):
+            self.connection = connection
+
+        def trash_gmail_message(self, message_id: str):
+            captured["message_id"] = message_id
+            return {}
+
+    monkeypatch.setattr("google_bridge.services.bridge.GoogleBridgeClient", FakeClient)
+
+    result = execute_google_task(
+        payload={
+            "integration_kind": "google",
+            "resource_kind": "gmail",
+            "action_kind": "delete",
+            "operation": "trash",
+            "account_scope": "primary",
+            "email": "user@example.com",
+            "message_id": "msg-123",
+        },
+        workspace=workspace,
+        owner=user,
+        account=account,
+    )
+
+    assert captured["message_id"] == "msg-123"
+    assert result["action_kind"] == "delete"
+    assert result["operation"] == "trash"
+    assert "moved to trash" in result["summary_text"]
+
+
+def test_execute_google_task_trash_can_resolve_unique_query(monkeypatch):
+    workspace, user, account = _make_account()
+
+    captured: dict[str, object] = {"list_calls": []}
+
+    class FakeClient:
+        def __init__(self, connection):
+            self.connection = connection
+
+        def list_gmail_messages(self, *, query: str = "", label_ids: list[str] | None = None, max_results: int = 10):
+            captured["list_calls"].append(
+                {
+                    "query": query,
+                    "label_ids": label_ids,
+                    "max_results": max_results,
+                    "email": self.connection.email,
+                }
+            )
+            return {"messages": [{"id": "msg-789"}], "resultSizeEstimate": 1}
+
+        def trash_gmail_message(self, message_id: str):
+            captured["message_id"] = message_id
+            return {}
+
+    monkeypatch.setattr("google_bridge.services.bridge.GoogleBridgeClient", FakeClient)
+
+    result = execute_google_task(
+        payload={
+            "integration_kind": "google",
+            "resource_kind": "gmail",
+            "action_kind": "delete",
+            "operation": "trash",
+            "account_scope": "primary",
+            "email": "user@example.com",
+            "google_subject": "Email test",
+            "query": 'subject:"Email test" from:kissinger.scott@gmail.com',
+        },
+        workspace=workspace,
+        owner=user,
+        account=account,
+    )
+
+    assert captured["list_calls"][0]["query"] == 'subject:"Email test" from:kissinger.scott@gmail.com'
+    assert captured["message_id"] == "msg-789"
+    assert result["action_kind"] == "delete"
+    assert result["operation"] == "trash"
+    assert "moved to trash" in result["summary_text"]
+
+
+def test_execute_google_task_permanently_deletes_gmail_message(monkeypatch):
+    workspace, user, account = _make_account()
+
+    captured: dict[str, object] = {}
+
+    class FakeClient:
+        def __init__(self, connection):
+            self.connection = connection
+
+        def delete_gmail_message(self, message_id: str):
+            captured["message_id"] = message_id
+            return {}
+
+    monkeypatch.setattr("google_bridge.services.bridge.GoogleBridgeClient", FakeClient)
+
+    result = execute_google_task(
+        payload={
+            "integration_kind": "google",
+            "resource_kind": "gmail",
+            "action_kind": "delete",
+            "operation": "delete",
+            "account_scope": "primary",
+            "email": "user@example.com",
+            "message_id": "msg-456",
+        },
+        workspace=workspace,
+        owner=user,
+        account=account,
+    )
+
+    assert captured["message_id"] == "msg-456"
+    assert result["action_kind"] == "delete"
+    assert result["operation"] == "delete"
+    assert "permanently deleted" in result["summary_text"]
+
+
+def test_normalize_google_payload_defaults_gmail_delete_to_trash():
+    payload = normalize_google_payload(
+        {
+            "integration_kind": "google",
+            "resource_kind": "gmail",
+            "action_kind": "delete",
+            "message_id": "msg-123",
+        }
+    )
+
+    assert payload["action_kind"] == "delete"
+    assert payload["operation"] == "trash"
+
+
+def test_normalize_google_payload_respects_gmail_delete_mode():
+    payload = normalize_google_payload(
+        {
+            "integration_kind": "google",
+            "resource_kind": "gmail",
+            "action_kind": "delete",
+            "operation": "delete",
+            "delete_mode": "trash",
+            "message_id": "msg-123",
+        }
+    )
+
+    assert payload["action_kind"] == "delete"
+    assert payload["operation"] == "trash"
+
+
+def test_execute_google_task_can_merge_multiple_accounts(monkeypatch):
+    User = get_user_model()
+    user = User.objects.create_user(username="googlebridge-merge", password="x")
+    workspace = Workspace.objects.create(name="Google Merge Workspace")
+    first = GoogleAccount.objects.create(
+        workspace=workspace,
+        owner=user,
+        google_subject="sub-1",
+        email="first@example.com",
+        token_expires_at=timezone.now() + timedelta(hours=1),
+        is_active=True,
+    )
+    first.set_tokens(access_token="access-1", refresh_token="refresh-1")
+    first.save()
+    second = GoogleAccount.objects.create(
+        workspace=workspace,
+        owner=user,
+        google_subject="sub-2",
+        email="second@example.com",
+        token_expires_at=timezone.now() + timedelta(hours=1),
+        is_active=True,
+    )
+    second.set_tokens(access_token="access-2", refresh_token="refresh-2")
+    second.save()
+
+    class FakeClient:
+        def __init__(self, connection):
+            self.connection = connection
+
+        def list_gmail_messages(self, *, query: str = "", label_ids: list[str] | None = None, max_results: int = 10):
+            return {"messages": [{"id": f"{self.connection.email}-msg"}], "resultSizeEstimate": 1}
+
+    monkeypatch.setattr("google_bridge.services.bridge.GoogleBridgeClient", FakeClient)
+
+    result = execute_google_task(
+        payload={
+            "integration_kind": "google",
+            "resource_kind": "gmail",
+            "action_kind": "read",
+            "operation": "list",
+            "account_scope": "all",
+            "query": "inbox newer_than:1d",
+            "max_results": 5,
+        },
+        workspace=workspace,
+        owner=user,
+    )
+
+    assert len(result["accounts"]) == 2
+    assert result["result"]["resultSizeEstimate"] == 2
+    assert len(result["result"]["messages"]) == 2
+    assert "across 2 accounts" in result["summary_text"]
+
+
+def test_execute_google_task_runs_multi_step_read_plan(monkeypatch):
+    workspace, user, account = _make_account()
+
+    class FakeClient:
+        def __init__(self, connection):
+            self.connection = connection
+
+        def list_gmail_messages(self, *, query: str = "", label_ids: list[str] | None = None, max_results: int = 10):
+            return {"messages": [{"id": "msg-1"}], "resultSizeEstimate": 1}
+
+        def list_calendar_events(self, *, calendar_id: str = "primary", time_min: str = "", time_max: str = "", max_results: int = 10):
+            self.received_time_min = time_min
+            self.received_time_max = time_max
+            return {"items": [{"id": "event-1", "summary": "Standup"}]}
+
+    monkeypatch.setattr("google_bridge.services.bridge.GoogleBridgeClient", FakeClient)
+
+    result = execute_google_task(
+        payload={
+            "integration_kind": "google",
+            "account_scope": "primary",
+            "steps": [
+                {
+                    "resource_kind": "gmail",
+                    "action_kind": "read",
+                    "operation": "list",
+                    "query": "inbox newer_than:1d",
+                },
+                {
+                    "resource_kind": "calendar",
+                    "action_kind": "read",
+                    "operation": "list",
+                    "calendar_id": "primary",
+                },
+            ],
+        },
+        workspace=workspace,
+        owner=user,
+        account=account,
+    )
+
+    assert len(result["steps"]) == 2
+    assert result["steps"][0]["resource_kind"] == "gmail"
+    assert result["steps"][1]["resource_kind"] == "calendar"
+    assert "1. Found 1 Gmail messages" in result["summary_text"]
+    assert "2. Found 1 calendar events" in result["summary_text"]
+    assert account.access_token  # ensure the account fixture remains valid
+
+
+def test_execute_google_task_normalizes_calendar_bounds_to_eastern_time(monkeypatch):
+    workspace, user, account = _make_account()
+
+    captured: dict[str, str] = {}
+
+    class FakeClient:
+        def __init__(self, connection):
+            self.connection = connection
+
+        def list_calendar_events(self, *, calendar_id: str = "primary", time_min: str = "", time_max: str = "", max_results: int = 10):
+            captured["time_min"] = time_min
+            captured["time_max"] = time_max
+            return {"items": [{"id": "event-1", "summary": "Standup"}]}
+
+    monkeypatch.setattr("google_bridge.services.bridge.GoogleBridgeClient", FakeClient)
+
+    result = execute_google_task(
+        payload={
+            "integration_kind": "google",
+            "resource_kind": "calendar",
+            "action_kind": "read",
+            "operation": "list",
+            "calendar_id": "primary",
+            "time_min": "2026-03-20T00:00:00",
+            "time_max": "2026-03-21T00:00:00Z",
+        },
+        workspace=workspace,
+        owner=user,
+        account=account,
+    )
+
+    assert captured["time_min"] == "2026-03-20T00:00:00-04:00"
+    assert captured["time_max"] == "2026-03-20T20:00:00-04:00"
+    assert result["steps"][0]["resource_kind"] == "calendar"
+
+
+def test_execute_google_task_creates_calendar_event(monkeypatch):
+    workspace, user, account = _make_account()
+
+    captured: dict[str, object] = {}
+
+    class FakeClient:
+        def __init__(self, connection):
+            self.connection = connection
+
+        def create_calendar_event(
+            self,
+            *,
+            calendar_id: str = "primary",
+            summary: str = "",
+            description: str = "",
+            location: str = "",
+            start: dict | None = None,
+            end: dict | None = None,
+            attendees: list[str] | None = None,
+            send_updates: str = "",
+        ):
+            captured["calendar_id"] = calendar_id
+            captured["summary"] = summary
+            captured["description"] = description
+            captured["location"] = location
+            captured["start"] = start
+            captured["end"] = end
+            captured["attendees"] = attendees
+            captured["send_updates"] = send_updates
+            return {"id": "event-1", "htmlLink": "https://calendar.google.com/event?eid=event-1", "summary": summary}
+
+    monkeypatch.setattr("google_bridge.services.bridge.GoogleBridgeClient", FakeClient)
+
+    result = execute_google_task(
+        payload={
+            "integration_kind": "google",
+            "resource_kind": "calendar",
+            "action_kind": "create",
+            "operation": "create",
+            "account_scope": "primary",
+            "calendar_id": "primary",
+            "summary": "Calendar write test",
+            "description": "Smoke test event",
+            "location": "Court 1",
+            "start": "2026-03-22T09:00:00",
+            "end": "2026-03-22T09:30:00",
+            "time_zone": "America/New_York",
+            "attendees": ["someone@example.com"],
+            "send_updates": "none",
+        },
+        workspace=workspace,
+        owner=user,
+        account=account,
+    )
+
+    assert captured["calendar_id"] == "primary"
+    assert captured["summary"] == "Calendar write test"
+    assert captured["start"] == {"dateTime": "2026-03-22T09:00:00-04:00", "timeZone": "America/New_York"}
+    assert captured["end"] == {"dateTime": "2026-03-22T09:30:00-04:00", "timeZone": "America/New_York"}
+    assert captured["attendees"] == ["someone@example.com"]
+    assert captured["send_updates"] == "none"
+    assert result["action_kind"] == "create"
+    assert result["operation"] == "create"
+    assert "Calendar event created" in result["summary_text"]
+    assert "Event ID: event-1" in result["summary_text"]
+
+
+def test_execute_google_task_updates_calendar_event(monkeypatch):
+    workspace, user, account = _make_account()
+
+    captured: dict[str, object] = {}
+
+    class FakeClient:
+        def __init__(self, connection):
+            self.connection = connection
+
+        def update_calendar_event(
+            self,
+            *,
+            calendar_id: str = "primary",
+            event_id: str,
+            summary: str = "",
+            description: str = "",
+            location: str = "",
+            start: dict | None = None,
+            end: dict | None = None,
+            attendees: list[str] | None = None,
+            send_updates: str = "",
+        ):
+            captured["calendar_id"] = calendar_id
+            captured["event_id"] = event_id
+            captured["summary"] = summary
+            captured["description"] = description
+            captured["location"] = location
+            captured["start"] = start
+            captured["end"] = end
+            captured["attendees"] = attendees
+            captured["send_updates"] = send_updates
+            return {"id": event_id, "htmlLink": "https://calendar.google.com/event?eid=event-2", "summary": summary}
+
+    monkeypatch.setattr("google_bridge.services.bridge.GoogleBridgeClient", FakeClient)
+
+    result = execute_google_task(
+        payload={
+            "integration_kind": "google",
+            "resource_kind": "calendar",
+            "action_kind": "update",
+            "operation": "update",
+            "account_scope": "primary",
+            "calendar_id": "primary",
+            "event_id": "event-2",
+            "summary": "Calendar write test updated",
+            "start": "2026-03-22T10:00:00",
+            "end": "2026-03-22T10:30:00",
+            "time_zone": "America/New_York",
+            "attendees": ["someone@example.com"],
+            "send_updates": "all",
+        },
+        workspace=workspace,
+        owner=user,
+        account=account,
+    )
+
+    assert captured["event_id"] == "event-2"
+    assert captured["summary"] == "Calendar write test updated"
+    assert captured["start"] == {"dateTime": "2026-03-22T10:00:00-04:00", "timeZone": "America/New_York"}
+    assert captured["end"] == {"dateTime": "2026-03-22T10:30:00-04:00", "timeZone": "America/New_York"}
+    assert captured["attendees"] == ["someone@example.com"]
+    assert captured["send_updates"] == "all"
+    assert result["action_kind"] == "update"
+    assert result["operation"] == "update"
+    assert "Calendar event updated" in result["summary_text"]
+    assert "Event ID: event-2" in result["summary_text"]
+
+
+def test_execute_google_task_deletes_calendar_event(monkeypatch):
+    workspace, user, account = _make_account()
+
+    captured: dict[str, object] = {}
+
+    class FakeClient:
+        def __init__(self, connection):
+            self.connection = connection
+
+        def delete_calendar_event(self, *, calendar_id: str = "primary", event_id: str, send_updates: str = ""):
+            captured["calendar_id"] = calendar_id
+            captured["event_id"] = event_id
+            captured["send_updates"] = send_updates
+            return {}
+
+    monkeypatch.setattr("google_bridge.services.bridge.GoogleBridgeClient", FakeClient)
+
+    result = execute_google_task(
+        payload={
+            "integration_kind": "google",
+            "resource_kind": "calendar",
+            "action_kind": "delete",
+            "operation": "delete",
+            "account_scope": "primary",
+            "calendar_id": "primary",
+            "event_id": "event-3",
+            "send_updates": "none",
+        },
+        workspace=workspace,
+        owner=user,
+        account=account,
+    )
+
+    assert captured["event_id"] == "event-3"
+    assert captured["send_updates"] == "none"
+    assert result["action_kind"] == "delete"
+    assert result["operation"] == "delete"
+    assert "Calendar event deleted" in result["summary_text"]
+    assert "Event ID: event-3" in result["summary_text"]
+
+
+def test_execute_google_task_requires_specific_account_for_read_by_id():
+    workspace, user, _account = _make_account()
+
+    with pytest.raises(GoogleBridgeTaskError, match="Use the returned account_email or google_subject"):
+        execute_google_task(
+            payload={
+                "integration_kind": "google",
+                "resource_kind": "gmail",
+                "action_kind": "read",
+                "operation": "read",
+                "account_scope": "all",
+                "message_id": "msg-123",
+            },
+            workspace=workspace,
+            owner=user,
+        )
+
+
+def test_execute_google_task_requires_specific_account_for_gmail_write():
+    User = get_user_model()
+    user = User.objects.create_user(username="googlebridge-write", password="x")
+    workspace = Workspace.objects.create(name="Google Write Workspace")
+    first = GoogleAccount.objects.create(
+        workspace=workspace,
+        owner=user,
+        google_subject="sub-write-1",
+        email="first@example.com",
+        token_expires_at=timezone.now() + timedelta(hours=1),
+        is_active=True,
+    )
+    first.set_tokens(access_token="access-1", refresh_token="refresh-1")
+    first.save()
+    second = GoogleAccount.objects.create(
+        workspace=workspace,
+        owner=user,
+        google_subject="sub-write-2",
+        email="second@example.com",
+        token_expires_at=timezone.now() + timedelta(hours=1),
+        is_active=True,
+    )
+    second.set_tokens(access_token="access-2", refresh_token="refresh-2")
+    second.save()
+
+    with pytest.raises(GoogleBridgeTaskError, match="require a specific connected account"):
+        execute_google_task(
+            payload={
+                "integration_kind": "google",
+                "resource_kind": "gmail",
+                "action_kind": "draft",
+                "operation": "create",
+                "account_scope": "primary",
+                "to": ["friend@example.com"],
+                "subject": "Draft subject",
+                "body": "Draft body",
+            },
+            workspace=workspace,
+            owner=user,
+        )
+
+
+def test_execute_google_task_requires_specific_account_for_calendar_write():
+    User = get_user_model()
+    user = User.objects.create_user(username="googlebridge-calendar-write", password="x")
+    workspace = Workspace.objects.create(name="Google Calendar Write Workspace")
+    first = GoogleAccount.objects.create(
+        workspace=workspace,
+        owner=user,
+        google_subject="sub-cal-1",
+        email="first@example.com",
+        token_expires_at=timezone.now() + timedelta(hours=1),
+        is_active=True,
+    )
+    first.set_tokens(access_token="access-1", refresh_token="refresh-1")
+    first.save()
+    second = GoogleAccount.objects.create(
+        workspace=workspace,
+        owner=user,
+        google_subject="sub-cal-2",
+        email="second@example.com",
+        token_expires_at=timezone.now() + timedelta(hours=1),
+        is_active=True,
+    )
+    second.set_tokens(access_token="access-2", refresh_token="refresh-2")
+    second.save()
+
+    with pytest.raises(GoogleBridgeTaskError, match="require a specific connected account"):
+        execute_google_task(
+            payload={
+                "integration_kind": "google",
+                "resource_kind": "calendar",
+                "action_kind": "create",
+                "operation": "create",
+                "account_scope": "primary",
+                "summary": "Calendar write test",
+                "start": "2026-03-22T09:00:00",
+                "end": "2026-03-22T09:30:00",
+            },
+            workspace=workspace,
+            owner=user,
+        )
+
+
+def test_normalize_google_payload_rejects_non_read_step():
+    with pytest.raises(GoogleBridgeTaskError, match="supports read, draft, send, and delete actions"):
+        normalize_google_payload(
+            {
+                "integration_kind": "google",
+                "steps": [
+                    {
+                        "resource_kind": "gmail",
+                        "action_kind": "archive",
+                        "operation": "remove",
+                    }
+                ],
+            }
+        )
+
+
+def test_build_google_task_objective_serializes_payload_as_json():
+    objective, prompt = build_google_task_objective(
+        {
+            "integration_kind": "google",
+            "resource_kind": "calendar",
+            "action_kind": "read",
+            "operation": "list",
+            "calendar_id": "primary",
+            "time_min": "2026-03-20T00:00:00-04:00",
+        }
+    )
+
+    assert "Google bridge task" in objective
+    assert '"integration_kind":"google"' in prompt
+    assert '"resource_kind":"calendar"' in prompt
+    assert '"time_min":"2026-03-20T00:00:00-04:00"' in prompt
+
+
+def test_google_bridge_calendar_schema_requires_local_time_bounds():
+    schema = build_google_bridge_args_schema()
+
+    time_min_description = schema["properties"]["time_min"]["description"]
+    time_max_description = schema["properties"]["time_max"]["description"]
+    time_zone_description = schema["properties"]["time_zone"]["description"]
+    query_description = schema["properties"]["query"]["description"]
+    message_id_description = schema["properties"]["message_id"]["description"]
+    event_id_description = schema["properties"]["event_id"]["description"]
+    subject_description = schema["properties"]["subject"]["description"]
+    start_description = schema["properties"]["start"]["description"]
+    action_kind_description = schema["properties"]["action_kind"]["description"]
+    resource_kind_description = schema["properties"]["resource_kind"]["description"]
+    to_description = schema["properties"]["to"]["description"]
+    cc_description = schema["properties"]["cc"]["description"]
+    bcc_description = schema["properties"]["bcc"]["description"]
+    body_description = schema["properties"]["body"]["description"]
+    thread_id_description = schema["properties"]["thread_id"]["description"]
+    draft_id_description = schema["properties"]["draft_id"]["description"]
+
+    assert "local time" in time_min_description
+    assert "GMT or Zulu" in time_min_description
+    assert "EST/EDT" in time_min_description
+    assert "local time" in time_max_description
+    assert "GMT or Zulu" in time_max_description
+    assert "EST/EDT" in time_max_description
+    assert "America/New_York" in time_zone_description
+    assert "message_id" in query_description.lower() or "message id" in query_description.lower()
+    assert "directly to the trash/delete operation" in query_description.lower()
+    assert "account_email" in message_id_description
+    assert "fetch subject, sender, snippet, and metadata" in message_id_description
+    assert "account_email" in event_id_description
+    assert "draft/send" in subject_description
+    assert "draft/send" in to_description
+    assert "draft/send" in cc_description
+    assert "draft/send" in bcc_description
+    assert "draft/send" in body_description
+    assert "draft updates" in thread_id_description
+    assert "send-from-draft" in draft_id_description
+    assert "delete" in action_kind_description
+    assert "trash" in action_kind_description
+    assert "create" in action_kind_description
+    assert "update" in action_kind_description
+    assert "read, list, draft, send, create, update, delete" in action_kind_description
+    assert "gmail supports draft/send writes and Calendar supports create/update/delete writes" in resource_kind_description
+    assert "local time" in start_description

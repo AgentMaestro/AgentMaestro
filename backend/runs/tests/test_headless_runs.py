@@ -46,7 +46,7 @@ def _create_headless_task(user, agent):
         agent=agent,
         owner=user,
         title="daily weather report for Richmond, VA",
-        task_type=ScheduledTask.TaskType.DAILY_WEATHER_REPORT,
+        task_type=ScheduledTask.TaskType.OTHER_TASK,
         execution_mode=ScheduledTask.ExecutionMode.HEADLESS_RUN,
         local_time_value="08:00",
         timezone_name="America/New_York",
@@ -241,3 +241,64 @@ def test_execute_headless_run_failure_marks_task_and_writes_failure_memory(monke
     assert "headless boom" in scheduled_task.last_error
     failure_memory = MemoryRecord.objects.filter(source_kind=HEADLESS_RUN_FAILED_SOURCE_KIND, source_ref=str(run.id)).first()
     assert failure_memory is not None
+
+
+def test_execute_headless_run_google_bridge_task_uses_bridge_not_llm(monkeypatch, headless_task_agent):
+    user, _workspace, agent = headless_task_agent
+    scheduled_task = create_scheduled_task(
+        agent=agent,
+        owner=user,
+        title="gmail read task",
+        task_type=ScheduledTask.TaskType.OTHER_TASK,
+        execution_mode=ScheduledTask.ExecutionMode.HEADLESS_RUN,
+        local_time_value="08:00",
+        timezone_name="America/New_York",
+        execution_payload={
+            "integration_kind": "google",
+            "resource_kind": "gmail",
+            "action_kind": "read",
+            "operation": "list",
+            "query": "inbox newer_than:1d",
+            "max_results": 5,
+        },
+    )
+    _scheduled_task, run, _launched = launch_scheduled_task_run(str(scheduled_task.id))
+    gate_call = ToolCall.objects.get(run=run, tool_name=INTERNAL_HEADLESS_APPROVAL_TOOL_NAME)
+    _approve_gate_and_execute(gate_call, user, monkeypatch)
+
+    def fake_google_bridge_task(**kwargs):
+        return {
+            "ok": True,
+            "integration_kind": "google",
+            "resource_kind": "gmail",
+            "action_kind": "read",
+            "operation": "list",
+            "summary_text": "Found 1 Gmail messages. Message IDs: msg-1.",
+            "result": {"messages": [{"id": "msg-1"}], "resultSizeEstimate": 1},
+            "account": {
+                "google_subject": "sub-123",
+                "email": "user@example.com",
+                "workspace_id": str(kwargs["workspace"].id),
+                "owner_id": str(kwargs["owner"].id),
+            },
+        }
+
+    deliveries: list[tuple[str, str]] = []
+    monkeypatch.setattr("google_bridge.services.bridge.execute_google_task", fake_google_bridge_task)
+
+    async def fail_run(self, **kwargs):
+        raise AssertionError("LLMRunner should not be used for Google bridge tasks")
+
+    monkeypatch.setattr("runs.services.headless.LLMRunner.run", fail_run)
+    monkeypatch.setattr(
+        "runs.services.headless.send_run_transport_message",
+        lambda **kwargs: deliveries.append((kwargs["run_id"], kwargs["text"])) or True,
+    )
+
+    completed_run = execute_headless_run(str(run.id))
+
+    assert completed_run.status == AgentRun.Status.COMPLETED
+    assert completed_run.final_text == "Found 1 Gmail messages. Message IDs: msg-1."
+    assert deliveries == [(str(run.id), "Found 1 Gmail messages. Message IDs: msg-1.")]
+    outcome_memory = MemoryRecord.objects.filter(source_kind=HEADLESS_RUN_COMPLETED_SOURCE_KIND, source_ref=str(run.id)).first()
+    assert outcome_memory is not None

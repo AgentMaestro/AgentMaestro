@@ -1,5 +1,4 @@
 from datetime import timedelta, time
-from types import SimpleNamespace
 
 import pytest
 from django.contrib.auth import get_user_model
@@ -11,10 +10,13 @@ from memory.models import MemoryRecord, RecurrenceRule, ScheduledTask
 from memory.scheduled_approvals import INTERNAL_HEADLESS_APPROVAL_TOOL_NAME
 from memory.scheduled_tasks import (
     SCHEDULED_TASK_CREATED_SOURCE_KIND,
+    disable_scheduled_task,
+    enable_scheduled_task,
     claim_due_scheduled_tasks,
     cleanup_scheduled_task_active_runs,
     create_scheduled_task,
     list_scheduled_tasks,
+    update_scheduled_task,
 )
 from memory.tasks import run_due_scheduled_tasks
 from runs.models import AgentRun
@@ -46,7 +48,7 @@ def test_create_scheduled_task_creates_eposodic_memory_and_lists_it(scheduled_ta
     scheduled_task = create_scheduled_task(
         agent=agent,
         owner=user,
-        task_type=ScheduledTask.TaskType.DAILY_WEATHER_REPORT,
+        task_type=ScheduledTask.TaskType.OTHER_TASK,
         local_time_value="08:00",
         timezone_name="America/New_York",
         execution_payload={"location": "Richmond, VA", "source_domain": "weather.com"},
@@ -71,13 +73,48 @@ def test_create_scheduled_task_creates_eposodic_memory_and_lists_it(scheduled_ta
 
 
 
+def test_edit_disable_enable_scheduled_task_round_trip(scheduled_task_agent):
+    user, _workspace, agent = scheduled_task_agent
+
+    scheduled_task = create_scheduled_task(
+        agent=agent,
+        owner=user,
+        task_type=ScheduledTask.TaskType.OTHER_TASK,
+        local_time_value="08:00",
+        timezone_name="America/New_York",
+        execution_payload={"location": "Richmond, VA", "source_domain": "weather.com"},
+    )
+
+    edited = update_scheduled_task(
+        scheduled_task,
+        title="Updated scheduled task",
+        enabled=False,
+        local_time_value="09:30",
+        timezone_name="America/New_York",
+    )
+
+    assert edited.title == "Updated scheduled task"
+    assert edited.enabled is False
+    assert edited.timezone == "America/New_York"
+    assert edited.local_time.isoformat(timespec="minutes") == "09:30"
+
+    disabled = disable_scheduled_task(edited)
+    assert disabled.enabled is False
+
+    enabled = enable_scheduled_task(disabled)
+    assert enabled.enabled is True
+    assert enabled.next_run_at is not None
+    assert [task.id for task in list_scheduled_tasks(agent=agent, enabled_only=True, limit=5)] == [scheduled_task.id]
+
+
+
 def test_create_scheduled_task_promotes_focus_days_into_weekly_recurrence(scheduled_task_agent):
     user, _workspace, agent = scheduled_task_agent
 
     scheduled_task = create_scheduled_task(
         agent=agent,
         owner=user,
-        task_type=ScheduledTask.TaskType.DAILY_WEATHER_REPORT,
+        task_type=ScheduledTask.TaskType.OTHER_TASK,
         title="Tennis weather report for Ocala, FL (34472)",
         local_time_value="07:00",
         timezone_name="America/New_York",
@@ -101,7 +138,7 @@ def test_create_scheduled_task_accepts_hourly_recurrence_config(scheduled_task_a
     scheduled_task = create_scheduled_task(
         agent=agent,
         owner=user,
-        task_type=ScheduledTask.TaskType.DAILY_WEATHER_REPORT,
+        task_type=ScheduledTask.TaskType.OTHER_TASK,
         execution_mode=ScheduledTask.ExecutionMode.HEADLESS_RUN,
         recurrence_config={
             "timezone": "America/New_York",
@@ -129,7 +166,7 @@ def test_claim_due_tasks_recomputes_next_run_from_recurrence_rule(scheduled_task
     scheduled_task = create_scheduled_task(
         agent=agent,
         owner=user,
-        task_type=ScheduledTask.TaskType.DAILY_WEATHER_REPORT,
+        task_type=ScheduledTask.TaskType.OTHER_TASK,
         recurrence_config={
             "timezone": "America/New_York",
             "frequency": "weekly",
@@ -156,7 +193,7 @@ def test_run_due_scheduled_tasks_task_counts_success(monkeypatch, scheduled_task
     scheduled_task = create_scheduled_task(
         agent=agent,
         owner=user,
-        task_type=ScheduledTask.TaskType.DAILY_WEATHER_REPORT,
+        task_type=ScheduledTask.TaskType.OTHER_TASK,
         local_time_value="08:00",
         timezone_name="America/New_York",
         execution_payload={"location": "Richmond, VA", "source_domain": "weather.com"},
@@ -188,7 +225,7 @@ def test_run_due_scheduled_tasks_headless_first_run_waits_for_approval(scheduled
     scheduled_task = create_scheduled_task(
         agent=agent,
         owner=user,
-        task_type=ScheduledTask.TaskType.DAILY_WEATHER_REPORT,
+        task_type=ScheduledTask.TaskType.OTHER_TASK,
         local_time_value="08:00",
         timezone_name="America/New_York",
         execution_mode=ScheduledTask.ExecutionMode.HEADLESS_RUN,
@@ -220,7 +257,7 @@ def test_cleanup_scheduled_task_active_runs_clears_terminal_run(scheduled_task_a
     scheduled_task = create_scheduled_task(
         agent=agent,
         owner=user,
-        task_type=ScheduledTask.TaskType.DAILY_WEATHER_REPORT,
+        task_type=ScheduledTask.TaskType.OTHER_TASK,
         local_time_value="08:00",
         timezone_name="America/New_York",
         execution_mode=ScheduledTask.ExecutionMode.HEADLESS_RUN,
@@ -245,7 +282,7 @@ def test_cleanup_scheduled_task_active_runs_marks_stale_headless_run(scheduled_t
     scheduled_task = create_scheduled_task(
         agent=agent,
         owner=user,
-        task_type=ScheduledTask.TaskType.DAILY_WEATHER_REPORT,
+        task_type=ScheduledTask.TaskType.OTHER_TASK,
         local_time_value="08:00",
         timezone_name="America/New_York",
         execution_mode=ScheduledTask.ExecutionMode.HEADLESS_RUN,
@@ -281,7 +318,7 @@ def test_cleanup_scheduled_task_active_runs_does_not_stale_waiting_for_approval_
     scheduled_task = create_scheduled_task(
         agent=agent,
         owner=user,
-        task_type=ScheduledTask.TaskType.DAILY_WEATHER_REPORT,
+        task_type=ScheduledTask.TaskType.OTHER_TASK,
         local_time_value="08:00",
         timezone_name="America/New_York",
         execution_mode=ScheduledTask.ExecutionMode.HEADLESS_RUN,
@@ -302,51 +339,3 @@ def test_cleanup_scheduled_task_active_runs_does_not_stale_waiting_for_approval_
     assert scheduled_task.active_run_id == run.id
 
 
-def test_create_scheduled_task_coerces_generic_task_to_headless(scheduled_task_agent):
-    user, _workspace, agent = scheduled_task_agent
-
-    scheduled_task = create_scheduled_task(
-        agent=agent,
-        owner=user,
-        task_type=ScheduledTask.TaskType.OTHER_DAILY_TASK,
-        local_time_value="05:00",
-        timezone_name="America/New_York",
-        execution_mode=ScheduledTask.ExecutionMode.DETERMINISTIC,
-        execution_payload={"objective": "Create a backup summary."},
-    )
-
-    assert scheduled_task.execution_mode == ScheduledTask.ExecutionMode.HEADLESS_RUN
-
-
-
-def test_run_due_scheduled_tasks_corrects_generic_task_to_headless(monkeypatch, scheduled_task_agent):
-    user, _workspace, agent = scheduled_task_agent
-    scheduled_task = create_scheduled_task(
-        agent=agent,
-        owner=user,
-        task_type=ScheduledTask.TaskType.OTHER_DAILY_TASK,
-        local_time_value="05:00",
-        timezone_name="America/New_York",
-        execution_mode=ScheduledTask.ExecutionMode.HEADLESS_RUN,
-        execution_payload={"objective": "Create a backup summary."},
-    )
-    scheduled_task.next_run_at = timezone.now() - timedelta(minutes=1)
-    scheduled_task.execution_mode = ScheduledTask.ExecutionMode.DETERMINISTIC
-    scheduled_task.save(update_fields=["next_run_at", "execution_mode", "updated_at"])
-
-    fake_run = SimpleNamespace(id="run-123", status=AgentRun.Status.WAITING_FOR_APPROVAL)
-    monkeypatch.setattr("memory.tasks.launch_scheduled_task_run", lambda task_id: (scheduled_task, fake_run, True))
-
-    result = run_due_scheduled_tasks(limit=5)
-
-    assert result == {
-        "processed": 1,
-        "succeeded": 0,
-        "failed": 0,
-        "launched": 0,
-        "awaiting_approval": 1,
-        "terminal_cleared": 0,
-        "stale_cleared": 0,
-    }
-    scheduled_task.refresh_from_db()
-    assert scheduled_task.execution_mode == ScheduledTask.ExecutionMode.HEADLESS_RUN

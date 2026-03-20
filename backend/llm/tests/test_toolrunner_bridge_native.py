@@ -5,8 +5,10 @@ from django.contrib.auth import get_user_model
 
 from agents.models import Agent
 from core.models import Workspace, WorkspaceMembership
+from google_bridge.services.schema import build_google_bridge_args_schema
 from llm.services.toolrunner_bridge import run_tool
 from memory.models import MemoryRecord, ScheduledTask
+from memory.scheduled_tasks import create_scheduled_task
 from runs.models import AgentRun
 from runs.services.memory import get_or_create_run_memory
 from tools.models import ToolDefinition
@@ -108,7 +110,7 @@ def test_run_tool_executes_native_generic_headless_schedule_task(orchestration_r
         "schedule_task",
         {
             "title": "daily repo backup summary",
-            "task_type": "other_daily_task",
+            "task_type": "other_task",
             "execution_mode": "headless_run",
             "recurrence": {
                 "timezone": "America/New_York",
@@ -126,12 +128,101 @@ def test_run_tool_executes_native_generic_headless_schedule_task(orchestration_r
 
     assert result["ok"] is True
     payload = result["result"]
-    assert payload["task_type"] == ScheduledTask.TaskType.OTHER_DAILY_TASK
+    assert payload["task_type"] == ScheduledTask.TaskType.OTHER_TASK
     assert payload["execution_mode"] == ScheduledTask.ExecutionMode.HEADLESS_RUN
     assert ScheduledTask.objects.filter(
         id=payload["scheduled_task_id"],
-        task_type=ScheduledTask.TaskType.OTHER_DAILY_TASK,
+        task_type=ScheduledTask.TaskType.OTHER_TASK,
     ).exists()
+
+
+def test_run_tool_executes_native_scheduled_task_management_tools(orchestration_run):
+    scheduled_task = create_scheduled_task(
+        agent=orchestration_run.agent,
+        owner=orchestration_run.started_by or orchestration_run.agent.owner,
+        task_type=ScheduledTask.TaskType.OTHER_TASK,
+        local_time_value="05:00",
+        timezone_name="America/New_York",
+        title="daily repo backup summary",
+        execution_payload={
+            "objective": "Create a backup commit for the repository and summarize the last 24 hours of work.",
+            "repo_dir": "C:/Dev/AgentMaestro",
+        },
+    )
+
+    for tool_name, payload, expected_enabled in [
+        ("edit_scheduled_task", {"scheduled_task_id": str(scheduled_task.id), "title": "updated task", "enabled": False}, False),
+        ("disable_scheduled_task", {"scheduled_task_id": str(scheduled_task.id)}, False),
+        ("enable_scheduled_task", {"scheduled_task_id": str(scheduled_task.id)}, True),
+    ]:
+        ToolDefinition.objects.create(
+            workspace=orchestration_run.workspace,
+            name=tool_name,
+            enabled=True,
+        )
+        result = asyncio.run(
+            run_tool(
+                tool_name,
+                payload,
+                orchestration_run_id=str(orchestration_run.id),
+            )
+        )
+
+        assert result["ok"] is True
+        assert result["result"]["scheduled_task_id"] == str(scheduled_task.id)
+        assert result["result"]["enabled"] is expected_enabled
+        scheduled_task.refresh_from_db()
+        assert scheduled_task.enabled is expected_enabled
+
+
+def test_run_tool_executes_native_google_bridge_without_http(monkeypatch, orchestration_run):
+    ToolDefinition.objects.create(
+        workspace=orchestration_run.workspace,
+        name="google_bridge",
+        enabled=True,
+        args_schema=build_google_bridge_args_schema(),
+    )
+
+    def fake_execute_google_task(*, payload, workspace=None, owner=None, account=None):
+        assert payload["integration_kind"] == "google"
+        assert payload["resource_kind"] == "gmail"
+        assert payload["operation"] == "list"
+        assert workspace == orchestration_run.workspace
+        return {
+            "ok": True,
+            "integration_kind": "google",
+            "resource_kind": "gmail",
+            "action_kind": "read",
+            "operation": "list",
+            "summary_text": "Found 5 Gmail messages.",
+            "result": {"messages": []},
+            "steps": [],
+            "accounts": [],
+        }
+
+    monkeypatch.setattr("google_bridge.services.bridge.execute_google_task", fake_execute_google_task)
+
+    result = asyncio.run(
+        run_tool(
+            "google_bridge",
+            {
+                "integration_kind": "google",
+                "resource_kind": "gmail",
+                "action_kind": "read",
+                "operation": "list",
+                "account_scope": "primary",
+                "email": "dev.agent.maestro@gmail.com",
+                "query": "in:inbox newer_than:1d",
+                "max_results": 5,
+            },
+            orchestration_run_id=str(orchestration_run.id),
+        )
+    )
+
+    assert result["ok"] is True
+    payload = result["result"]
+    assert payload["resource_kind"] == "gmail"
+    assert payload["summary_text"] == "Found 5 Gmail messages."
 
 
 def test_run_tool_executes_native_spawn_subrun(monkeypatch, orchestration_run):

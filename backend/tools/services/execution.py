@@ -24,7 +24,18 @@ from tools.services.tool_validation import ToolArgumentValidationError, validate
 logger = logging.getLogger(__name__)
 _DEFAULT_TOOLRUNNER_SANDBOX_ROOT = Path("C:/tmp/agentmaestro/sandbox")
 _DEFAULT_TOOLRUNNER_HTTP_TIMEOUT_BUFFER_S = 30.0
-_NATIVE_TOOL_NAMES = {"remember", "search_memory", "schedule_task", "list_scheduled_tasks", "spawn_subrun", "scheduled_headless_run_gate"}
+_NATIVE_TOOL_NAMES = {
+    "remember",
+    "search_memory",
+    "schedule_task",
+    "edit_scheduled_task",
+    "disable_scheduled_task",
+    "enable_scheduled_task",
+    "list_scheduled_tasks",
+    "spawn_subrun",
+    "google_bridge",
+    "scheduled_headless_run_gate",
+}
 
 
 def _run_group(run_id: str) -> str:

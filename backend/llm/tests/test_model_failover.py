@@ -200,9 +200,20 @@ def test_model_failover_does_not_switch_on_nonretryable_error(monkeypatch):
     _seed_backup_models()
     call_log: list[tuple[str, str]] = []
 
+    class BadRequestError(Exception):
+        def __init__(self, message: str = "provider error 400"):
+            self.status_code = 400
+            self.status = 400
+            self.code = "400"
+            self.classification = "bad_request"
+            self.request_id = "req_400"
+            super().__init__(message)
+
     class NonRetryableClient(StubClient):
-        def is_transient_error(self, exc: Exception) -> bool:
-            return False
+        async def complete(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
+            model = str(kwargs.get("model") or "").strip()
+            self.call_log.append((self.provider, model))
+            raise BadRequestError()
 
     clients = {
         "openai": NonRetryableClient(

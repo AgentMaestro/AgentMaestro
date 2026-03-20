@@ -1,6 +1,12 @@
 from copy import deepcopy
 import json
 
+from google_bridge.services.schema import (
+    GOOGLE_BRIDGE_TOOL_DESCRIPTION,
+    GOOGLE_BRIDGE_TOOL_GROUP_NAME,
+    GOOGLE_BRIDGE_TOOL_NAME,
+    build_google_bridge_args_schema,
+)
 from .models import ToolRisk
 
 
@@ -162,7 +168,7 @@ _TOOL_EXAMPLES = {
         },
         {
             "title": "weekly digest",
-            "task_type": "other_daily_task",
+            "task_type": "other_task",
             "execution_mode": "headless_run",
             "recurrence": {
                 "timezone": "America/New_York",
@@ -178,7 +184,7 @@ _TOOL_EXAMPLES = {
         },
         {
             "title": "daily maintenance digest",
-            "task_type": "other_daily_task",
+            "task_type": "other_task",
             "execution_mode": "headless_run",
             "recurrence": {
                 "timezone": "America/New_York",
@@ -193,6 +199,35 @@ _TOOL_EXAMPLES = {
                 "objective": "Summarize overnight changes and produce a short maintenance digest.",
                 "notes": "Review logs, open issues, and any queued tasks before writing the digest."
             }
+        }
+    ],
+    "edit_scheduled_task": [
+        {
+            "scheduled_task_id": "scheduled-task-id-from-list",
+            "title": "daily repo backup summary",
+            "enabled": True,
+            "timezone": "America/New_York",
+            "local_time": "05:00",
+            "execution_payload": {
+                "objective": "Create a backup commit for the repository and summarize the last 24 hours of work.",
+                "repo_dir": "C:/Dev/AgentMaestro"
+            },
+            "recurrence": {
+                "timezone": "America/New_York",
+                "frequency": "daily",
+                "interval": 1,
+                "local_time": "05:00"
+            }
+        }
+    ],
+    "disable_scheduled_task": [
+        {
+            "scheduled_task_id": "scheduled-task-id-from-list"
+        }
+    ],
+    "enable_scheduled_task": [
+        {
+            "scheduled_task_id": "scheduled-task-id-from-list"
         }
     ],
     "list_scheduled_tasks": {
@@ -368,7 +403,7 @@ _TOOL_ADDITIONAL_DOCS = {
     "- Example episodic memory: `scope_type='user'`, `scope_id='<user-id>'`, `memory_kind='episodic'`, `dedupe_mode='none'`, `dedupe_key='scheduled-task-exec-bucket:<task-id>:daily-weather-report'`, `content='On March 13, 2026, Scott validated Telegram approvals end-to-end.'`, `expires_at='2026-03-31T23:59:59Z'`.",
     "schedule_task": "\n\nSCHEDULING NOTES:\n"
     "- `schedule_task` creates recurring headless agent work.\n"
-    "- Use `execution_mode=headless_run` and choose a descriptive `task_type` such as `other_task` or `other_daily_task`.\n"
+    "- Scheduled work runs headlessly. Use `other_task` for the task label and put structured intent in `execution_payload`.\n"
     "- Scheduled runs inherit the agent's backup models and retry policy, so backup failover applies automatically.\n"
     "- Prefer `recurrence` for anything more complex than a single daily wall-clock time.\n"
     "- Use `title` and `execution_payload` to describe the recurring job clearly so the future headless run has enough context.\n",
@@ -504,9 +539,9 @@ _TOOL_RESPONSE_FIELDS = {
         "scheduled_task_id": "Durable scheduled-task identifier.",
         "recurrence_rule_id": "Linked recurrence-rule identifier used to calculate future due times.",
         "title": "Stored human-friendly task title.",
-        "task_type": "Echoes the stored task type.",
+        "task_type": "Echoes the stored task type, which is always other_task.",
         "schedule_kind": "The recurring schedule model used by the task.",
-        "execution_mode": "Whether the task executes with the deterministic path or launches a headless agent run.",
+        "execution_mode": "The scheduled-task execution mode, always headless_run.",
         "timezone": "The IANA timezone used to calculate due times.",
         "local_time": "A compatibility wall-clock time derived from the recurrence rule.",
         "recurrence_frequency": "The linked recurrence rule frequency.",
@@ -515,16 +550,44 @@ _TOOL_RESPONSE_FIELDS = {
         "enabled": "Whether the recurring task is active.",
         "source_memory_id": "The episodic memory record created to remember the scheduling request.",
     },
+    "edit_scheduled_task": {
+        "scheduled_task_id": "Scheduled-task identifier returned by list_scheduled_tasks or schedule_task.",
+        "title": "Updated human-friendly task title.",
+        "enabled": "Whether the recurring task is active after the edit.",
+        "recurrence_rule_id": "Linked recurrence-rule identifier after any recurrence change.",
+        "schedule_kind": "The recurring schedule model used by the task.",
+        "execution_mode": "The scheduled-task execution mode, always headless_run.",
+        "timezone": "The IANA timezone used to calculate due times.",
+        "local_time": "A compatibility wall-clock time derived from the recurrence rule.",
+        "recurrence_summary": "Human-readable recurrence description for operators and UIs.",
+        "next_run_at": "The next UTC datetime when the task is due.",
+        "last_result_summary": "The last completion summary if available.",
+        "last_error": "The last recorded scheduling error if available.",
+    },
+    "disable_scheduled_task": {
+        "scheduled_task_id": "Scheduled-task identifier returned by list_scheduled_tasks or schedule_task.",
+        "enabled": "Always false after the disable operation.",
+        "next_run_at": "The next UTC datetime remains stored for future re-enable operations.",
+        "last_result_summary": "The last completion summary if available.",
+        "last_error": "The last recorded scheduling error if available.",
+    },
+    "enable_scheduled_task": {
+        "scheduled_task_id": "Scheduled-task identifier returned by list_scheduled_tasks or schedule_task.",
+        "enabled": "Always true after the enable operation.",
+        "next_run_at": "The recomputed next UTC datetime after re-enabling.",
+        "last_result_summary": "The last completion summary if available.",
+        "last_error": "The last recorded scheduling error if available.",
+    },
     "list_scheduled_tasks": {
         "count": "Number of scheduled tasks returned.",
-        "results": "Concise scheduled-task records ordered by next run time, including recurrence summaries and run linkage.",
+        "results": "Concise scheduled-task records ordered by next run time, including scheduled_task_id, recurrence summaries, and run linkage.",
     },
     "spawn_subrun": {
         "parent_run_id": "The parent run that requested the child run.",
         "parent_status": "The parent run status after the child finishes or is queued.",
         "child_run_id": "The spawned child run identifier.",
         "child_status": "The child run status after the tool completes.",
-        "child_execution_mode": "Whether the child runs headlessly or through the deterministic tick path.",
+        "child_execution_mode": "Whether the child runs headlessly or under a matching run execution mode.",
         "join_policy": "The join policy applied to the parent/child relationship.",
         "failure_policy": "The failure policy applied to the child group.",
         "completed_inline": "True when the child was executed immediately inside the parent tool call.",
@@ -1113,15 +1176,15 @@ TOOL_REGISTRY = [
             },
             {
                 "name": "schedule_task",
-                "description": "Create a recurring task attached to the current agent and store the request as episodic memory. Scheduled tasks run headlessly. Use a descriptive task_type and headless_run for recurring agent work such as backups, digests, repo maintenance, or delegated research.",
+                "description": "Create a recurring task attached to the current agent and store the request as episodic memory. Scheduled tasks run headlessly. Use task_type=other_task and put structured intent in execution_payload for recurring agent work such as backups, digests, repo maintenance, delegated research, or external integrations.",
                 "risk": ToolRisk.SAFE,
                 "args_schema": {
                     "type": "object",
                     "additionalProperties": False,
                     "properties": {
                         "title": {"type": "string"},
-                        "task_type": {"type": "string", "enum": ["other_task", "other_daily_task"]},
-                        "execution_mode": {"type": "string", "enum": ["deterministic", "headless_run"], "default": "headless_run"},
+                        "task_type": {"type": "string", "enum": ["other_task"]},
+                        "execution_mode": {"type": "string", "enum": ["headless_run"], "default": "headless_run"},
                         "timezone": {"type": "string", "description": "Daily shorthand timezone. Optional when recurrence.timezone is provided."},
                         "local_time": {"type": "string", "description": "Daily shorthand local wall-clock time in HH:MM format. Optional when recurrence is provided."},
                         "recurrence": {
@@ -1149,6 +1212,79 @@ TOOL_REGISTRY = [
                         "execution_payload": {"type": "object"},
                     },
                     "required": ["task_type"],
+                },
+                "requires_approval": False,
+                "released": True,
+            },
+            {
+                "name": "edit_scheduled_task",
+                "description": "Edit an existing scheduled task attached to the current agent. Use this to change the title, recurrence, timezone, local_time, enabled state, or execution_payload without creating a new task.",
+                "risk": ToolRisk.SAFE,
+                "args_schema": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "scheduled_task_id": {"type": "string"},
+                        "title": {"type": "string"},
+                        "enabled": {"type": "boolean"},
+                        "timezone": {"type": "string"},
+                        "local_time": {"type": "string"},
+                        "recurrence": {
+                            "type": "object",
+                            "additionalProperties": False,
+                            "properties": {
+                                "name": {"type": "string"},
+                                "timezone": {"type": "string"},
+                                "frequency": {"type": "string", "enum": ["hourly", "daily", "weekly", "monthly", "quarterly", "semiannual", "annual"]},
+                                "interval": {"type": "integer", "minimum": 1},
+                                "by_weekday": {"type": "array", "items": {"type": "string", "enum": ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]}},
+                                "by_month_day": {"type": "array", "items": {"type": "integer", "minimum": 1, "maximum": 31}},
+                                "week_of_month": {"type": "integer", "enum": [1, 2, 3, 4, -1]},
+                                "weekday_of_month": {"type": "string", "enum": ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]},
+                                "by_month": {"type": "array", "items": {"type": "integer", "minimum": 1, "maximum": 12}},
+                                "local_time": {"type": "string"},
+                                "run_minute": {"type": "integer", "minimum": 0, "maximum": 59},
+                                "window_start_time": {"type": "string"},
+                                "window_end_time": {"type": "string"},
+                                "start_date": {"type": "string", "format": "date"},
+                                "end_date": {"type": "string", "format": "date"},
+                                "is_active": {"type": "boolean"}
+                            }
+                        },
+                        "execution_payload": {"type": "object"},
+                        "delivery_target": {"type": "string"},
+                    },
+                    "required": ["scheduled_task_id"],
+                },
+                "requires_approval": False,
+                "released": True,
+            },
+            {
+                "name": "disable_scheduled_task",
+                "description": "Soft delete a scheduled task by setting enabled=false while preserving task history and identifiers.",
+                "risk": ToolRisk.SAFE,
+                "args_schema": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "scheduled_task_id": {"type": "string"},
+                    },
+                    "required": ["scheduled_task_id"],
+                },
+                "requires_approval": False,
+                "released": True,
+            },
+            {
+                "name": "enable_scheduled_task",
+                "description": "Re-enable a disabled scheduled task and recompute its next run time from its recurrence rule.",
+                "risk": ToolRisk.SAFE,
+                "args_schema": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "scheduled_task_id": {"type": "string"},
+                    },
+                    "required": ["scheduled_task_id"],
                 },
                 "requires_approval": False,
                 "released": True,
@@ -1186,6 +1322,20 @@ TOOL_REGISTRY = [
                     },
                     "required": ["input_text"],
                 },
+                "requires_approval": False,
+                "released": True,
+            },
+        ],
+    },
+    {
+        "name": GOOGLE_BRIDGE_TOOL_GROUP_NAME,
+        "description": "Google bridge for Gmail and Calendar reads plus Gmail draft/send/trash/delete workflows and Calendar read/create/update/delete workflows. For Gmail trash/delete, never use read as a lookup step. Use the latest list result's message_id or a Gmail query that uniquely matches one message. The payload contract stays JSON-in / JSON-out so future Google surfaces can reuse the same shape.",
+        "tools": [
+            {
+                "name": GOOGLE_BRIDGE_TOOL_NAME,
+                "description": GOOGLE_BRIDGE_TOOL_DESCRIPTION,
+                "risk": ToolRisk.SAFE,
+                "args_schema": build_google_bridge_args_schema(),
                 "requires_approval": False,
                 "released": True,
             },
