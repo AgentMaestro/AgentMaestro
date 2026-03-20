@@ -1,5 +1,6 @@
 import asyncio
 import pytest
+import httpx
 from django.contrib.auth import get_user_model
 
 from agents.models import Agent
@@ -8,6 +9,7 @@ from llm.services.toolrunner_bridge import run_tool
 from memory.models import MemoryRecord, ScheduledTask
 from runs.models import AgentRun
 from runs.services.memory import get_or_create_run_memory
+from tools.models import ToolDefinition
 
 pytestmark = pytest.mark.django_db(transaction=True)
 
@@ -36,6 +38,18 @@ def orchestration_run():
         input_text="headless native bridge test",
     )
     get_or_create_run_memory(run)
+    ToolDefinition.objects.create(
+        workspace=workspace,
+        name="file_read",
+        enabled=True,
+        args_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+            },
+            "required": ["path"],
+        },
+    )
     return run
 
 
@@ -69,12 +83,15 @@ def test_run_tool_executes_native_schedule_task(orchestration_run):
     result = asyncio.run(run_tool(
         "schedule_task",
         {
-            "title": "daily weather report for Richmond, VA",
-            "task_type": "daily_weather_report",
+            "title": "daily repo backup summary",
+            "task_type": "other_task",
             "execution_mode": "headless_run",
             "timezone": "America/New_York",
-            "local_time": "08:00",
-            "execution_payload": {"location": "Richmond, VA", "source_domain": "weather.com"},
+            "local_time": "05:00",
+            "execution_payload": {
+                "objective": "Create a backup commit for the repository and summarize the last 24 hours of work.",
+                "repo_dir": "C:/Dev/AgentMaestro",
+            },
         },
         orchestration_run_id=str(orchestration_run.id),
     ))
@@ -140,3 +157,26 @@ def test_run_tool_executes_native_spawn_subrun(monkeypatch, orchestration_run):
     assert payload["resumed_parent"] is True
     assert payload["parent_status"] == AgentRun.Status.RUNNING
     assert AgentRun.objects.filter(id=payload["child_run_id"], parent_run=orchestration_run).exists()
+
+
+def test_run_tool_rejects_missing_required_arguments_before_http(monkeypatch, orchestration_run):
+    class FailIfCalledAsyncClient:
+        def __init__(self, *args, **kwargs):
+            raise AssertionError("httpx.AsyncClient should not be called when validation fails")
+
+    monkeypatch.setattr("llm.services.toolrunner_bridge.httpx.AsyncClient", FailIfCalledAsyncClient)
+
+    result = asyncio.run(
+        run_tool(
+            "file_read",
+            {},
+            orchestration_run_id=str(orchestration_run.id),
+        )
+    )
+
+    assert result["ok"] is False
+    assert result["error"]
+    assert "Tool 'file_read' argument validation failed" in result["error"]
+    assert "This tool requires parameters" in result["error"]
+    assert result["result"]["error"]["code"] == "tool_runner.MISSING_REQUIRED_ARGUMENTS"
+    assert result["result"]["error"]["details"]["missing_parameters"] == ["path"]

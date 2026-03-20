@@ -7,7 +7,7 @@ def test_schedule_task_schema_advertises_generic_headless_scheduling():
     task_type_enum = schedule_tool["parameters"]["properties"]["task_type"]["enum"]
     description = schedule_tool["parameters"]["description"]
 
-    assert "daily_weather_report" in task_type_enum
+    assert "other_task" in task_type_enum
     assert "other_daily_task" in task_type_enum
     assert "headless_run" in description
     assert "backups" in description

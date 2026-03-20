@@ -17,8 +17,9 @@ Required for OpenAI provider:
 Required for Gemini provider:
 
 - `GEMINI_API_KEY`
-- `GEMINI_BASE_URL` (optional, default `https://generativelanguage.googleapis.com/v1beta/openai`)
+- `GEMINI_BASE_URL` (optional, default `https://generativelanguage.googleapis.com/v1beta`)
 - `GEMINI_TRANSPORT` (default `http`). Non-HTTP values are coerced back to HTTP for now because Gemini WS/Live transport is not implemented in this sprint.
+- `SHOW_CONDENSED_SYSTEM_LOGS` (`1` or `0`, default `1`). `1` shows condensed system logs; `0` shows full payloads and raw responses in the system stream.
 
 App defaults (can be added to settings or `.env`):
 
@@ -52,6 +53,39 @@ Runtime:
 - Tools available: toolrunner.execute, files.read, web.search
 ```
 
+## Transport Protocols
+
+The provider-specific message and tool flow is documented in [`PROTOCOLS.md`](PROTOCOLS.md).
+
+Read that file when you need the exact answers to:
+
+- what each provider receives in its initial prompt,
+- how tool schemas are passed,
+- how tool calls are returned,
+- how tool results are serialized back into the next turn,
+- and how OpenAI WS, OpenAI HTTP Responses, OpenAI HTTP Chat Completions, and Gemini HTTP differ.
+
+The system chat stream also follows `SHOW_CONDENSED_SYSTEM_LOGS`, so the logs either show the raw JSON payloads or condensed summaries with an admin link to the corresponding `AgentStep`.
+
+## AgentChatConsumer Neutrality
+
+`AgentChatConsumer` should stay provider-neutral. Its job is to orchestrate the run, preserve local history, and resume the conversation after tools or reconnects. It should not encode provider-specific business logic.
+
+Keep these boundaries intact:
+
+- The consumer owns run state, local history, bootstrap state, approvals, and tool result flow.
+- Provider-specific quirks belong in the provider adapters under `services/providers/`.
+- Transport-specific serialization belongs in the input-item builders and provider clients, not in the consumer.
+- The consumer should work from normalized concepts: `provider`, `model_name`, `transport`, `previous_response_id`, `tool_calls`, and local `history`.
+
+Normalization rules used by the current implementation:
+
+- `agents.utils.normalize_provider_for_model()` resolves the provider from the selected model when the profile and model disagree.
+- The consumer keeps one canonical run history and uses `_current_previous_response_id()` to preserve continuity where the provider supports it.
+- `runs.services.input_items.build_input_items()` and `build_ws_request_input_items()` translate the shared local history into provider-specific wire formats.
+- OpenAI uses `previous_response_id` for continuity; Gemini rebuilds from local history and normalized contents instead of an OpenAI-style chain token.
+- Bootstrap and memory state are run-level concerns, so they should be persisted once and replayed consistently regardless of provider or transport.
+
 ## Policies
 
 `policy_name` is metadata you store with each agent that points at an `LLMModelProfile`. The UI shows `Policy: react` by default; when that policy is selected, the system context builder injects the full ReAct policy text described above. Other policy names still influence the model, temperature, and extras defined in their profile but do not append policy text. Policy definitions live in `backend/llm/policy.MD` (ReAct, Planner, Coder, etc.), and the system context explicitly tells the model where to find the file when a run starts.
@@ -71,6 +105,23 @@ You can add new policies by creating `LLMModelProfile` rows with the desired nam
 - `LLMRun`: tracks each LLM execution, provider/model, status, usage.
 - `LLMMessage`: ordered message history.
 - `LLMToolCall`: captured tool invocations/results.
+
+### Agent `default_model` dropdown
+
+The Agent admin and the Agent LLM form both populate `default_model` from `Agent.get_default_model_choices()`.
+
+That method reads `llm.ModelsAvailable` and only includes rows that match one of these provider/API pairs:
+
+- `company = openai`, `api = responses`
+- `company = google`, `api = gemini`
+
+So if you add a new Gemini model and want it to appear in the Agent `default_model` dropdown, the `ModelsAvailable` row must use:
+
+- `company = google`
+- `api = gemini`
+- `name = <exact model id>`
+
+If the row does not match those fields exactly, the model will not appear in the dropdown and the agent may normalize back to the default model during save/load.
 
 ## Runner usage
 
@@ -103,6 +154,35 @@ Add new providers by extending `BaseLLMClient` and registering in `services/regi
 ## ToolRunner bridge
 
 `llm/services/toolrunner_bridge.py` defines `run_tool(tool_name, args, orchestration_run_id=None)`. Wire this to the actual ToolRunner service; current implementation raises `NotImplementedError`.
+
+## Bridge tests
+
+`backend/llm/tests/test_toolrunner_bridge.py` is an opt-in integration test suite for the backend-to-ToolRunner bridge.
+
+- Set `RUN_TOOLRUNNER_BRIDGE_TESTS=1` to enable it.
+- Leave it unset, `0`, or any non-truthy value to keep the suite skipped.
+- The default is off when the variable is missing.
+- The test module reads `os.environ` directly, so this flag is a test-only gate rather than a Django settings value.
+- The suite runs through the backend test runner (`backend/scripts/runtests.ps1`), not the ToolRunner test runner.
+- Use it when you want an end-to-end backend-to-ToolRunner verification of the bridge path.
+
+## Provider matrix smoke
+
+`python manage.py llm_provider_matrix_smoke` runs the default provider/model/transport benchmark matrix from `smoke/llm_provider_matrix.json`.
+
+The default scenarios are:
+
+- `direct_reply`
+- `repo_lookup`
+
+The command reports:
+
+- `speed_score`
+- `quality_score`
+- `overall_score`
+- `grade`
+
+Use `--output <path>` when you want a saved JSON report.
 
 ## Streaming
 
@@ -162,6 +242,16 @@ The LLM app now runs against the WebSocket transport by default, while HTTP/Resp
 4. `python manage.py llm_responses_ws_tool_smoke`
 
 The tool smoke command forces `OPENAI_TRANSPORT=ws`, calls `file_write` then the JSON-producing `shell_exec`, and asserts the run completed with at least two tool calls, final JSON list output, and a recorded `openai_response_id`. Afterward, if you need a backup diagnostic pass, switch to `OPENAI_TRANSPORT='http'` with `OPENAI_HTTP_MODE='responses'` and rerun `python manage.py llm_toolloop_real_smoke` to confirm the HTTP path still behaves as expected.
+
+## Quick tool smoke
+
+Use short prompts and stop after the first failure. A compact five-tool pass that covers the most-used surfaces:
+
+1. `file_read`: "Read `AGENTS.md`. Reply: read ok."
+2. `git_status`: "Run `git_status` in the repo root. Reply with branch and clean/dirty only."
+3. `search_code`: "Find `OPENAI_TRANSPORT`. Reply with the file path only."
+4. `remember`: "Remember: keep answers short. Reply: saved."
+5. `run_tests`: "Run the smallest safe smoke test. Reply pass/fail only."
 
 ## Console stream
 

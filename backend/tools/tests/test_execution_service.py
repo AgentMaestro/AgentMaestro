@@ -70,6 +70,49 @@ def _build_test_run(suffix: str):
     return tool_call
 
 
+def _build_validation_test_run(suffix: str):
+    User = get_user_model()
+    user = User.objects.create_user(username=f"execv{suffix}", password="x")
+    workspace = Workspace.objects.create(name=f"Exec Validation WS {suffix}")
+    WorkspaceMembership.objects.create(workspace=workspace, user=user, role=WorkspaceMembership.Role.OWNER)
+    agent = Agent.objects.create(
+        workspace=workspace,
+        name=f"Exec Validation Agent {suffix}",
+        soul="Execute validation tests",
+        created_by=user,
+    )
+    run = AgentRun.objects.create(
+        workspace=workspace,
+        agent=agent,
+        started_by=user,
+        status=AgentRun.Status.RUNNING,
+        input_text="run",
+    )
+    step = AgentStep.objects.create(run=run, step_index=0, kind=AgentStep.Kind.TOOL_CALL, payload={})
+    ToolDefinition.objects.create(
+        workspace=workspace,
+        name="file_read",
+        enabled=True,
+        args_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+            },
+            "required": ["path"],
+        },
+    )
+    tool_call = ToolCall.objects.create(
+        run=run,
+        step=step,
+        tool_name="file_read",
+        args={},
+        requires_approval=False,
+        status=ToolCall.Status.QUEUED,
+        correlation_id=step.correlation_id,
+    )
+    return tool_call
+
+
 class DummyClient:
     def __init__(self, result):
         self.result = result
@@ -168,6 +211,38 @@ def test_execute_tool_call_sanitizes_nul_bytes_before_save(monkeypatch, fake_res
     assert payload["stdout"] == "done\\u0000now"
     assert payload["stderr"] == "warn\\u0000later"
     assert payload["result"] == {"digest": "abc\\u0000def", "nested": ["x\\u0000y"]}
+
+
+@override_settings(
+    TOOLRUNNER_URL="http://example/v1/execute",
+    TOOLRUNNER_SECRET="test-secret",
+    TOOLRUNNER_TIMEOUT=5,
+    TOOLRUNNER_OUTPUT_LIMIT=128,
+    TOOLRUNNER_HTTP_TIMEOUT=10,
+)
+def test_execute_tool_call_rejects_missing_required_arguments(monkeypatch, fake_result_bus):
+    tool_call = _build_validation_test_run("missing-path")
+
+    class FailIfCalledClient(DummyClient):
+        def post(self, *args, **kwargs):
+            raise AssertionError("httpx.Client should not be used when validation fails")
+
+    monkeypatch.setattr("tools.services.execution.httpx.Client", lambda *args, **kwargs: FailIfCalledClient(None))
+
+    execute_tool_call(str(tool_call.id))
+    tool_call.refresh_from_db()
+
+    assert tool_call.status == ToolCall.Status.FAILED
+    assert "Tool 'file_read' argument validation failed" in tool_call.stderr
+    assert tool_call.result["error"]["code"] == "tool_runner.MISSING_REQUIRED_ARGUMENTS"
+    assert tool_call.result["error"]["details"]["missing_parameters"] == ["path"]
+
+    calls, layer = fake_result_bus
+    assert len(calls) == 1
+    payload = calls[0][2]
+    assert payload["status"] == ToolCall.Status.FAILED
+    assert payload["stderr"].startswith("Tool 'file_read' argument validation failed")
+    assert layer.sent[0][1]["payload"]["event"] == "tool_result_ready"
 
 
 @override_settings(
@@ -331,15 +406,14 @@ def test_execute_native_schedule_task_skips_toolrunner_http(monkeypatch, fake_re
     tool_call = _build_test_run("native-schedule")
     tool_call.tool_name = "schedule_task"
     tool_call.args = {
-        "title": "daily weather report for Richmond, VA",
-        "task_type": "daily_weather_report",
+        "title": "daily repo backup summary",
+        "task_type": "other_task",
         "execution_mode": "headless_run",
         "timezone": "America/New_York",
-        "local_time": "08:00",
+        "local_time": "05:00",
         "execution_payload": {
-            "location": "Richmond, VA",
-            "query": "site:weather.com Richmond VA daily and weekly weather forecast",
-            "source_domain": "weather.com",
+            "objective": "Create a backup commit for the repository and summarize the last 24 hours of work.",
+            "repo_dir": "C:/Dev/AgentMaestro",
         },
     }
     tool_call.save(update_fields=["tool_name", "args", "updated_at"])
@@ -354,6 +428,6 @@ def test_execute_native_schedule_task_skips_toolrunner_http(monkeypatch, fake_re
 
     tool_call.refresh_from_db()
     assert tool_call.status == ToolCall.Status.COMPLETED
-    assert tool_call.result["task_type"] == "daily_weather_report"
+    assert tool_call.result["task_type"] == "other_task"
     assert tool_call.result["execution_mode"] == "headless_run"
     assert tool_call.result["scheduled_task_id"]

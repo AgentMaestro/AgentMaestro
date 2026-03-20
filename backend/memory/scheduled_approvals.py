@@ -213,6 +213,4 @@ def _normalize_json_payload(value: Any) -> Any:
 
 
 def _approval_request_label(scheduled_task: ScheduledTask) -> str:
-    if scheduled_task.task_type == ScheduledTask.TaskType.DAILY_WEATHER_REPORT:
-        return "Approve scheduled weather run"
     return "Approve first execution of scheduled task"

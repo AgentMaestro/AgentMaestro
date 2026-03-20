@@ -9,7 +9,8 @@ from django.db import transaction
 from django.utils import timezone
 
 from comms.services.agent_chat_bridge import send_run_transport_message
-from llm.models import LLMModelProfile, LLMRun
+from agents.utils import normalize_provider_for_model
+from llm.models import LLMRun
 from llm.services.runner import LLMRunner
 from llm.system_context import build_system_context
 from memory.models import MemoryRecord, ScheduledTask
@@ -158,23 +159,20 @@ def build_scheduled_task_objective(scheduled_task: ScheduledTask) -> tuple[str, 
     payload = dict(scheduled_task.execution_payload or {})
     title = scheduled_task.title or scheduled_task.task_type.replace("_", " ")
     delivery_hint = "deliver it to the paired transport conversation when available"
-    if scheduled_task.task_type == ScheduledTask.TaskType.DAILY_WEATHER_REPORT:
-        location = str(payload.get("location") or "the configured location").strip() or "the configured location"
-        source_domain = str(payload.get("source_domain") or "weather.com").strip() or "weather.com"
-        objective = f"Produce the daily weather report for {location} and {delivery_hint}."
-        prompt = (
-            f"Run the scheduled task '{title}'. "
-            f"Research the current daily and weekly weather forecast for {location}. "
-            f"Prefer {source_domain} when possible. "
-            f"Produce a concise final report suitable for direct delivery to the user. "
-            f"If no paired transport conversation exists, still produce the final report text."
-        )
-        return objective, prompt
     objective = f"Complete the scheduled task '{title}' and {delivery_hint}."
+    extra_objective = str(payload.get("objective") or "").strip()
+    extra_notes = str(payload.get("notes") or "").strip()
+    prompt_lines = [
+        f"Run the scheduled task '{title}'.",
+        "Use the task payload and available tools to complete the work.",
+    ]
+    if extra_objective:
+        prompt_lines.append(f"Primary objective: {extra_objective}")
+    if extra_notes:
+        prompt_lines.append(f"Notes: {extra_notes}")
+    prompt_lines.append("Produce a final response suitable for direct delivery to the user.")
     prompt = (
-        f"Run the scheduled task '{title}'. "
-        f"Use the task payload and available tools to complete the work. "
-        f"Produce a final response suitable for direct delivery to the user."
+        " ".join(prompt_lines)
     )
     return objective, prompt
 
@@ -448,7 +446,7 @@ def execute_headless_run(run_id: str) -> AgentRun:
         }
         for entry in effective_tools
     ]
-    model_name, profile_name = _resolve_run_model(run.agent)
+    provider, model_name = _resolve_run_model(run.agent)
     system_context = build_system_context(
         run.agent,
         model_name=model_name,
@@ -495,9 +493,12 @@ def execute_headless_run(run_id: str) -> AgentRun:
         result = async_to_sync(runner.run)(
             prompt="",
             agent_name=run.agent.name or run.agent.slug,
-            agent_role=run.agent.role,
-            profile_name=profile_name,
+            provider=provider,
+            model_name=model_name,
+            temperature=float(run.agent.temperature) if run.agent.temperature is not None else None,
             tools=tool_payloads,
+            backup_models=run.agent.get_backup_models(),
+            backup_retry_policy=run.agent.get_backup_retry_policy(),
             orchestration_run_id=str(run.id),
             purpose=run_memory.objective or run.input_text[:200],
             max_tool_rounds=max_tool_rounds,
@@ -723,13 +724,12 @@ def _remember_headless_run_outcome(
     )
 
 
-def _resolve_run_model(agent) -> tuple[str, str | None]:
-    policy_name = str(getattr(agent, "policy_name", "") or "").strip()
-    if policy_name:
-        profile = LLMModelProfile.objects.filter(name=policy_name, is_active=True).first()
-        if profile is not None:
-            return profile.model, profile.name
-    return str(getattr(agent, "default_model", "") or "gpt-5"), None
+def _resolve_run_model(agent) -> tuple[str, str]:
+    model_name = str(getattr(agent, "default_model", "") or "").strip()
+    if not model_name:
+        raise RuntimeError("Headless run requires agent.default_model")
+    provider = normalize_provider_for_model(getattr(settings, "LLM_PROVIDER", "openai"), model_name)
+    return provider, model_name
 
 
 def _fetch_response_id(llm_run_id: str) -> str:

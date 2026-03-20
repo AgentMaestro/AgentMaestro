@@ -8,6 +8,7 @@ from django.contrib.auth import get_user_model
 from django.db.models.query import QuerySet
 
 from core.models import Workspace
+from llm.models import ModelsAvailable
 
 from tools.models import ToolDefinition
 from .models import Agent
@@ -38,17 +39,18 @@ class AgentBasicForm(forms.Form):
 
 
 class AgentLLMForm(forms.Form):
-    role = forms.ChoiceField(
-        choices=Agent.ROLE_CHOICES,
-        initial=Agent.DEFAULT_ROLE,
-        label="Role",
-        help_text="Choose the agent's primary role (used in system context).",
-    )
     default_model = forms.ChoiceField(
         choices=[],
         initial=Agent.DEFAULT_MODEL,
         label="Default Model",
         help_text="Select the default model for this agent.",
+    )
+    backup_models = forms.MultipleChoiceField(
+        choices=[],
+        required=False,
+        widget=forms.CheckboxSelectMultiple,
+        label="Backup Models",
+        help_text="Choose fallback models. They will fail over in the order shown on the page.",
     )
     temperature = forms.DecimalField(
         max_digits=4,
@@ -68,6 +70,7 @@ class AgentLLMForm(forms.Form):
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
         self._refresh_model_choices()
+        self._refresh_backup_model_choices()
 
     def _refresh_model_choices(self) -> None:
         choices = Agent.get_default_model_choices()
@@ -79,6 +82,54 @@ class AgentLLMForm(forms.Form):
         self.fields["default_model"].help_text = (
             "Select the default model for this agent. "
             f"Available: {preview or Agent.DEFAULT_MODEL}."
+        )
+
+    @staticmethod
+    def _backup_model_value(model: ModelsAvailable) -> str:
+        return f"{model.company}|{model.api}|{model.name}"
+
+    @classmethod
+    def _backup_model_label(cls, model: ModelsAvailable) -> str:
+        return f"{model.company}:{model.api}:{model.name}"
+
+    @classmethod
+    def _decode_backup_model_value(cls, value: object) -> dict[str, str] | None:
+        candidate = str(value or "").strip()
+        if not candidate:
+            return None
+        parts = candidate.split("|", 2)
+        if len(parts) != 3:
+            return None
+        company, api, name = (part.strip() for part in parts)
+        if not company or not api or not name:
+            return None
+        return {"company": company, "api": api, "name": name}
+
+    def _refresh_backup_model_choices(self) -> None:
+        queryset = ModelsAvailable.objects.order_by("company", "api", "name")
+        choices = [
+            (self._backup_model_value(model), self._backup_model_label(model))
+            for model in queryset
+        ]
+        self.fields["backup_models"].choices = choices
+        initial_values = self.initial.get("backup_models")
+        if isinstance(initial_values, list):
+            normalized_initial: list[str] = []
+            for entry in initial_values:
+                if isinstance(entry, dict):
+                    company = str(entry.get("company") or "").strip()
+                    api = str(entry.get("api") or "").strip()
+                    name = str(entry.get("name") or "").strip()
+                    if company and api and name:
+                        normalized_initial.append(f"{company}|{api}|{name}")
+                else:
+                    encoded = str(entry or "").strip()
+                    if encoded:
+                        normalized_initial.append(encoded)
+            self.initial["backup_models"] = normalized_initial
+        self.fields["backup_models"].help_text = (
+            "Choose fallback models. They will fail over in the order shown on the page. "
+            f"Available: {len(choices)}."
         )
 
 class AgentToolsForm(forms.Form):

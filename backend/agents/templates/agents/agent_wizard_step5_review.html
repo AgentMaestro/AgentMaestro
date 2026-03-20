@@ -37,15 +37,31 @@
         <strong>LLM Settings</strong>
         <div class="steps-summary">
           <div class="review_step">Model: {{ review.llm.default_model }}</div>
+          <div class="review_step">
+            Backup models:
+            {% if review.llm.backup_models %}
+              <ul class="review_sandbox_list">
+                {% for backup in review.llm.backup_models %}
+                  <li>{{ backup.company }}:{{ backup.api }}:{{ backup.name }}</li>
+                {% endfor %}
+              </ul>
+            {% else %}
+              none selected
+            {% endif %}
+          </div>
           {% if review.llm.temperature %}
             <div class="review_step">Temperature: {{ review.llm.temperature }}</div>
-          {% endif %}
-          {% if review.llm.role %}
-            <div class="review_step">Role: {{ review.llm.role }}</div>
           {% endif %}
           {% if review.llm.policy_name %}
             <div class="review_step">Policy: {{ review.llm.policy_name }}</div>
           {% endif %}
+          <div class="review_step">
+            Backup retry policy:
+            <div class="helper">
+              retry_same_model_attempts={{ review.llm.backup_retry_policy.retry_same_model_attempts }},
+              retryable_status_codes={{ review.llm.backup_retry_policy.retryable_status_codes|join:", " }}
+            </div>
+          </div>
         </div>
       </div>
 

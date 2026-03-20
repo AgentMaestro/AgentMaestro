@@ -7,6 +7,7 @@ from django.test import RequestFactory, TestCase
 from django.urls import reverse
 
 from core.models import Workspace
+from llm.models import ModelsAvailable
 
 from .admin import AgentAdmin
 from .consumers import _scrub_input_text
@@ -104,7 +105,21 @@ class AgentWizardViewTests(TestCase):
     def setUp(self):
         self.user = get_user_model().objects.create_user(username="wizard-user")
         self.client.force_login(self.user)
+        self._seed_models_available()
 
+
+    def _seed_models_available(self):
+        for company, api, name in [
+            ("openai", "responses", "gpt-5.1"),
+            ("google", "gemini", "gemini-2.5-flash"),
+            ("google", "gemini", "gemini-2.5-pro"),
+        ]:
+            ModelsAvailable.objects.get_or_create(
+                company=company,
+                api=api,
+                name=name,
+                defaults={"metadata": {}},
+            )
 
     def _seed_workspace_with_tool(self):
         workspace = Workspace.objects.create(name="Wizard Workspace")
@@ -131,6 +146,10 @@ class AgentWizardViewTests(TestCase):
             "default_model": "gpt-5.1",
             "temperature": "0.75",
             "policy_name": "react",
+            "backup_models": [
+                "google|gemini|gemini-2.5-flash",
+                "google|gemini|gemini-2.5-pro",
+            ],
         }
         self.client.post(f"{url}?step=2", data=llm)
         workspace, tool = self._seed_workspace_with_tool()
@@ -143,6 +162,17 @@ class AgentWizardViewTests(TestCase):
         self.assertEqual(agent.owner, self.user)
         self.assertEqual(agent.workspace.name, "Wizard Workspace")
         self.assertEqual(agent.tool_policy_json["selected_tools"], ["wizard_tool"])
+        self.assertEqual(
+            agent.backup_models_json,
+            [
+                {"company": "google", "api": "gemini", "name": "gemini-2.5-flash"},
+                {"company": "google", "api": "gemini", "name": "gemini-2.5-pro"},
+            ],
+        )
+        self.assertEqual(
+            agent.backup_retry_policy_json,
+            {"retry_same_model_attempts": 1, "retryable_status_codes": [429, 502, 503, 504]},
+        )
         self.assertNotIn("agent_wizard", self.client.session)
         self.assertTrue(
             AgentToolGrant.objects.filter(agent=agent, tool=tool, enabled=True).exists()
@@ -153,7 +183,7 @@ class AgentWizardViewTests(TestCase):
         self.client.post(f"{url}?step=1", data={"name": "No Tools Agent", "soul": "Defer"})
         self.client.post(
             f"{url}?step=2",
-            data={"default_model": "gpt-5", "temperature": "0.5", "policy_name": "react"},
+            data={"default_model": "gpt-5.1", "temperature": "0.5", "policy_name": "react"},
         )
         workspace, tool = self._seed_workspace_with_tool()
         self.client.post(f"{url}?step=3", data={"workspace": str(workspace.id)})

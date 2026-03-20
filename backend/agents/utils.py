@@ -5,6 +5,7 @@ from django.urls import reverse
 from comms.models import Transport, TransportEndpoint
 
 TELEGRAM_TRANSPORT_KEY = "telegram"
+TELEGRAM_AGENT_CHAT_MIRROR_KEY = "mirror_agent_chat_to_telegram"
 
 
 def format_provider_display(provider: str | None) -> str:
@@ -58,6 +59,26 @@ def find_agent_telegram_endpoint(agent) -> TransportEndpoint | None:
         .order_by("-id")
         .first()
     )
+
+
+def get_agent_telegram_mirror_enabled(agent) -> bool:
+    endpoint = find_agent_telegram_endpoint(agent)
+    if not endpoint:
+        return False
+    config = endpoint.config or {}
+    return bool(config.get(TELEGRAM_AGENT_CHAT_MIRROR_KEY, True))
+
+
+def set_agent_telegram_mirror_enabled(agent, enabled: bool) -> bool:
+    endpoint = find_agent_telegram_endpoint(agent)
+    if not endpoint:
+        return False
+    config = dict(endpoint.config or {})
+    config[TELEGRAM_AGENT_CHAT_MIRROR_KEY] = bool(enabled)
+    if endpoint.config != config:
+        endpoint.config = config
+        endpoint.save(update_fields=["config"])
+    return True
 
 
 def build_transport_status(agent, endpoint: TransportEndpoint | None = None) -> dict:

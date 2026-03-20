@@ -9,8 +9,8 @@ param(
 $env:DJANGO_SETTINGS_MODULE = "agentmaestro.settings.dev"
 $env:OPENAI_WS_DEBUG = "0"
 $env:PYTHONUNBUFFERED = "1"
-$env:OPENAI_TRANSPORT = $Transport
 $env:OPENAI_HTTP_MODE = $Mode
+$env:SHOW_CONDENSED_SYSTEM_LOGS = "1"
 
 Write-Host "Starting Daphne using $Transport at 127.0.0.1:$Port with OPENAI_WS_DEBUG=$Debug, OPENAI_TRANSPORT=$Transport, OPENAI_HTTP_MODE=$Mode"
 Set-Location "C:\Dev\AgentMaestro\backend"

@@ -11,8 +11,8 @@
     const textarea = shell.querySelector("[data-chat-input]");
     const connectionActionBtn = shell.querySelector("[data-connection-action]");
     const runStatusEl = shell.querySelector("[data-run-status]");
-    const pauseRunBtn = shell.querySelector("[data-run-pause]");
-    const resumeRunBtn = shell.querySelector("[data-run-resume]");
+    const telegramMirrorToggle = shell.querySelector("[data-telegram-mirror-toggle]");
+    const telegramMirrorToggleUrl = shell.dataset.telegramToggleUrl || "";
     const approvalGrantsListEl = shell.querySelector("[data-approval-grants-list]");
     const approvalGrantsEmptyEl = shell.querySelector("[data-approval-grants-empty]");
     const clearApprovalGrantsBtn = shell.querySelector("[data-clear-approval-grants]");
@@ -26,6 +26,7 @@
     const approvalChimeQueued = new Set();
     let approvalAudioContext = null;
     let activeApprovalGrants = [];
+    let scrollToBottomFrameId = null;
     const RUN_ID_STORAGE_KEY_BASE = "agentmaestro.active_run_id";
     let runtimeProvider = (shell.dataset.llmProvider || "openai").trim() || "openai";
     let runtimeProviderLabel = (shell.dataset.llmProviderLabel || "LLM").trim() || "LLM";
@@ -33,6 +34,7 @@
     let runtimeTransport = (shell.dataset.llmTransport || "ws").trim() || "ws";
     let runtimeTransportLabel =
         (shell.dataset.llmTransportLabel || "").trim() || (runtimeTransport.toLowerCase() === "ws" ? "WS" : "HTTP");
+    let telegramMirrorEnabled = (shell.dataset.telegramMirrorEnabled || "false").trim() === "true";
     const normalizeTransportLabel = (value, fallbackValue = "") => {
         const candidate = String(value || fallbackValue || "").trim().toUpperCase();
         if (candidate.includes("HTTP")) {
@@ -93,6 +95,68 @@
         }
     };
 
+    const scheduleScrollToBottom = () => {
+        if (!messagesEl) {
+            return;
+        }
+        if (scrollToBottomFrameId !== null) {
+            window.cancelAnimationFrame(scrollToBottomFrameId);
+        }
+        scrollToBottomFrameId = window.requestAnimationFrame(() => {
+            scrollToBottomFrameId = null;
+            scrollToBottom();
+        });
+    };
+
+    const getCookie = (name) => {
+        let cookieValue = "";
+        if (document.cookie && document.cookie !== "") {
+            const cookies = document.cookie.split(";");
+            for (let index = 0; index < cookies.length; index += 1) {
+                const cookie = cookies[index].trim();
+                if (cookie.startsWith(`${name}=`)) {
+                    cookieValue = decodeURIComponent(cookie.substring(name.length + 1));
+                    break;
+                }
+            }
+        }
+        return cookieValue;
+    };
+
+    const syncTelegramMirrorToggle = (enabled) => {
+        telegramMirrorEnabled = Boolean(enabled);
+        if (telegramMirrorToggle) {
+            telegramMirrorToggle.checked = telegramMirrorEnabled;
+        }
+    };
+
+    const persistTelegramMirrorToggle = async (enabled) => {
+        if (!telegramMirrorToggleUrl) {
+            return false;
+        }
+        try {
+            const response = await fetch(telegramMirrorToggleUrl, {
+                method: "POST",
+                credentials: "same-origin",
+                headers: {
+                    "Content-Type": "application/json",
+                    "X-CSRFToken": getCookie("csrftoken"),
+                    Accept: "application/json",
+                },
+                body: JSON.stringify({enabled: Boolean(enabled)}),
+            });
+            if (!response.ok) {
+                throw new Error(`Telegram mirror toggle failed (${response.status})`);
+            }
+            const payload = await response.json();
+            syncTelegramMirrorToggle(Boolean(payload.enabled));
+            return true;
+        } catch (error) {
+            console.warn("Unable to persist Telegram mirror setting", error);
+            return false;
+        }
+    };
+
     const formatElapsedPrompt = (elapsedMs) => {
         const totalSeconds = Math.max(0, Math.floor((elapsedMs || 0) / 1000));
         const hours = String(Math.floor(totalSeconds / 3600)).padStart(2, "0");
@@ -120,6 +184,14 @@
         elapsedPromptTimerId = window.setInterval(() => {
             renderElapsedPrompt();
         }, 1000);
+    };
+
+    const stopElapsedPromptTimer = () => {
+        if (elapsedPromptTimerId === null) {
+            return;
+        }
+        window.clearInterval(elapsedPromptTimerId);
+        elapsedPromptTimerId = null;
     };
 
     const markPromptSentNow = () => {
@@ -339,16 +411,6 @@
         });
     };
 
-    const updateRunControls = () => {
-        const paused = activeRunStatus === "PAUSED" || activeRunStatus === "WAITING_FOR_USER";
-        if (pauseRunBtn) {
-            pauseRunBtn.disabled = !isConnected || activeRunStatus !== "RUNNING";
-        }
-        if (resumeRunBtn) {
-            resumeRunBtn.disabled = !isConnected || !paused;
-        }
-    };
-
     const setRunStatus = (status) => {
         activeRunStatus = String(status || "RUNNING").toUpperCase();
         if (runStatusEl) {
@@ -363,7 +425,6 @@
             );
             runStatusEl.classList.add(activeRunStatus.toLowerCase());
         }
-        updateRunControls();
     };
 
     const setStatus = (text) => {
@@ -372,7 +433,6 @@
         }
         isConnected = text === "Connected";
         updateConnectionAction(isConnected);
-        updateRunControls();
         if (statusEl) {
             statusEl.classList.toggle("connected", text === "Connected");
             statusEl.classList.toggle("disconnected", text === "Disconnected");
@@ -940,6 +1000,16 @@
             metaTrail.append(toggle);
         }
 
+        if (payload.admin_step_url) {
+            const stepLink = document.createElement("a");
+            stepLink.href = payload.admin_step_url;
+            stepLink.target = "_blank";
+            stepLink.rel = "noopener noreferrer";
+            stepLink.textContent = payload.admin_step_label || "admin step";
+            stepLink.title = "Open the admin run step for this transport log";
+            metaTrail.append(stepLink);
+        }
+
         meta.append(metaLead, metaTrail);
         article.append(meta, body);
         return article;
@@ -1072,6 +1142,7 @@
         card._detailEl.classList.add("tool-request-detail-collapsed");
         card._detailEl.classList.remove("tool-request-detail-expanded");
         updateDetailToggle(card._detailToggle, false);
+        scheduleScrollToBottom();
     };
 
     const setApprovalButtonsState = (card, state) => {
@@ -1355,6 +1426,7 @@
             display.statusText || data?.status || "COMPLETED",
             display.detail,
         );
+        scheduleScrollToBottom();
     };
 
     const handleToolDenied = (payload) => {
@@ -1432,6 +1504,12 @@
                     text: payload.text || "",
                     timestamp: payload.timestamp,
                 });
+                if ((payload.role || "assistant") === "assistant") {
+                    stopElapsedPromptTimer();
+                }
+                if (String(payload.source_transport || "").toLowerCase() === "telegram" || String(payload.author || "").toLowerCase().includes("telegram")) {
+                    syncTelegramMirrorToggle(true);
+                }
                 log("[MESSAGE] Message appended");
                 return;
             case "tool_request":
@@ -1463,16 +1541,6 @@
             case "approval_grants":
                 setApprovalGrants(payload.grants || []);
                 log("[approval_grants] run_id=", activeRunId, payload);
-                return;
-            case "pause_run_ack":
-                setRunStatus(payload.status || "PAUSED");
-                appendSystemMessage("Run paused. Messages will queue until you resume.", "run_control");
-                log("[pause_run_ack] run_id=", activeRunId, payload);
-                return;
-            case "resume_run_ack":
-                setRunStatus(payload.status || "RUNNING");
-                appendSystemMessage("Run resumed.", "run_control");
-                log("[resume_run_ack] run_id=", activeRunId, payload);
                 return;
             case "cancel_run_ack":
                 setRunStatus(payload.status || "CANCELED");
@@ -1710,14 +1778,6 @@
         }
     });
 
-    pauseRunBtn?.addEventListener("click", () => {
-        sendRunControl("pause_run");
-    });
-
-    resumeRunBtn?.addEventListener("click", () => {
-        sendRunControl("resume_run");
-    });
-
     textarea?.addEventListener("keydown", (event) => {
         if (event.key === "Enter" && !event.shiftKey) {
             event.preventDefault();
@@ -1741,6 +1801,16 @@
 
     clearApprovalGrantsBtn?.addEventListener("click", () => {
         sendToolControl("tool_clear_grants", null);
+    });
+
+    telegramMirrorToggle?.addEventListener("change", async () => {
+        const nextValue = telegramMirrorToggle.checked;
+        const previousValue = telegramMirrorEnabled;
+        syncTelegramMirrorToggle(nextValue);
+        const persisted = await persistTelegramMirrorToggle(nextValue);
+        if (!persisted) {
+            syncTelegramMirrorToggle(previousValue);
+        }
     });
 
     setRunStatus(activeRunStatus);

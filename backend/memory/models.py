@@ -205,7 +205,7 @@ class ScheduledTask(TimeStampedModel):
     execution_mode = models.CharField(
         max_length=24,
         choices=ExecutionMode.choices,
-        default=ExecutionMode.DETERMINISTIC,
+        default=ExecutionMode.HEADLESS_RUN,
         db_index=True,
     )
     timezone = models.CharField(max_length=64, default="UTC")

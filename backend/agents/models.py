@@ -11,14 +11,11 @@ from django.utils.text import slugify
 
 from agents.current import get_current_agent_creator
 from core.models import Workspace, TimeStampedModel
+from llm.services.model_failover import build_model_failover_candidates, normalize_backup_retry_policy
 
 
 class Agent(TimeStampedModel):
     SLUG_MAX_LENGTH = 140
-    ROLE_ORDER = ("coding", "writing", "researching", "planning", "assisting")
-    ROLE_CHOICES = tuple((role, role.capitalize()) for role in ROLE_ORDER)
-    DEFAULT_ROLE = "assisting"
-    VALID_ROLES = set(ROLE_ORDER)
 
     DEFAULT_MODEL_ORDER = (
         "gpt-5.2",
@@ -45,6 +42,14 @@ class Agent(TimeStampedModel):
     DEFAULT_MODEL_CHOICES = tuple((model, model) for model in DEFAULT_MODEL_ORDER)
     DEFAULT_MODEL = "gpt-5"
     VALID_DEFAULT_MODELS = set(DEFAULT_MODEL_ORDER)
+    DEFAULT_BACKUP_MODEL_API_BY_COMPANY = {
+        "openai": "openai",
+        "google": "gemini",
+    }
+    DEFAULT_BACKUP_RETRY_POLICY = {
+        "retry_same_model_attempts": 1,
+        "retryable_status_codes": [429, 502, 503, 504],
+    }
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     workspace = models.ForeignKey(
@@ -67,11 +72,24 @@ class Agent(TimeStampedModel):
     temperature = models.DecimalField(max_digits=4, decimal_places=2, default=0.70)
     soul = models.TextField(blank=True, default="")
     policy_name = models.CharField(max_length=32, default="react")
-    role = models.CharField(
-        max_length=32, choices=ROLE_CHOICES, default=DEFAULT_ROLE
-    )
     tool_policy_json = models.JSONField(default=dict, blank=True)
     sandbox_paths = models.JSONField(default=list, blank=True)
+    backup_models_json = models.JSONField(
+        default=list,
+        blank=True,
+        help_text=(
+            'Ordered fallback models as JSON, for example '
+            '[{"company": "google", "api": "gemini", "name": "gemini-2.5-flash"}].'
+        ),
+    )
+    backup_retry_policy_json = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text=(
+            'Retry policy JSON, for example '
+            '{"retry_same_model_attempts": 1, "retryable_status_codes": [429, 502, 503, 504]}.'
+        ),
+    )
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.SET_NULL,
@@ -147,9 +165,12 @@ class Agent(TimeStampedModel):
             suffix += 1
 
     def save(self, *args, **kwargs):
-        self.role = self._normalize_role(self.role)
         self.default_model = self._normalize_default_model(self.default_model)
         self.sandbox_paths = self._normalize_sandbox_paths(self.sandbox_paths)
+        self.backup_models_json = self._normalize_backup_models_json(self.backup_models_json)
+        self.backup_retry_policy_json = self._normalize_backup_retry_policy_json(
+            self.backup_retry_policy_json
+        )
         self._ensure_owner()
         self._ensure_unique_name()
         if self._should_generate_slug():
@@ -251,9 +272,81 @@ class Agent(TimeStampedModel):
         return sanitized
 
     @classmethod
-    def _normalize_role(cls, value: object | None) -> str:
-        candidate = (str(value or "")).strip().lower()
-        return candidate if candidate in cls.VALID_ROLES else cls.DEFAULT_ROLE
+    def _normalize_backup_models_json(cls, raw: object | None) -> list[dict[str, str]]:
+        def _coerce_entries(value: object | None) -> list[dict[str, object]]:
+            if value is None:
+                return []
+            if isinstance(value, dict):
+                return [value]
+            if isinstance(value, (list, tuple, set)):
+                entries: list[dict[str, object]] = []
+                for member in value:
+                    entries.extend(_coerce_entries(member))
+                return entries
+            if isinstance(value, str):
+                candidate = value.strip()
+                if not candidate:
+                    return []
+                if (candidate.startswith("{") and candidate.endswith("}")) or (
+                    candidate.startswith("[") and candidate.endswith("]")
+                ):
+                    parsed = None
+                    try:
+                        parsed = json.loads(candidate)
+                    except Exception:
+                        try:
+                            parsed = ast.literal_eval(candidate)
+                        except Exception:
+                            parsed = None
+                    return _coerce_entries(parsed)
+            return []
+
+        candidates = _coerce_entries(raw)
+        sanitized: list[dict[str, str]] = []
+        seen: set[tuple[str, str, str]] = set()
+        for entry in candidates:
+            company = str(entry.get("company") or "").strip().lower()
+            name = str(entry.get("name") or "").strip()
+            api = str(entry.get("api") or "").strip().lower()
+            if not company or not name:
+                continue
+            if not api:
+                api = cls.DEFAULT_BACKUP_MODEL_API_BY_COMPANY.get(company, "")
+            candidate = {"company": company, "api": api, "name": name}
+            key = (candidate["company"], candidate["api"], candidate["name"])
+            if key in seen:
+                continue
+            seen.add(key)
+            sanitized.append(candidate)
+        return sanitized
+
+    @classmethod
+    def _normalize_backup_retry_policy_json(cls, raw: object | None) -> dict[str, object]:
+        policy = normalize_backup_retry_policy(raw)
+        if not policy:
+            policy = dict(cls.DEFAULT_BACKUP_RETRY_POLICY)
+        return policy
+
+    def get_backup_models(self) -> list[dict[str, str]]:
+        return self._normalize_backup_models_json(self.backup_models_json)
+
+    def get_backup_retry_policy(self) -> dict[str, object]:
+        return self._normalize_backup_retry_policy_json(self.backup_retry_policy_json)
+
+    def get_model_failover_candidates(
+        self,
+        *,
+        primary_provider: str | None = None,
+        primary_model: str | None = None,
+    ) -> list[dict[str, str]]:
+        provider = primary_provider or settings.LLM_PROVIDER or "openai"
+        model_name = primary_model or self.default_model
+        return build_model_failover_candidates(
+            primary_provider=provider,
+            primary_model=model_name,
+            backup_models=self.get_backup_models(),
+            default_provider=provider,
+        )
 
     @classmethod
     def _normalize_default_model(cls, value: object | None) -> str:

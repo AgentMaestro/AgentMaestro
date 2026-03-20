@@ -29,12 +29,14 @@
         {{ form.policy_name.errors }}
       </div>
       <div>
-        {{ form.role.label_tag }}
-        {{ form.role }}
-        {% if form.role.help_text %}
-          <div class="helper">{{ form.role.help_text }}</div>
+        {{ form.backup_models.label_tag }}
+        {% if form.backup_models.help_text %}
+          <div class="helper">{{ form.backup_models.help_text }}</div>
         {% endif %}
-        {{ form.role.errors }}
+        <div class="backup-model-picker">
+          {{ form.backup_models }}
+        </div>
+        {{ form.backup_models.errors }}
       </div>
     </div>
     <div style="margin-top: 24px; display:flex; gap:10px;">

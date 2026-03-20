@@ -19,6 +19,7 @@ from tools.models import ToolCall, ToolDefinition
 from tools.services.native_tools import execute_native_tool_call
 from tools.services.quotas import acquire_tool_call_slots, release_tool_call_slots
 from tools.services.result_bus import store_tool_result
+from tools.services.tool_validation import ToolArgumentValidationError, validate_required_tool_arguments
 
 logger = logging.getLogger(__name__)
 _DEFAULT_TOOLRUNNER_SANDBOX_ROOT = Path("C:/tmp/agentmaestro/sandbox")
@@ -478,6 +479,49 @@ def execute_tool_call(tool_call_id: str) -> ToolCall:
     logger.info("execute_tool_call tool_definition lookup tool_call=%s definition=%s", tool_call.id, definition.id if definition else None)
     if not internal_gate_tool and not definition:
         raise RuntimeError(f"tool {tool_call.tool_name} not enabled for workspace")
+
+    if not internal_gate_tool:
+        try:
+            validate_required_tool_arguments(
+                tool_call.tool_name,
+                tool_call.args or {},
+                definition=definition,
+            )
+        except ToolArgumentValidationError as exc:
+            logger.warning(
+                "execute_tool_call validation failed tool_call=%s tool=%s missing=%s submitted=%s",
+                tool_call.id,
+                tool_call.tool_name,
+                exc.missing_parameters,
+                list((tool_call.args or {}).keys()),
+            )
+            now = timezone.now()
+            tool_call.status = ToolCall.Status.FAILED
+            tool_call.started_at = now
+            tool_call.exit_code = 2
+            tool_call.stdout = ""
+            tool_call.stderr = str(exc)
+            tool_call.result = exc.to_result()
+            tool_call.ended_at = now
+            tool_call.observed_at = now
+            tool_call.save(update_fields=[
+                "status",
+                "started_at",
+                "exit_code",
+                "stdout",
+                "stderr",
+                "result",
+                "ended_at",
+                "observed_at",
+                "updated_at",
+            ])
+            append_tool_result_summary(
+                tool_call.run_id,
+                str(tool_call.id),
+                _summarize_tool_result_for_memory(tool_call),
+            )
+            _emit_tool_call_completed(tool_call, 0)
+            return tool_call
 
     acquired_quota = False
     acquire_tool_call_slots(

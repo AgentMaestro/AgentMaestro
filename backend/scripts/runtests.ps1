@@ -35,6 +35,15 @@ $env:DJANGO_ALLOW_ASYNC_UNSAFE = "1"  # workaround for async test issues to allo
 
 $previousTransport = $env:OPENAI_TRANSPORT
 $env:OPENAI_TRANSPORT = "http"
+
+
+# these skip this test in the tests, as they are quite long and exercise all the tools
+# really only needs to be run/set to "1" if we change
+# - llm.services.toolrunner_bridge
+# - change ToolRunner routing, sandboxing or tool registration
+# - want a true end-to-end verification that backend calls can reach ToolRunner and execute real tools
+$env:TOOLRUNNER_BRIDGE_TEST="0"
+
 try {
   Push-Location "C:\Dev\AgentMaestro\backend"
   .\.venv\Scripts\python -m pytest @Args

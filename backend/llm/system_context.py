@@ -44,17 +44,30 @@ BASE_KERNEL = """
 You are an AI agent operating inside the AgentMaestro orchestration platform.
 
 Operating rules:
-1) Think carefully and follow the user’s intent.
+1) Think carefully and follow the user's intent.
 2) Use tools only when needed to complete the task.
 3) Never fabricate tool outputs or claim actions you did not perform.
 4) If a tool call fails, explain the error and propose a next step.
 5) Keep internal reasoning private; present only conclusions and useful steps.
-6) Before answering the first user message in a new session, read the repository `AGENTS.md` file if it is available in the provided context or workspace.
-7) Start your first reply by explicitly confirming that you read `AGENTS.md`.
 
 Context:
 - You may be given tool access and runtime constraints. Stay within them.
 - If the user explicitly says 'remember that', 'note that', or states a stable preference and the `remember` tool is available, prefer persisting it instead of only acknowledging it conversationally.
+- When a tool is available, invoke the real tool directly. Do not output code-like stand-ins such as `default_api.remember(...)` or `tool_code` blocks as if they were executed tools.
+- If the user asks what tools are available or how many tools you have, answer directly with the exact tool names and count; do not default to a greeting.
+""".strip()
+
+BOOTSTRAP_PENDING = """
+Bootstrap status:
+- If this is the first turn of a new run and the repository `AGENTS.md` file is available in the provided context or workspace, read it once before responding.
+- Do not claim to have read `AGENTS.md` until that `file_read` result has actually been received.
+- After the file has been read once in this run, treat the bootstrap as complete and do not repeat the read unless the user explicitly asks.
+""".strip()
+
+BOOTSTRAP_COMPLETE = """
+Bootstrap status:
+- `AGENTS.md` has already been read in this run.
+- Do not call `file_read` on `AGENTS.md` again unless the user explicitly asks.
 """.strip()
 
 POLICY_DOC_PATH = "backend/llm/policy.MD"
@@ -70,10 +83,6 @@ When solving tasks:
 4. Continue until the task is complete.
 5. Respond to the user with the final answer.
 """.strip()
-
-DEFAULT_ROLE = "assisting"
-VALID_ROLES = set(ROLE_OVERLAYS.keys())
-
 
 def _format_tool_hint(tool_names: Iterable[str]) -> str:
     names = [name for name in tool_names if name]
@@ -95,7 +104,6 @@ def _format_sandbox_paths(paths: Iterable[str]) -> str:
 
 
 def _build_model_notice(agent, model_name: str) -> str:
-    sandbox = _format_sandbox_paths(getattr(agent, "sandbox_paths", []) or [])
     policy_name = (getattr(agent, "policy_name", "") or "default").strip()
     repo_root = Path(settings.BASE_DIR).resolve().parent
     agents_path = repo_root / "AGENTS.md"
@@ -103,9 +111,20 @@ def _build_model_notice(agent, model_name: str) -> str:
         [
             "Model notice:",
             f"- You are running on model: {model_name}. If asked what model you are, answer exactly: '{model_name}'.",
-            f"- You are authorized to work only within these allowed paths: {sandbox}.",
-            f"- Repository instruction file: {agents_path}. Use this exact repo-root path when reading `AGENTS.md`; do not assume the current working directory is the repo root.",
+            f"- Repository instruction file: {agents_path}. Use this exact repo-root path when calling `file_read`; do not assume the current working directory is the repo root.",
             f"- Follow Policy {policy_name} located at {POLICY_DOC_PATH}.",
+        ]
+    )
+
+
+def _build_agent_sandbox_notice(agent) -> str:
+    sandbox = _format_sandbox_paths(getattr(agent, "sandbox_paths", []) or [])
+    return "\n".join(
+        [
+            "Agent sandbox:",
+            f"- Your agent sandbox paths are: {sandbox}.",
+            "- Treat these paths as the agent's sandbox boundary for normal work.",
+            "- This agent sandbox is not necessarily the same thing as the ToolRunner sandbox root.",
         ]
     )
 
@@ -131,8 +150,8 @@ def _build_capability_notices(tool_names: Iterable[str]) -> list[str]:
             "Capability: Scheduling\n"
             "- The `schedule_task` tool is available in this run.\n"
             "- Do not say scheduling is unavailable when `schedule_task` is listed as available.\n"
-            "- For built-in deterministic weather automation, use `task_type=daily_weather_report`.\n"
-            "- For general recurring agent work such as backups, maintenance, digests, or delegated research, use `task_type=other_daily_task` with `execution_mode=headless_run`.\n"
+            "- Use `execution_mode=headless_run` for scheduled work.\n"
+            "- Choose a descriptive `task_type` such as `other_task` or `other_daily_task` for the job label.\n"
             "- Use `recurrence` for complex schedules; use `timezone` and `local_time` only for simple once-per-day schedules."
         )
     if "remember" in names or "search_memory" in names:
@@ -140,7 +159,8 @@ def _build_capability_notices(tool_names: Iterable[str]) -> list[str]:
             "Capability: User Memory Scope\n"
             "- When using user-scoped memory tools, prefer the canonical authenticated user identifier provided below.\n"
             "- Do not invent display-name variants such as merged or reformatted names for `scope_id`.\n"
-            "- If a canonical user id is available, prefer that exact id for `scope_type=user` calls."
+            "- If a canonical user id is available, prefer that exact id for `scope_type=user` calls.\n"
+            "- Invoke the real memory tool directly; do not wrap it in `print(default_api.remember(...))`, `tool_code`, or other code-like stand-ins."
         )
     return sections
 
@@ -170,11 +190,16 @@ def _build_authenticated_user_notice(authenticated_user: Any | None) -> str:
     return "\n".join(lines)
 
 
-def build_system_context(agent, *, model_name: str, transport: str, tool_names: Iterable[str], authenticated_user: Any | None = None) -> str:
-    role = (getattr(agent, "role", "") or DEFAULT_ROLE).strip().lower()
-    if role not in VALID_ROLES:
-        role = DEFAULT_ROLE
-    overlay = ROLE_OVERLAYS.get(role, ROLE_OVERLAYS[DEFAULT_ROLE]).strip()
+def build_system_context(
+    agent,
+    *,
+    model_name: str,
+    transport: str,
+    tool_names: Iterable[str],
+    authenticated_user: Any | None = None,
+    agents_md_bootstrap_complete: bool = False,
+) -> str:
+    overlay = ROLE_OVERLAYS["assisting"].strip()
 
     policy_name = (getattr(agent, "policy_name", "") or "").strip().lower()
     policy_section = POLICY_REACT if policy_name == "react" else ""
@@ -203,7 +228,9 @@ Runtime:
     if policy_section:
         sections.append(policy_section)
     sections.append(overlay)
+    sections.append(BOOTSTRAP_COMPLETE if agents_md_bootstrap_complete else BOOTSTRAP_PENDING)
     sections.append(runtime)
+    sections.append(_build_agent_sandbox_notice(agent))
     sections.extend(_build_capability_notices(tool_names))
     sections.append(_build_model_notice(agent, model_name))
     authenticated_user_section = _build_authenticated_user_notice(authenticated_user)
@@ -214,3 +241,5 @@ Runtime:
     if custom_section:
         sections.append(custom_section)
     return "\n\n".join(section.strip() for section in sections if section).strip()
+
+

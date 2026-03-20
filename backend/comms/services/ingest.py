@@ -20,8 +20,9 @@ from control.models import ControlConversation, ControlMessage, IngestEvent
 from control.services.messaging import broadcast_control_message
 from comms.transports.base import NormalizedEvent
 from comms.transports.telegram import TelegramAdapter
-from comms.services.agent_chat_bridge import forward_transport_user_message
+from comms.services.agent_chat_bridge import forward_transport_user_message, paired_agent_for_conversation
 from comms.services.outbound import send_telegram_message
+from agents.utils import set_agent_telegram_mirror_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -225,6 +226,10 @@ def ingest_normalized_event(
         return str(control_conversation.uuid), control_message.id
 
     if event.kind == "message":
+        if transport.key == "telegram" and not restricted:
+            paired_agent = paired_agent_for_conversation(conversation)
+            if paired_agent is not None:
+                set_agent_telegram_mirror_enabled(paired_agent, True)
         forwarded_run_id, forward_error = forward_transport_user_message(
             conversation=conversation,
             text=message_text,

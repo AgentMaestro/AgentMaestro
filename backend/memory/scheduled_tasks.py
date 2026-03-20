@@ -1,23 +1,16 @@
 from __future__ import annotations
 
-import hmac
-import json
 import logging
-import time as time_module
 import uuid
 from datetime import date, datetime, time, timedelta, timezone as dt_timezone
-from hashlib import sha256
-from pathlib import Path
 from zoneinfo import ZoneInfo
 
-import httpx
 from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.db import transaction
 from django.db.models import Q
 from django.utils import timezone
 
-from comms.services.outbound import send_conversation_message
 from memory.models import MemoryRecord, RecurrenceRule, ScheduledTask
 from memory.recurrence import describe_recurrence_rule, get_next_occurrence, normalize_recurrence_rule_data
 from memory.services import remember
@@ -29,9 +22,6 @@ logger = logging.getLogger(__name__)
 
 MAX_RESULT_SUMMARY_CHARS = 2000
 DEFAULT_SCHEDULED_TASK_LIMIT = 10
-DEFAULT_WEATHER_MAX_RESULTS = 5
-DEFAULT_WEATHER_MAX_CHARS = 4000
-_DEFAULT_TOOLRUNNER_SANDBOX_ROOT = Path("C:/tmp/agentmaestro/sandbox")
 
 SCHEDULED_TASK_CREATED_SOURCE_KIND = "scheduled_task_created"
 SCHEDULED_TASK_EXECUTED_SOURCE_KIND = "scheduled_task_executed"
@@ -62,7 +52,7 @@ def create_scheduled_task(
     title: str = "",
     execution_payload: dict | None = None,
     delivery_target: str = ScheduledTask.DeliveryTarget.PAIRED_TRANSPORT,
-    execution_mode: str = ScheduledTask.ExecutionMode.DETERMINISTIC,
+    execution_mode: str = ScheduledTask.ExecutionMode.HEADLESS_RUN,
     source_memory: MemoryRecord | None = None,
     enabled: bool = True,
     recurrence_rule: RecurrenceRule | None = None,
@@ -261,56 +251,28 @@ def compute_next_run_at(recurrence_rule: RecurrenceRule, now: datetime | None = 
 
 
 def execute_scheduled_task(scheduled_task: ScheduledTask) -> str:
-    if scheduled_task.task_type == ScheduledTask.TaskType.DAILY_WEATHER_REPORT:
-        summary = _execute_daily_weather_report(scheduled_task)
-        remember(
-            agent=scheduled_task.agent,
-            memory_kind=MemoryRecord.MemoryKind.EPISODIC,
-            content=(
-                f"Scheduled task '{scheduled_task.title or scheduled_task.task_type}' executed on "
-                f"{timezone.now().isoformat()} with summary: {summary}"
-            ),
-            tags=["scheduled-task", "execution", scheduled_task.task_type.replace("_", "-")],
-            summary=f"Executed {scheduled_task.title or scheduled_task.task_type}",
-            importance=0.35,
-            source_kind=SCHEDULED_TASK_EXECUTED_SOURCE_KIND,
-            source_ref=str(scheduled_task.id),
-            dedupe_key=build_scheduled_task_execution_bucket_key(scheduled_task),
-            dedupe_mode="exact",
-        )
-        return summary
-    raise ScheduledTaskConfigurationError(f"Unsupported scheduled task type: {scheduled_task.task_type}")
+    from runs.services.headless import execute_headless_run
+    from runs.services.headless import launch_scheduled_task_run
+    from runs.tasks import execute_headless_run_task
+
+    scheduled_task, run, did_launch = launch_scheduled_task_run(str(scheduled_task.id))
+    if not did_launch:
+        return f"Scheduled task '{scheduled_task.title or scheduled_task.task_type}' already has an active headless run."
+    if run.status == AgentRun.Status.WAITING_FOR_APPROVAL:
+        return f"Scheduled task '{scheduled_task.title or scheduled_task.task_type}' is waiting for approval."
+
+    # Keep the direct helper usable for legacy call sites, but execute the same
+    # headless pipeline that the scheduler now uses everywhere.
+    if run.status == AgentRun.Status.PENDING:
+        execute_headless_run_task.delay(str(run.id))
+    else:
+        execute_headless_run(str(run.id))
+    return f"Scheduled task '{scheduled_task.title or scheduled_task.task_type}' launched as headless run {run.id}."
 
 
 
 def build_scheduled_task_execution_bucket_key(scheduled_task: ScheduledTask) -> str:
     return f"{SCHEDULED_TASK_EXEC_BUCKET_PREFIX}:{scheduled_task.id}:{scheduled_task.task_type}"
-
-
-
-def deliver_scheduled_task_message(scheduled_task: ScheduledTask, text: str) -> None:
-    from comms.services.agent_chat_bridge import paired_conversation_for_agent
-
-    conversation = paired_conversation_for_agent(scheduled_task.agent)
-    if conversation is None:
-        logger.warning(
-            "No paired transport conversation found for scheduled task %s agent=%s",
-            scheduled_task.id,
-            scheduled_task.agent.slug,
-        )
-        return
-
-    actor_label = (scheduled_task.agent.name or "agent").strip().lower() or "agent"
-    rendered = f"<i>{_escape_html(actor_label)}</i>\n{_escape_html(text)}"
-    send_conversation_message(
-        conversation,
-        rendered,
-        actor_label=actor_label,
-        author_type="system",
-        control_direction="system",
-        mirror_to_control=False,
-        parse_mode="HTML",
-    )
 
 
 
@@ -366,20 +328,6 @@ def _resolve_recurrence_rule(
 
 
 
-def _derive_task_schedule_fields(recurrence_rule: RecurrenceRule) -> tuple[str, time, str]:
-    fallback_time = recurrence_rule.local_time
-    if fallback_time is None and recurrence_rule.window_start_time is not None:
-        fallback_time = recurrence_rule.window_start_time
-    if fallback_time is None:
-        fallback_time = time(hour=0, minute=int(recurrence_rule.run_minute or 0))
-    schedule_kind = (
-        ScheduledTask.ScheduleKind.DAILY_TIME
-        if recurrence_rule.frequency == RecurrenceRule.Frequency.DAILY and not recurrence_rule.by_weekday
-        else ScheduledTask.ScheduleKind.RECURRENCE_RULE
-    )
-    return recurrence_rule.timezone, fallback_time, schedule_kind
-
-
 def _merge_payload_recurrence_hints(base_config: dict, execution_payload: dict | None) -> dict:
     payload = dict(execution_payload or {})
     focus_days = _normalize_focus_days(payload.get("focus_days"))
@@ -423,142 +371,18 @@ def _normalize_focus_days(value: object) -> list[str]:
 
 
 
-def _execute_daily_weather_report(scheduled_task: ScheduledTask) -> str:
-    payload = dict(scheduled_task.execution_payload or {})
-    query = str(payload.get("query") or "").strip()
-    location = str(payload.get("location") or "").strip()
-    source_domain = str(payload.get("source_domain") or "weather.com").strip() or "weather.com"
-    if not query:
-        if not location:
-            raise ScheduledTaskConfigurationError("daily_weather_report requires execution_payload.location or execution_payload.query")
-        query = f"site:{source_domain} {location} daily and weekly weather forecast"
-
-    search_result = _call_toolrunner_tool(
-        tool_name="web_search",
-        args={
-            "query": query,
-            "max_results": int(payload.get("max_results") or DEFAULT_WEATHER_MAX_RESULTS),
-        },
-        workspace_id=str(scheduled_task.workspace_id),
+def _derive_task_schedule_fields(recurrence_rule: RecurrenceRule) -> tuple[str, time, str]:
+    fallback_time = recurrence_rule.local_time
+    if fallback_time is None and recurrence_rule.window_start_time is not None:
+        fallback_time = recurrence_rule.window_start_time
+    if fallback_time is None:
+        fallback_time = time(hour=0, minute=int(recurrence_rule.run_minute or 0))
+    schedule_kind = (
+        ScheduledTask.ScheduleKind.DAILY_TIME
+        if recurrence_rule.frequency == RecurrenceRule.Frequency.DAILY and not recurrence_rule.by_weekday
+        else ScheduledTask.ScheduleKind.RECURRENCE_RULE
     )
-    results = list(search_result.get("results") or [])
-    if not results:
-        raise ScheduledTaskExecutionError(f"No search results returned for query '{query}'")
-
-    selected = _select_preferred_search_result(results, source_domain)
-    selected_url = str(selected.get("url") or "").strip()
-    if not selected_url:
-        raise ScheduledTaskExecutionError("The selected weather search result did not include a URL")
-
-    fetch_result = _call_toolrunner_tool(
-        tool_name="fetch_url",
-        args={
-            "url": selected_url,
-            "extract": "main_text",
-            "max_chars": int(payload.get("max_chars") or DEFAULT_WEATHER_MAX_CHARS),
-        },
-        workspace_id=str(scheduled_task.workspace_id),
-    )
-
-    report_body = _build_weather_report_text(
-        scheduled_task=scheduled_task,
-        query=query,
-        selected_result=selected,
-        fetch_result=fetch_result,
-    )
-    _deliver_scheduled_task_message(scheduled_task, report_body)
-    return report_body
-
-
-
-def _deliver_scheduled_task_message(scheduled_task: ScheduledTask, text: str) -> None:
-    deliver_scheduled_task_message(scheduled_task, text)
-
-
-
-def _select_preferred_search_result(results: list[dict], source_domain: str) -> dict:
-    preferred_domain = source_domain.lower().strip()
-    for item in results:
-        url = str(item.get("url") or "").lower()
-        if preferred_domain and preferred_domain in url:
-            return item
-    return results[0]
-
-
-
-def _build_weather_report_text(*, scheduled_task: ScheduledTask, query: str, selected_result: dict, fetch_result: dict) -> str:
-    selected_title = str(selected_result.get("title") or "").strip() or "Weather report"
-    selected_url = str(fetch_result.get("final_url") or selected_result.get("url") or "").strip()
-    page_title = str(fetch_result.get("title") or "").strip()
-    content = str(fetch_result.get("content") or "").strip()
-    if not content:
-        content = str(selected_result.get("snippet") or "").strip()
-    truncated = bool(fetch_result.get("truncated"))
-
-    lines = [f"{scheduled_task.title or 'daily weather report'}"]
-    if page_title and page_title.lower() != selected_title.lower():
-        lines.append(f"page: {page_title}")
-    lines.append(f"source: {selected_title}")
-    if selected_url:
-        lines.append(f"url: {selected_url}")
-    lines.append(f"query: {query}")
-    lines.append("")
-    lines.append(content or "No readable forecast content was returned.")
-    if truncated:
-        lines.append("")
-        lines.append("Note: fetched content was truncated to keep the report concise.")
-    return _trim_text("\n".join(lines).strip(), MAX_RESULT_SUMMARY_CHARS)
-
-
-
-def _call_toolrunner_tool(*, tool_name: str, args: dict, workspace_id: str) -> dict:
-    repo_root = str(Path(settings.BASE_DIR).resolve().parent)
-    sandbox_root = Path(getattr(settings, "TOOLRUNNER_SANDBOX_ROOT", _DEFAULT_TOOLRUNNER_SANDBOX_ROOT)).resolve()
-    payload = {
-        "request_id": str(uuid.uuid4()),
-        "workspace_id": workspace_id,
-        "run_id": f"scheduled-task:{uuid.uuid4()}",
-        "tool_name": tool_name,
-        "args": args,
-        "policy": {
-            "risk_level": "safe",
-            "tool_definition_id": "scheduled-task",
-            "requires_approval": False,
-            "allow_write": False,
-            "allowed_roots": [],
-            "repo_root": repo_root,
-            "tmp_root": str(sandbox_root.parent),
-        },
-        "limits": {
-            "timeout_s": getattr(settings, "TOOLRUNNER_TIMEOUT", 30),
-            "max_output_bytes": getattr(settings, "TOOLRUNNER_OUTPUT_LIMIT", 4096),
-        },
-    }
-    body = json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
-    timestamp = str(int(time_module.time()))
-    signature = _sign_payload(body, timestamp)
-    headers = {
-        "X-AM-Timestamp": timestamp,
-        "X-AM-Signature": signature,
-        "Content-Type": "application/json",
-    }
-    with httpx.Client(timeout=float(getattr(settings, "TOOLRUNNER_HTTP_TIMEOUT", 45))) as client:
-        response = client.post(settings.TOOLRUNNER_URL, content=body, headers=headers)
-    response.raise_for_status()
-    data = response.json()
-    if str(data.get("status") or "") != "COMPLETED":
-        raise ScheduledTaskExecutionError(
-            f"Toolrunner returned status {data.get('status')} for {tool_name}: {data.get('stderr') or data.get('result') or ''}"
-        )
-    return dict(data.get("result") or {})
-
-
-
-def _sign_payload(body: bytes, timestamp: str) -> str:
-    key = settings.TOOLRUNNER_SECRET.encode("utf-8")
-    message = timestamp.encode("utf-8") + b"." + body
-    return hmac.new(key, message, sha256).hexdigest()
-
+    return recurrence_rule.timezone, fallback_time, schedule_kind
 
 
 def _normalize_local_time(value: str | time) -> time:
@@ -582,18 +406,9 @@ def _normalize_timezone_name(value: str) -> str:
 
 
 
-def _task_type_requires_headless_run(task_type: str) -> bool:
-    return str(task_type or "").strip().lower() in {
-        ScheduledTask.TaskType.OTHER_DAILY_TASK,
-        ScheduledTask.TaskType.DAILY_EMAIL_CHECK,
-    }
-
-
-
 def ensure_scheduled_task_execution_mode(scheduled_task: ScheduledTask) -> tuple[str, bool]:
     normalized = _normalize_execution_mode(
         scheduled_task.execution_mode,
-        task_type=scheduled_task.task_type,
     )
     if normalized == scheduled_task.execution_mode:
         return normalized, False
@@ -610,15 +425,15 @@ def ensure_scheduled_task_execution_mode(scheduled_task: ScheduledTask) -> tuple
 
 
 def _normalize_execution_mode(value: str, *, task_type: str | None = None) -> str:
-    candidate = str(value or ScheduledTask.ExecutionMode.DETERMINISTIC).strip().lower()
+    candidate = str(value or ScheduledTask.ExecutionMode.HEADLESS_RUN).strip().lower()
     valid = {choice for choice, _label in ScheduledTask.ExecutionMode.choices}
     if candidate not in valid:
         raise ScheduledTaskConfigurationError(f"Unsupported execution mode '{value}'.")
-    if task_type and _task_type_requires_headless_run(task_type) and candidate != ScheduledTask.ExecutionMode.HEADLESS_RUN:
+    if candidate != ScheduledTask.ExecutionMode.HEADLESS_RUN:
         logger.warning(
-            "Coercing scheduled task execution mode to headless_run for task_type=%s requested_mode=%s",
-            task_type,
+            "Coercing scheduled task execution mode to headless_run requested_mode=%s task_type=%s",
             candidate,
+            task_type,
         )
         return ScheduledTask.ExecutionMode.HEADLESS_RUN
     return candidate
@@ -661,12 +476,11 @@ def _build_schedule_memory_content(
 
 
 def _default_task_title(task_type: str, execution_payload: dict) -> str:
-    if task_type == ScheduledTask.TaskType.DAILY_WEATHER_REPORT:
-        location = str(execution_payload.get("location") or "").strip()
-        if location:
-            return f"daily weather report for {location}".strip()
-        return "daily weather report"
-    return task_type.replace("_", " ")
+    label = task_type.replace("_", " ").strip() or "scheduled task"
+    location = str(execution_payload.get("location") or "").strip()
+    if location:
+        return f"{label} for {location}"
+    return label
 
 
 

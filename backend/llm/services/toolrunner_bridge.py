@@ -11,6 +11,9 @@ from django.conf import settings
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 
+from tools.models import ToolDefinition
+from tools.services.tool_validation import ToolArgumentValidationError, validate_required_tool_arguments
+
 _NATIVE_TOOL_NAMES = {"remember", "search_memory", "schedule_task", "list_scheduled_tasks", "spawn_subrun"}
 
 
@@ -60,6 +63,20 @@ def _run_native_tool(tool_name: str, args: Dict[str, Any], orchestration_run_id:
     if not orchestration_run_id:
         raise RuntimeError(f"Native tool '{tool_name}' requires orchestration_run_id.")
     run = AgentRun.objects.select_related("agent", "workspace", "started_by").get(id=orchestration_run_id)
+    tool_definition = (
+        ToolDefinition.objects.select_related("tool")
+        .filter(workspace_id=run.workspace_id, name=tool_name, enabled=True)
+        .first()
+    )
+    try:
+        validate_required_tool_arguments(tool_name, args or {}, definition=tool_definition)
+    except ToolArgumentValidationError as exc:
+        return {
+            "ok": False,
+            "result": exc.to_result(),
+            "meta": {"native": True, "validation_failed": True, "required_parameters": exc.required_parameters},
+            "error": str(exc),
+        }
 
     if tool_name == "remember":
         scope_type = str(args.get("scope_type") or "").strip()
@@ -138,12 +155,12 @@ def _run_native_tool(tool_name: str, args: Dict[str, Any], orchestration_run_id:
         scheduled_task = create_scheduled_task(
             agent=run.agent,
             owner=run.started_by or run.agent.owner,
-            task_type=str(args.get("task_type") or "daily_weather_report"),
+            task_type=str(args.get("task_type") or "other_task"),
             local_time_value=str(args.get("local_time") or "08:00"),
             timezone_name=str(args.get("timezone") or "UTC"),
             title=str(args.get("title") or ""),
             execution_payload=dict(args.get("execution_payload") or {}),
-            execution_mode=str(args.get("execution_mode") or "deterministic"),
+            execution_mode=str(args.get("execution_mode") or "headless_run"),
             recurrence_config=dict(args.get("recurrence") or args.get("recurrence_config") or {}),
         )
         result = {
@@ -241,6 +258,30 @@ async def run_tool(
     request_id = str(uuid.uuid4())
     workspace_id = str(orchestration_run_id or "llm-workspace")
     run_folder = orchestration_run_id or request_id
+    run = None
+    tool_definition = None
+    if orchestration_run_id:
+        from runs.models import AgentRun
+
+        run = await sync_to_async(AgentRun.objects.select_related("agent", "workspace", "started_by").get)(id=orchestration_run_id)
+        tool_definition = await sync_to_async(
+            lambda: ToolDefinition.objects.select_related("tool")
+            .filter(workspace_id=run.workspace_id, name=tool_name, enabled=True)
+            .first()
+        )()
+        try:
+            validate_required_tool_arguments(tool_name, args or {}, definition=tool_definition)
+        except ToolArgumentValidationError as exc:
+            return {
+                "ok": False,
+                "result": exc.to_result(),
+                "meta": {
+                    "request_id": request_id,
+                    "validation_failed": True,
+                    "required_parameters": exc.required_parameters,
+                },
+                "error": str(exc),
+            }
 
     payload = {
         "request_id": request_id,

@@ -309,6 +309,7 @@ if MEMORY_RETENTION_ENABLED:
     }
 
 # ToolRunner settings (new preferred names)
+TOOLRUNNER_SANDBOX_ROOT = _env_value("TOOLRUNNER_SANDBOX_ROOT", "/tmp/agentmaestro/sandbox")
 TOOLRUNNER_BASE_URL = _env_value("TOOLRUNNER_BASE_URL")
 if TOOLRUNNER_BASE_URL:
     TOOLRUNNER_URL = f"{TOOLRUNNER_BASE_URL.rstrip('/')}/v1/run/tool"
@@ -333,9 +334,11 @@ HEADLESS_RUN_MAX_DURATION_SECONDS = int(os.getenv("HEADLESS_RUN_MAX_DURATION_SEC
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 OPENAI_WS_DEBUG = os.getenv("OPENAI_WS_DEBUG", "0")
 OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL", "https://api.openai.com")
-OPENAI_TRANSPORT = os.getenv("OPENAI_TRANSPORT", "ws")
+OPENAI_TRANSPORT = _env_value("OPENAI_TRANSPORT", "ws")
 OPENAI_WS_TIMEOUT_SECONDS = os.getenv("OPENAI_WS_TIMEOUT_SECONDS", "120")
 OPENAI_WS_IDLE_TIMEOUT_SECONDS = os.getenv("OPENAI_WS_IDLE_TIMEOUT_SECONDS", "1200")
+OPENAI_WS_MAX_RETRIES = int(_env_value("OPENAI_WS_MAX_RETRIES") or "3")
+OPENAI_WS_MAX_RETRY_JITTER_MS = int(_env_value("OPENAI_WS_MAX_RETRY_JITTER_MS") or "250")
 OPENAI_HTTP_MODE = os.getenv("OPENAI_HTTP_MODE", "responses")
 
 # GEMINI KEY
@@ -343,6 +346,7 @@ GEMINI_API_KEY = _env_value("GEMINI_API_KEY", "")
 GEMINI_BASE_URL = _env_value("GEMINI_BASE_URL", "https://generativelanguage.googleapis.com/v1beta")
 GEMINI_TRANSPORT = _env_value("GEMINI_TRANSPORT", "http")
 GEMINI_HTTP_MODE = _env_value("GEMINI_HTTP_MODE", "responses")
+SHOW_CONDENSED_SYSTEM_LOGS = os.getenv("SHOW_CONDENSED_SYSTEM_LOGS", "1") != "0"
 
 SCRUB_PROMPTS = os.getenv("SCRUB_PROMPTS", "1") != "0"
 SCRUB_PROMPTS_FOR_TESTS = os.getenv("SCRUB_PROMPTS_FOR_TESTS", "0") != "0"

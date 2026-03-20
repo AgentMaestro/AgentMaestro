@@ -2,6 +2,7 @@ from copy import deepcopy
 
 from django import forms
 from django.contrib import admin, messages
+from django.utils.safestring import mark_safe
 
 from .models import Agent
 from tools.models import AgentToolGrant, Tool, ToolDefinition
@@ -27,7 +28,6 @@ class AgentAdmin(admin.ModelAdmin):
         "name",
         "slug",
         "workspace",
-        "role",
         "default_model",
         "formatted_sandbox_paths",
         "soul",
@@ -36,11 +36,58 @@ class AgentAdmin(admin.ModelAdmin):
     search_fields = ("id", "name", "slug")
     list_filter = ("workspace", "owner")
     form = AgentAdminForm
+    readonly_fields = ("backup_models_guide",)
+    fieldsets = (
+        (
+            "Agent",
+            {
+                "fields": (
+                    "name",
+                    "slug",
+                    "workspace",
+                    "owner",
+                    "description",
+                    "soul",
+                    "default_model",
+                    "temperature",
+                    "policy_name",
+                    "tool_policy_json",
+                    "sandbox_paths",
+                    "backup_models_json",
+                    "backup_retry_policy_json",
+                    "backup_models_guide",
+                    "created_by",
+                    "default_conversation",
+                )
+            },
+        ),
+    )
 
     def formatted_sandbox_paths(self, obj: Agent) -> str:
         paths = Agent._normalize_sandbox_paths(getattr(obj, "sandbox_paths", None))
         return ", ".join(paths)
     formatted_sandbox_paths.short_description = "Sandbox"
+
+    def backup_models_guide(self, obj: Agent) -> str:
+        return mark_safe(
+            """
+            <div style="padding: 12px 14px; border: 1px solid #3a3f46; border-radius: 6px; background: #1f2329;">
+              <strong>Backup model format</strong>
+              <div style="margin-top: 8px;">
+                Use an ordered JSON list. Each entry should resolve to a row in <code>ModelsAvailable</code>.
+              </div>
+              <pre style="margin-top: 10px; white-space: pre-wrap; background: #11151a; color: #d7dce2; padding: 10px; border-radius: 4px;">[
+  {"company": "google", "api": "gemini", "name": "gemini-2.5-flash"},
+  {"company": "openai", "api": "responses", "name": "gpt-5-mini"}
+]</pre>
+              <div style="margin-top: 8px;">
+                The retry policy is a JSON object. MVP defaults:
+                <code>{"retry_same_model_attempts": 1, "retryable_status_codes": [429, 502, 503, 504]}</code>
+              </div>
+            </div>
+            """
+        )
+    backup_models_guide.short_description = "Backup Model Help"
 
     def save_model(self, request, obj: Agent, form, change):
         super().save_model(request, obj, form, change)

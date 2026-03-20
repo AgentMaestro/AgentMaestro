@@ -1,4 +1,3 @@
-import logging
 import os
 from typing import Any, Dict, List, Optional, Sequence
 
@@ -6,9 +5,21 @@ from django.conf import settings
 
 from .base import BaseLLMClient
 from .gemini_http import GeminiHTTPService
+from ..model_failover import is_retryable_model_failure
 
-logger = logging.getLogger(__name__)
-DEFAULT_TRANSPORT = (getattr(settings, "GEMINI_TRANSPORT", None) or os.getenv("GEMINI_TRANSPORT") or "http").lower()
+
+
+def _resolve_gemini_transport(default: str = "http") -> str:
+    configured = getattr(settings, "GEMINI_TRANSPORT", None)
+    if configured:
+        return str(configured).lower()
+    env_value = os.getenv("GEMINI_TRANSPORT")
+    if env_value:
+        return env_value.lower()
+    return default.lower()
+
+
+DEFAULT_TRANSPORT = _resolve_gemini_transport()
 
 
 class GeminiClient(BaseLLMClient):
@@ -34,11 +45,7 @@ class GeminiClient(BaseLLMClient):
         self.transport = DEFAULT_TRANSPORT
 
     def preferred_transport(self) -> str:
-        return (
-                settings.GEMINI_TRANSPORT
-                or os.getenv("GEMINI_TRANSPORT", self.transport)
-                or self.transport
-        ).lower()
+        return _resolve_gemini_transport(self.transport)
 
     async def complete(
             self,
@@ -48,6 +55,8 @@ class GeminiClient(BaseLLMClient):
             tools: Optional[List[Dict[str, Any]]] = None,
             temperature: Optional[float] = None,
             max_output_tokens: Optional[int] = None,
+            previous_response_id: Optional[str] = None,
+            outstanding_provider_call_id: Optional[str] = None,
             extra: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         return await self.http_service.complete(
@@ -56,5 +65,22 @@ class GeminiClient(BaseLLMClient):
             tools=tools,
             temperature=temperature,
             max_output_tokens=max_output_tokens,
+            previous_response_id=previous_response_id,
+            outstanding_provider_call_id=outstanding_provider_call_id,
             extra=extra,
         )
+
+    def is_transient_error(self, exc: Exception) -> bool:
+        return is_retryable_model_failure(exc)
+
+    def build_error_meta(self, exc: Exception) -> Dict[str, Any]:
+        meta = super().build_error_meta(exc)
+        meta.update(
+            {
+                "classification": str(getattr(exc, "classification", "") or "").strip(),
+                "code": str(getattr(exc, "code", "") or "").strip(),
+                "status": getattr(exc, "status", None),
+                "request_id": str(getattr(exc, "request_id", "") or "").strip(),
+            }
+        )
+        return meta

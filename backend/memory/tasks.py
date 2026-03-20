@@ -15,10 +15,7 @@ from memory.scheduled_tasks import (
     DEFAULT_SCHEDULED_TASK_LIMIT,
     cleanup_scheduled_task_active_runs,
     claim_due_scheduled_tasks,
-    ensure_scheduled_task_execution_mode,
-    execute_scheduled_task,
     mark_scheduled_task_failure,
-    mark_scheduled_task_success,
 )
 from runs.models import AgentRun
 from runs.services.headless import launch_scheduled_task_run
@@ -40,26 +37,22 @@ def run_due_scheduled_tasks(*, limit: int = DEFAULT_SCHEDULED_TASK_LIMIT) -> dic
     for scheduled_task in claimed_tasks:
         processed += 1
         try:
-            execution_mode, _mode_corrected = ensure_scheduled_task_execution_mode(scheduled_task)
-            if execution_mode == ScheduledTask.ExecutionMode.HEADLESS_RUN:
-                _scheduled_task, run, did_launch = launch_scheduled_task_run(str(scheduled_task.id))
-                if did_launch and run.status == AgentRun.Status.WAITING_FOR_APPROVAL:
-                    awaiting_approval += 1
-                    continue
-                if did_launch:
-                    from runs.tasks import execute_headless_run_task
-
-                    execute_headless_run_task.delay(str(run.id))
-                    launched += 1
-                    succeeded += 1
-                else:
-                    logger.info(
-                        "Scheduled task %s already has active headless run %s",
-                        scheduled_task.id,
-                        run.id,
-                    )
+            _scheduled_task, run, did_launch = launch_scheduled_task_run(str(scheduled_task.id))
+            if did_launch and run.status == AgentRun.Status.WAITING_FOR_APPROVAL:
+                awaiting_approval += 1
                 continue
-            summary = execute_scheduled_task(scheduled_task)
+            if did_launch:
+                from runs.tasks import execute_headless_run_task
+
+                execute_headless_run_task.delay(str(run.id))
+                launched += 1
+                succeeded += 1
+            else:
+                logger.info(
+                    "Scheduled task %s already has active headless run %s",
+                    scheduled_task.id,
+                    run.id,
+                )
         except Exception as exc:  # noqa: BLE001
             failed += 1
             logger.exception(
@@ -69,9 +62,6 @@ def run_due_scheduled_tasks(*, limit: int = DEFAULT_SCHEDULED_TASK_LIMIT) -> dic
                 scheduled_task.agent.slug,
             )
             mark_scheduled_task_failure(scheduled_task, str(exc))
-        else:
-            succeeded += 1
-            mark_scheduled_task_success(scheduled_task, summary)
 
     return {
         "processed": processed,
@@ -87,28 +77,13 @@ def run_due_scheduled_tasks(*, limit: int = DEFAULT_SCHEDULED_TASK_LIMIT) -> dic
 @shared_task(name="memory.tasks.run_scheduled_task_once")
 def run_scheduled_task_once(task_id: str) -> dict[str, str]:
     scheduled_task = ScheduledTask.objects.select_related("agent", "workspace", "owner").get(id=task_id)
-    execution_mode, _mode_corrected = ensure_scheduled_task_execution_mode(scheduled_task)
-    if execution_mode == ScheduledTask.ExecutionMode.HEADLESS_RUN:
-        _scheduled_task, run, _did_launch = launch_scheduled_task_run(str(scheduled_task.id))
-        if run.status == AgentRun.Status.WAITING_FOR_APPROVAL:
-            return {"task_id": str(scheduled_task.id), "run_id": str(run.id), "status": "awaiting_approval"}
-        from runs.tasks import execute_headless_run_task
+    _scheduled_task, run, _did_launch = launch_scheduled_task_run(str(scheduled_task.id))
+    if run.status == AgentRun.Status.WAITING_FOR_APPROVAL:
+        return {"task_id": str(scheduled_task.id), "run_id": str(run.id), "status": "awaiting_approval"}
+    from runs.tasks import execute_headless_run_task
 
-        execute_headless_run_task.delay(str(run.id))
-        return {"task_id": str(scheduled_task.id), "run_id": str(run.id), "status": "launched"}
-    try:
-        summary = execute_scheduled_task(scheduled_task)
-    except Exception as exc:  # noqa: BLE001
-        logger.exception(
-            "Manual scheduled task execution failed task=%s type=%s agent=%s",
-            scheduled_task.id,
-            scheduled_task.task_type,
-            scheduled_task.agent.slug,
-        )
-        mark_scheduled_task_failure(scheduled_task, str(exc))
-        raise
-    mark_scheduled_task_success(scheduled_task, summary)
-    return {"task_id": str(scheduled_task.id), "summary": summary}
+    execute_headless_run_task.delay(str(run.id))
+    return {"task_id": str(scheduled_task.id), "run_id": str(run.id), "status": "launched"}
 
 
 @shared_task(name="memory.tasks.run_memory_retention_task")

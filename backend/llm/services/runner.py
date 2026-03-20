@@ -9,8 +9,14 @@ from django.conf import settings
 from django.utils import timezone
 
 from llm.models import AgentRole, LLMMessage, LLMModelProfile, LLMRun, LLMToolCall, MessageRole, RunStatus
+from llm.services.model_failover import (
+    build_model_failover_candidates,
+    is_retryable_model_failure,
+    normalize_backup_retry_policy,
+)
 from llm.services.providers.retry import retry_with_backoff
 from llm.services.registry import get_client
+from llm.services.tool_code import extract_code_like_tool_calls
 from llm.services.tool_schemas import get_tool_schemas
 from llm.services.toolrunner_bridge import run_tool
 from runs.services.input_items import build_ws_request_input_items
@@ -47,17 +53,42 @@ class LLMRunner:
         agent_name: Optional[str] = None,
         agent_role: Optional[str] = None,
         profile_name: Optional[str] = None,
+        provider: Optional[str] = None,
+        model_name: Optional[str] = None,
+        temperature: Optional[float] = None,
+        max_output_tokens: Optional[int] = None,
+        extra: Optional[Dict[str, Any]] = None,
         tools: Optional[List[Dict[str, Any]]] = None,
+        backup_models: Optional[List[Dict[str, Any]]] = None,
+        backup_retry_policy: Optional[Dict[str, Any]] = None,
         orchestration_run_id: Optional[str] = None,
         purpose: Optional[str] = None,
         max_tool_rounds: int = 3,
         max_elapsed_seconds: Optional[int] = None,
         messages: Optional[Sequence[Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
-        profile = await self._resolve_profile(profile_name, agent_role)
-        provider = profile.provider if profile else self.default_provider
-        model_name = profile.model if profile else ""
+        explicit_config = provider is not None and model_name is not None
+        if explicit_config:
+            profile = None
+            provider = str(provider or self.default_provider)
+            model_name = str(model_name or "")
+        else:
+            profile = await self._resolve_profile(profile_name, agent_role)
+            provider = profile.provider if profile else self.default_provider
+            model_name = profile.model if profile else ""
+            temperature = profile.temperature if profile else temperature
+            max_output_tokens = profile.max_output_tokens if profile else max_output_tokens
+            extra = profile.extra if profile else extra
         agent_display = agent_name or (profile.name if profile else "Unnamed")
+        model_candidates = await sync_to_async(build_model_failover_candidates)(
+            primary_provider=provider,
+            primary_model=model_name,
+            backup_models=backup_models,
+            default_provider=provider,
+        )
+        if not model_candidates:
+            model_candidates = [{"provider": provider, "model": model_name, "source": "primary"}]
+        backup_retry_policy = normalize_backup_retry_policy(backup_retry_policy)
 
         run = await sync_to_async(LLMRun.objects.create)(
             provider=provider,
@@ -81,156 +112,258 @@ class LLMRunner:
         usage_totals = {"token_prompt": 0, "token_completion": 0, "token_total": 0}
 
         async def _execute_transport() -> Dict[str, Any]:
-            nonlocal tool_call_count, usage_totals
+            nonlocal tool_call_count, usage_totals, provider, model_name
 
             resolved_tools = tools if tools is not None else get_tool_schemas()
-            client = get_client(provider)
-            transport = self._resolve_client_transport(client)
-            if transport == "ws":
-                return await self._run_ws_transport(
-                    client=client,
-                    run=run,
-                    history=history,
-                    tools=resolved_tools,
-                    model_name=model_name,
-                    orchestration_run_id=orchestration_run_id,
-                    max_tool_rounds=max_tool_rounds,
-                )
-
-            session = SimpleNamespace(reset_tools_sent=lambda: None)
+            allowed_tool_names = {
+                str(tool.get("name") or "").strip()
+                for tool in resolved_tools
+                if isinstance(tool, dict) and str(tool.get("name") or "").strip()
+            }
             tool_rounds = 0
-            while True:
-                response = await retry_with_backoff(
-                    lambda: client.complete(
-                        history,
-                        model=model_name,
-                        tools=resolved_tools,
-                        temperature=profile.temperature if profile else None,
-                        max_output_tokens=profile.max_output_tokens if profile else None,
-                        extra=profile.extra if profile else None,
-                    ),
-                    max_retries=self.max_retries,
-                    is_transient_error=getattr(client, "is_transient_error", None),
-                )
+            candidate_index = 0
+            while candidate_index < len(model_candidates):
+                candidate = model_candidates[candidate_index]
+                moved_to_next_candidate = False
+                provider = candidate["provider"]
+                model_name = candidate["model"]
+                await self._update_run_provider_model(run, provider, model_name)
+                client = get_client(provider)
+                transport = self._resolve_client_transport(client)
 
-                assistant_text = response.get("text") or ""
-                tool_calls = response.get("tool_calls") or []
-                usage = response.get("usage") or {}
-
-                await self._persist_message(run, MessageRole.ASSISTANT, assistant_text, meta={"raw": response.get("raw")})
-                assistant_entry = {"role": "assistant", "content": assistant_text or ""}
-                if tool_calls:
-                    converted_tool_calls = []
-                    for call in tool_calls:
-                        args_raw = call.get("arguments") or {}
-                        if isinstance(args_raw, str):
-                            arguments = args_raw
-                        else:
-                            arguments = json.dumps(args_raw, ensure_ascii=False)
-                        call_id = _call_id_value(call)
-                        converted_tool_calls.append(
-                            {
-                                "id": call_id,
-                                "type": "function",
-                                "function": {
-                                    "name": call.get("name"),
-                                    "arguments": arguments,
-                                },
-                            }
-                        )
-                    assistant_entry["tool_calls"] = converted_tool_calls
-                history.append(assistant_entry)
-
-                normalized_usage = self._normalize_usage(usage)
-                for key in usage_totals:
-                    usage_totals[key] += normalized_usage.get(key, 0)
-                await self._update_usage(run, usage_totals)
-
-                if tool_calls and resolved_tools:
-                    session.reset_tools_sent()
-                    for call in tool_calls:
-                        tool_name = (call.get("name") or "").strip()
-                        args_raw = call.get("arguments") or "{}"
-                        args_json: dict[str, Any] = {}
-                        parse_error: str | None = None
-                        if isinstance(args_raw, str):
-                            try:
-                                args_json = json.loads(args_raw)
-                            except json.JSONDecodeError:
-                                parse_error = "invalid_tool_call_arguments"
-                        elif isinstance(args_raw, dict):
-                            args_json = args_raw
-                        else:
-                            parse_error = "invalid_tool_call_arguments"
-
-                        if not tool_name:
-                            parse_error = "invalid_tool_call_missing_name"
-
-                        tool_call_obj = await sync_to_async(LLMToolCall.objects.create)(
+                if transport == "ws":
+                    try:
+                        return await self._run_ws_transport(
+                            client=client,
                             run=run,
-                            tool_name=tool_name or "unknown_tool",
-                            arguments=args_json,
+                            history=history,
+                            tools=resolved_tools,
+                            model_name=model_name,
+                            orchestration_run_id=orchestration_run_id,
+                            max_tool_rounds=max_tool_rounds,
                         )
-                        if parse_error:
-                            result_payload = {"ok": False, "error": parse_error}
-                            success = False
-                            error_txt = parse_error
-                        else:
-                            tool_orch_id = orchestration_run_id or str(run.id)
-                            result_payload = await self._execute_tool(tool_name, args_json, tool_orch_id)
-                            success = result_payload.get("ok", False)
-                            error_txt = result_payload.get("error") or ""
+                    except Exception as exc:
+                        if (
+                            candidate_index + 1 < len(model_candidates)
+                            and is_retryable_model_failure(
+                                exc,
+                                client=client,
+                                retry_policy=backup_retry_policy,
+                            )
+                        ):
+                            close_session = getattr(client, "close_ws_session", None)
+                            if callable(close_session):
+                                try:
+                                    await close_session(str(run.id), model=model_name)
+                                except Exception:
+                                    logger.exception(
+                                        "Failed to close ws session before model failover run=%s provider=%s model=%s",
+                                        run.id,
+                                        provider,
+                                        model_name,
+                                    )
+                            logger.warning(
+                                "LLMRunner failover from provider=%s model=%s to provider=%s model=%s run=%s error=%s",
+                                provider,
+                                model_name,
+                                model_candidates[candidate_index + 1]["provider"],
+                                model_candidates[candidate_index + 1]["model"],
+                                run.id,
+                                exc,
+                            )
+                            candidate_index += 1
+                            moved_to_next_candidate = True
+                            break
+                        raise
 
-                        await sync_to_async(self._finalize_tool_call)(
-                            tool_call_obj,
-                            success=success,
-                            result=result_payload.get("result"),
-                            error=error_txt,
-                        )
+                while True:
+                    response = None
+                    max_same_model_retries = int(backup_retry_policy.get("retry_same_model_attempts", 1) or 0)
+                    transient_checker = getattr(client, "is_transient_error", None)
+                    try:
+                        for attempt in range(max_same_model_retries + 1):
+                            try:
+                                response = await client.complete(
+                                    history,
+                                    model=model_name,
+                                    tools=resolved_tools,
+                                    temperature=temperature,
+                                    max_output_tokens=max_output_tokens,
+                                    extra=extra,
+                                )
+                                break
+                            except Exception as exc:
+                                if attempt >= max_same_model_retries or not (
+                                    callable(transient_checker) and transient_checker(exc)
+                                ):
+                                    raise
+                                await asyncio.sleep(float(2**attempt))
+                    except Exception as exc:
+                        if candidate_index + 1 < len(model_candidates) and is_retryable_model_failure(
+                            exc,
+                            client=client,
+                            retry_policy=backup_retry_policy,
+                        ):
+                            logger.warning(
+                                "LLMRunner model failover run=%s provider=%s model=%s next_provider=%s next_model=%s error=%s",
+                                run.id,
+                                provider,
+                                model_name,
+                                model_candidates[candidate_index + 1]["provider"],
+                                model_candidates[candidate_index + 1]["model"],
+                                exc,
+                            )
+                            candidate_index += 1
+                            moved_to_next_candidate = True
+                            break
+                        raise
 
-                        tool_message_content = json.dumps(result_payload, ensure_ascii=False)
-                        await self._persist_message(
-                            run,
-                            MessageRole.TOOL,
-                            tool_message_content or "",
-                            name=tool_name,
-                            meta={"tool_call_id": tool_call_obj.id},
-                        )
-                        history.append(
-                            {
-                                "role": "tool",
-                                "tool_call_id": call.get("id"),
-                                "content": tool_message_content or "",
+                    if response is None:
+                        raise RuntimeError("LLM completion returned no response")
+
+                    assistant_text = response.get("text") or ""
+                    tool_calls = response.get("tool_calls") or []
+                    if not tool_calls and assistant_text:
+                        synthesized_tool_calls = extract_code_like_tool_calls(assistant_text, allowed_tool_names)
+                        if synthesized_tool_calls:
+                            logger.warning(
+                                "Repaired code-like tool output run=%s provider=%s model=%s tool_names=%s",
+                                run.id,
+                                provider,
+                                model_name,
+                                [call.get("name") for call in synthesized_tool_calls],
+                            )
+                            tool_calls = synthesized_tool_calls
+                            assistant_text = ""
+                    usage = response.get("usage") or {}
+
+                    await self._persist_message(
+                        run,
+                        MessageRole.ASSISTANT,
+                        assistant_text,
+                        meta={
+                            "raw": response.get("raw"),
+                            "tool_code_repaired": bool(tool_calls and not assistant_text),
+                        },
+                    )
+                    assistant_entry = {"role": "assistant", "content": assistant_text or ""}
+                    if tool_calls:
+                        converted_tool_calls = []
+                        for call in tool_calls:
+                            args_raw = call.get("arguments") or {}
+                            if isinstance(args_raw, str):
+                                arguments = args_raw
+                            else:
+                                arguments = json.dumps(args_raw, ensure_ascii=False)
+                            call_id = _call_id_value(call)
+                            converted_tool_calls.append(
+                                {
+                                    "id": call_id,
+                                    "type": "function",
+                                    "function": {
+                                        "name": call.get("name"),
+                                        "arguments": arguments,
+                                    },
+                                }
+                            )
+                        assistant_entry["tool_calls"] = converted_tool_calls
+                    history.append(assistant_entry)
+
+                    normalized_usage = self._normalize_usage(usage)
+                    for key in usage_totals:
+                        usage_totals[key] += normalized_usage.get(key, 0)
+                    await self._update_usage(run, usage_totals)
+
+                    if tool_calls and resolved_tools:
+                        for call in tool_calls:
+                            tool_name = (call.get("name") or "").strip()
+                            args_raw = call.get("arguments") or "{}"
+                            args_json: dict[str, Any] = {}
+                            parse_error: str | None = None
+                            if isinstance(args_raw, str):
+                                try:
+                                    args_json = json.loads(args_raw)
+                                except json.JSONDecodeError:
+                                    parse_error = "invalid_tool_call_arguments"
+                            elif isinstance(args_raw, dict):
+                                args_json = args_raw
+                            else:
+                                parse_error = "invalid_tool_call_arguments"
+
+                            if not tool_name:
+                                parse_error = "invalid_tool_call_missing_name"
+
+                            tool_call_obj = await sync_to_async(LLMToolCall.objects.create)(
+                                run=run,
+                                tool_name=tool_name or "unknown_tool",
+                                arguments=args_json,
+                            )
+                            if parse_error:
+                                result_payload = {"ok": False, "error": parse_error}
+                                success = False
+                                error_txt = parse_error
+                            else:
+                                tool_orch_id = orchestration_run_id or str(run.id)
+                                result_payload = await self._execute_tool(tool_name, args_json, tool_orch_id)
+                                success = result_payload.get("ok", False)
+                                error_txt = result_payload.get("error") or ""
+
+                            await sync_to_async(self._finalize_tool_call)(
+                                tool_call_obj,
+                                success=success,
+                                result=result_payload.get("result"),
+                                error=error_txt,
+                            )
+
+                            tool_message_content = json.dumps(result_payload, ensure_ascii=False)
+                            await self._persist_message(
+                                run,
+                                MessageRole.TOOL,
+                                tool_message_content or "",
+                                name=tool_name,
+                                meta={"tool_call_id": tool_call_obj.id},
+                            )
+                            history.append(
+                                {
+                                    "role": "tool",
+                                    "tool_call_id": call.get("id"),
+                                    "content": tool_message_content or "",
+                                }
+                            )
+                            tool_call_count += 1
+
+                        tool_rounds += 1
+                        if tool_rounds > max_tool_rounds:
+                            await self._finalize_run(
+                                run,
+                                RunStatus.FAILED,
+                                error="max_tool_rounds_exceeded",
+                                usage=usage_totals,
+                                error_meta={"error_type": "ToolRoundLimit", "error": "max_tool_rounds_exceeded"},
+                            )
+                            return {
+                                "run_id": str(run.id),
+                                "text": "",
+                                "tool_calls_executed": tool_call_count,
+                                "status": "failed",
+                                "error": "max_tool_rounds_exceeded",
                             }
-                        )
-                        tool_call_count += 1
+                        continue
 
-                    tool_rounds += 1
-                    if tool_rounds > max_tool_rounds:
-                        await self._finalize_run(
-                            run,
-                            RunStatus.FAILED,
-                            error="max_tool_rounds_exceeded",
-                            usage=usage_totals,
-                            error_meta={"error_type": "ToolRoundLimit", "error": "max_tool_rounds_exceeded"},
-                        )
-                        return {
-                            "run_id": str(run.id),
-                            "text": "",
-                            "tool_calls_executed": tool_call_count,
-                            "status": "failed",
-                            "error": "max_tool_rounds_exceeded",
-                        }
+                    await self._finalize_run(run, RunStatus.COMPLETED, usage=usage_totals)
+                    return {
+                        "run_id": str(run.id),
+                        "text": assistant_text,
+                        "tool_calls_executed": tool_call_count,
+                        "status": "completed",
+                        "error": None,
+                    }
+
+                if moved_to_next_candidate:
                     continue
+                candidate_index += 1
 
-                await self._finalize_run(run, RunStatus.COMPLETED, usage=usage_totals)
-                return {
-                    "run_id": str(run.id),
-                    "text": assistant_text,
-                    "tool_calls_executed": tool_call_count,
-                    "status": "completed",
-                    "error": None,
-                }
+            raise RuntimeError("No LLM model candidates available")
 
         try:
             if max_elapsed_seconds and int(max_elapsed_seconds) > 0:
@@ -315,6 +448,18 @@ class LLMRunner:
         }
         await sync_to_async(LLMRun.objects.filter(id=run.id).update)(**fields)
 
+    async def _update_run_provider_model(self, run: LLMRun, provider: str, model_name: str) -> None:
+        provider_value = str(provider or "").strip() or run.provider
+        model_value = str(model_name or "").strip() or run.model
+        if run.provider == provider_value and run.model == model_value:
+            return
+        run.provider = provider_value
+        run.model = model_value
+        await sync_to_async(LLMRun.objects.filter(id=run.id).update)(
+            provider=provider_value,
+            model=model_value,
+        )
+
     async def _run_ws_transport(
         self,
         *,
@@ -333,6 +478,11 @@ class LLMRunner:
         await client.cleanup_ws_sessions()
         session = await client.get_ws_session(str(run.id), model_name)
         session_tools = client.format_tool_definitions_for_responses(tools)
+        allowed_tool_names = {
+            str(tool.get("name") or "").strip()
+            for tool in tools
+            if isinstance(tool, dict) and str(tool.get("name") or "").strip()
+        }
 
         initial_input_items = self._build_ws_input_items(
             history,
@@ -342,7 +492,7 @@ class LLMRunner:
         initial_payload_snapshot: dict[str, Any] = {
             "type": "response.create",
             "model": model_name,
-            "store": False,
+            "store": True,
             "input": initial_input_items,
             "previous_response_id": getattr(session, "previous_response_id", None),
         }
@@ -364,7 +514,7 @@ class LLMRunner:
             payload_snapshot: dict[str, Any] = {
                 "type": "response.create",
                 "model": model_name,
-                "store": False,
+                "store": True,
                 "input": input_items,
                 "previous_response_id": getattr(session, "previous_response_id", None),
             }
@@ -397,29 +547,36 @@ class LLMRunner:
                     continue
                 if self._client_is_ws_exception(client, exc):
                     await client.close_ws_session(str(run.id), model=model_name)
-                    await self._finalize_run(
-                        run,
-                        RunStatus.FAILED,
-                        error=str(exc),
-                        usage=usage_totals,
-                        error_meta=self._client_error_meta(client, exc),
-                    )
-                    return {
-                        "run_id": str(run.id),
-                        "text": "",
-                        "tool_calls_executed": tool_call_count,
-                        "status": "failed",
-                        "error": str(exc),
-                    }
+                    raise
                 raise
 
             await self._record_response_id(run, response.get("response_id"))
 
             assistant_text = response.get("text") or ""
-            final_text = assistant_text
-            await self._persist_message(run, MessageRole.ASSISTANT, assistant_text, meta={"raw": response.get("raw")})
-            assistant_entry = {"role": "assistant", "content": assistant_text or ""}
             tool_calls = response.get("tool_calls") or []
+            if not tool_calls and assistant_text:
+                synthesized_tool_calls = extract_code_like_tool_calls(assistant_text, allowed_tool_names)
+                if synthesized_tool_calls:
+                    logger.warning(
+                        "Repaired code-like tool output run=%s provider=%s model=%s tool_names=%s",
+                        run.id,
+                        provider,
+                        model_name,
+                        [call.get("name") for call in synthesized_tool_calls],
+                    )
+                    tool_calls = synthesized_tool_calls
+                    assistant_text = ""
+            final_text = assistant_text
+            await self._persist_message(
+                run,
+                MessageRole.ASSISTANT,
+                assistant_text,
+                meta={
+                    "raw": response.get("raw"),
+                    "tool_code_repaired": bool(tool_calls and not assistant_text),
+                },
+            )
+            assistant_entry = {"role": "assistant", "content": assistant_text or ""}
             if tool_calls:
                 converted_tool_calls = []
                 for call in tool_calls:

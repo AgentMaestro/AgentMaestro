@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+from types import SimpleNamespace
 import re
 import time
 import uuid
@@ -11,20 +12,26 @@ from asgiref.sync import sync_to_async
 from channels.db import database_sync_to_async
 from channels.generic.websocket import AsyncJsonWebsocketConsumer
 from django.conf import settings
+from django.urls import NoReverseMatch
+from django.urls import reverse
 from django.utils import timezone
 
 from agents.models import Agent
 from agents.utils import (
     build_transport_status,
     format_provider_display,
+    get_agent_telegram_mirror_enabled,
     normalize_provider_for_model,
 )
 from core.models import WorkspaceMembership
 from llm.models import LLMModelProfile
+from llm.services.model_failover import is_retryable_model_failure
+from llm.services.providers.retry import retry_with_backoff
 from llm.services.registry import get_client
+from llm.services.tool_code import extract_code_like_tool_calls
 from llm.system_context import build_system_context
 from memory.remember_requests import capture_explicit_user_memory_request
-from runs.models import AgentRun, AgentStep
+from runs.models import AgentRun, AgentStep, RunEvent
 from runs.services.recovery import cancel_run, pause_run, resume_run
 from scrubadub import Scrubber
 from runs.services.event_builders import (
@@ -59,6 +66,7 @@ logger = logging.getLogger(__name__)
 SCRUBBER = Scrubber()
 DEBUG_GROUP_ECHO_EVENT = "debug_group_echo"
 DEBUG_GROUP_ECHO_FROM_EVENTS = "debug_group_echo_from_events"
+AGENTS_MD_BOOTSTRAP_EVENT = "agents_md_bootstrap"
 URL_PLACEHOLDER_RE = re.compile(r"https?://[^\s<>\"]+")
 
 
@@ -69,13 +77,16 @@ def _should_scrub_prompts() -> bool:
     return should_scrub
 
 
+def _show_condensed_system_logs() -> bool:
+    return getattr(settings, "SHOW_CONDENSED_SYSTEM_LOGS", True)
+
+
 def _run_group(run_id: str) -> str:
     return f"run.{run_id}"
 
 
 def _approvals_group(workspace_id: str) -> str:
     return f"approvals.{workspace_id}"
-
 
 
 @database_sync_to_async
@@ -101,6 +112,27 @@ def _get_profile(policy_name: str | None) -> LLMModelProfile | None:
         .order_by("name")
         .first()
     )
+
+
+@database_sync_to_async
+def _get_run_step_admin_link(run_id: str, step_index: int | None = None) -> dict[str, object] | None:
+    steps = AgentStep.objects.filter(run_id=run_id)
+    if step_index is not None:
+        step = steps.filter(step_index=step_index).order_by("-created_at").first()
+    else:
+        step = steps.order_by("-step_index", "-created_at").first()
+    if not step:
+        return None
+    try:
+        admin_step_url = reverse("admin:runs_agentstep_change", args=[str(step.id)])
+    except NoReverseMatch:
+        logger.warning("AgentStep admin reverse missing; skipping condensed log link run=%s step_id=%s", run_id, step.id)
+        return None
+    return {
+        "admin_step_url": admin_step_url,
+        "admin_step_label": f"step {step.step_index}",
+        "admin_step_index": step.step_index,
+    }
 
 
 def _scrub_input_text(text: str | None) -> tuple[str, list[str]]:
@@ -181,6 +213,15 @@ def _update_provider_metadata(tool_call_id: str, call_id: str) -> None:
 
 
 @database_sync_to_async
+def _get_tool_call_details(tool_call_id: str) -> dict[str, object] | None:
+    return (
+        ToolCall.objects.filter(id=tool_call_id)
+        .values("tool_name", "args", "status")
+        .first()
+    )
+
+
+@database_sync_to_async
 def _assert_tool_allowed(agent: Agent, user, tool_name: str):
     return assert_tool_allowed(agent, user, tool_name)
 
@@ -215,7 +256,8 @@ def _get_run_status(run_id: str) -> str | None:
 
 @database_sync_to_async
 def _set_run_previous_response_id(run_id: str, previous_response_id: str | None) -> None:
-    AgentRun.objects.filter(id=run_id).update(previous_response_id=str(previous_response_id or "").strip())
+    normalized = str(previous_response_id or "").strip() or ""
+    AgentRun.objects.filter(id=run_id).update(previous_response_id=normalized)
 
 
 @database_sync_to_async
@@ -230,6 +272,28 @@ def _build_transport_status(agent: Agent):
     return build_transport_status(agent)
 
 
+OPENAI_RESPONSE_ID_PATTERN = re.compile(r"^resp_[A-Za-z0-9_-]+$")
+
+
+def _normalize_openai_response_id(value: object) -> str | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    if not OPENAI_RESPONSE_ID_PATTERN.fullmatch(text):
+        logger.warning("Discarding invalid OpenAI response id value=%r", text)
+        return None
+    return text
+
+
+def _normalize_provider_response_id(provider: object, value: object) -> str | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    if str(provider or "").strip().lower() == "openai":
+        return _normalize_openai_response_id(text)
+    return text
+
+
 @database_sync_to_async
 def _get_effective_tools(agent: Agent, user):
     return get_effective_tools(agent, user)
@@ -238,6 +302,30 @@ def _get_effective_tools(agent: Agent, user):
 @database_sync_to_async
 def _get_active_tool_approval_grants(run_id: str):
     return active_grants_for_run(run_id)
+
+
+@database_sync_to_async
+def _get_model_failover_candidates(agent: Agent, provider: str, model_name: str):
+    return agent.get_model_failover_candidates(primary_provider=provider, primary_model=model_name)
+
+
+@database_sync_to_async
+def _get_backup_retry_policy(agent: Agent):
+    return agent.get_backup_retry_policy()
+
+
+@database_sync_to_async
+def _get_last_assistant_model_for_run(run_id: str) -> str | None:
+    payload = (
+        RunEvent.objects.filter(run_id=run_id, event_type="assistant_message")
+        .order_by("-seq")
+        .values_list("payload", flat=True)
+        .first()
+    )
+    if not isinstance(payload, dict):
+        return None
+    model_name = str(payload.get("model") or "").strip()
+    return model_name or None
 
 
 @database_sync_to_async
@@ -290,6 +378,50 @@ def _persist_chat_history_event(
         payload=payload,
         broadcast_to_run=False,
     )
+
+
+def _payload_mentions_agents_md(value: object) -> bool:
+    if isinstance(value, dict):
+        path_value = value.get("path")
+        if str(path_value or "").strip() and Path(str(path_value)).name.upper() == "AGENTS.MD":
+            return True
+        for nested_key in ("args", "result", "content", "stdout", "stderr", "payload"):
+            if _payload_mentions_agents_md(value.get(nested_key)):
+                return True
+        return False
+    if isinstance(value, list):
+        return any(_payload_mentions_agents_md(item) for item in value)
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return False
+        if "AGENTS.md" in text or "AGENTS.MD" in text:
+            return True
+        try:
+            return _payload_mentions_agents_md(json.loads(text))
+        except Exception:
+            return False
+    return False
+
+
+@database_sync_to_async
+def _run_has_agents_md_bootstrap_complete(run_id: str) -> bool:
+    if not run_id:
+        return False
+    events = RunEvent.objects.filter(
+        run_id=run_id,
+        event_type__in=["tool_call_completed", AGENTS_MD_BOOTSTRAP_EVENT],
+    ).order_by("seq")
+    for event in events:
+        if event.event_type == AGENTS_MD_BOOTSTRAP_EVENT:
+            return True
+        payload = event.payload if isinstance(event.payload, dict) else {}
+        tool_name = str(payload.get("tool_name") or "").strip().lower()
+        if tool_name != "file_read":
+            continue
+        if _payload_mentions_agents_md(payload):
+            return True
+    return False
 
 
 def _normalize_repo_tree_args(args: dict[str, object]) -> dict[str, object]:
@@ -363,31 +495,121 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
         self._last_provider_call_id: str | None = None
         self._tool_output_payload: dict[str, object] | None = None
         self._awaiting_tool_output = False
+        self._agents_md_bootstrap_complete = False
+        self._response_chain_previous_id: str = ""
         self._system_context_marker = "_agentmaestro_system_context"
+        self._model_candidates: list[dict[str, object]] = []
+        self._active_model_candidate_index: int = 0
+        self._backup_retry_policy: dict[str, object] = {}
 
     async def _log_transport_traffic(self, label: str, data: object | None):
         if not data:
             return
+        condensed = _show_condensed_system_logs()
         try:
-            payload_text = json.dumps(data, ensure_ascii=False, default=str)
+            payload_text = (
+                json.dumps(self._condense_transport_payload(label, data), ensure_ascii=False, default=str)
+                if condensed
+                else json.dumps(data, ensure_ascii=False, default=str)
+            )
         except Exception:
             payload_text = str(data)
         provider_label = self.provider_label or "Provider"
         model_label = self.model_name or "unknown"
         transport_label = self._transport_label()
         provider_marker = f"[{provider_label}:{model_label}:{transport_label}]"
-        await self.send_json(
-            {
-                "type": "system",
-                "text": f"{provider_marker} [{str(label)}] {payload_text}",
-                "timestamp": timezone.now().isoformat(),
-                "provider": self.provider,
-                "provider_label": provider_label,
-                "model": model_label,
-                "transport": self.transport,
-                "transport_label": transport_label,
-            }
-        )
+        message = {
+            "type": "system",
+            "text": f"{provider_marker} [{str(label)}] {payload_text}",
+            "timestamp": timezone.now().isoformat(),
+            "provider": self.provider,
+            "provider_label": provider_label,
+            "model": model_label,
+            "transport": self.transport,
+            "transport_label": transport_label,
+            "log_mode": "condensed" if condensed else "full",
+        }
+        if condensed and self.run_id:
+            step_link = await _get_run_step_admin_link(
+                self.run_id,
+                getattr(self.run, "current_step_index", None),
+            )
+            if step_link:
+                message.update(step_link)
+        await self.send_json(message)
+
+    def _condense_transport_payload(self, label: str, data: object) -> object:
+        if not isinstance(data, dict):
+            return data
+        summary: dict[str, object] = {}
+        text_label = str(label).upper()
+        if "model" in data and data.get("model"):
+            summary["model"] = data.get("model")
+        if "HTTP SEND" in text_label or "WS SEND" in text_label:
+            if "type" in data:
+                summary["type"] = data.get("type")
+            if "store" in data:
+                summary["store"] = data.get("store")
+            previous_response_id = str(data.get("previous_response_id") or "").strip()
+            if previous_response_id:
+                summary["previous_response_id"] = previous_response_id
+            if isinstance(data.get("messages"), list):
+                summary["messages"] = len(data.get("messages") or [])
+            if isinstance(data.get("input"), list):
+                summary["input_items"] = len(data.get("input") or [])
+            if isinstance(data.get("tools"), list):
+                summary["tools"] = self._tool_names_from_payload(data.get("tools") or [])
+            return summary or data
+        response_payload = data.get("response") if "response" in data else data
+        summary["response"] = self._summarize_provider_response(response_payload)
+        return summary
+
+    @staticmethod
+    def _tool_names_from_payload(tools: list[object]) -> list[str]:
+        names: list[str] = []
+        for tool in tools:
+            if not isinstance(tool, dict):
+                continue
+            tool_name = str(
+                tool.get("name")
+                or tool.get("function", {}).get("name")
+                or ""
+            ).strip()
+            if tool_name:
+                names.append(tool_name)
+        return names
+
+    @staticmethod
+    def _summarize_provider_response(response: object) -> object:
+        if not isinstance(response, dict):
+            return response
+        raw_response = response.get("response")
+        if not isinstance(raw_response, dict):
+            raw_response = response
+        summary: dict[str, object] = {}
+        response_id = str(
+            response.get("response_id")
+            or raw_response.get("response_id")
+            or raw_response.get("id")
+            or ""
+        ).strip()
+        if response_id:
+            summary["response_id"] = response_id
+        text_value = response.get("text")
+        if isinstance(text_value, str):
+            summary["text_len"] = len(text_value)
+        if "text_len" not in summary:
+            raw_text = raw_response.get("text") or raw_response.get("output_text") or ""
+            if isinstance(raw_text, str):
+                summary["text_len"] = len(raw_text)
+        tool_calls = response.get("tool_calls")
+        if isinstance(tool_calls, list):
+            summary["tool_calls"] = len(tool_calls)
+        else:
+            raw_tool_calls = raw_response.get("tool_calls")
+            if isinstance(raw_tool_calls, list):
+                summary["tool_calls"] = len(raw_tool_calls)
+        return summary
 
     def _transport_label(self) -> str:
         return "WS" if self.use_ws else "HTTP"
@@ -399,6 +621,59 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
         provider_label = (self.provider_label or "Provider").strip() or "Provider"
         model_label = self.model_name or "unknown"
         return f"{provider_label}:{model_label}:{self._transport_label()}"
+
+    async def _switch_model_candidate(self, candidate_index: int) -> bool:
+        if not self._model_candidates:
+            return False
+        if candidate_index < 0 or candidate_index >= len(self._model_candidates):
+            return False
+        candidate = self._model_candidates[candidate_index]
+        previous_client = self.client
+        previous_model = self.model_name
+        previous_use_ws = self.use_ws
+        if previous_use_ws and self.run_id:
+            closer = getattr(previous_client, "close_ws_session", None)
+            if callable(closer):
+                try:
+                    await closer(str(self.run_id), model=previous_model or None)
+                except Exception:
+                    logger.exception(
+                        "Failed to close ws session before switching model candidate run=%s provider=%s model=%s",
+                        self.run_id,
+                        self.provider,
+                        previous_model,
+                    )
+        self._active_model_candidate_index = candidate_index
+        self.provider = str(candidate.get("provider") or self.provider or "openai").strip() or "openai"
+        self.model_name = str(candidate.get("model") or self.model_name or "").strip()
+        self.provider_label = format_provider_display(self.provider)
+        self.client = get_client(self.provider)
+        transport_resolver = getattr(self.client, "resolve_transport", None)
+        resolved_transport = (
+            transport_resolver() if callable(transport_resolver) else getattr(self.client, "transport", "http")
+        )
+        self.transport = (resolved_transport or "http").lower()
+        self.use_ws = self.transport == "ws"
+        self.current_runtime_label = self._runtime_transport_label()
+        self._response_chain_previous_id = ""
+        if self.use_ws:
+            self.session = await self.client.get_ws_session(
+                self.run_id,
+                self.model_name,
+                agent_id=str(self.agent.id) if self.agent else None,
+            )
+        else:
+            self.session = SimpleNamespace(previous_response_id=None)
+        await _set_run_previous_response_id(self.run_id or "", None)
+        logger.info(
+            "Switched model candidate run=%s candidate_index=%s provider=%s model=%s transport=%s",
+            self.run_id,
+            candidate_index,
+            self.provider,
+            self.model_name,
+            self.transport,
+        )
+        return True
 
     async def connect(self):
         logger.info(
@@ -484,7 +759,9 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
 
         self.run = run
         self.run_id = str(run.id)
-        hydrated_previous_response_id = str(getattr(run, "previous_response_id", "") or "").strip()
+        hydrated_previous_response_id = str(getattr(run, "previous_response_id", "") or "").strip() or None
+        self._response_chain_previous_id = hydrated_previous_response_id
+        await self._hydrate_agents_md_bootstrap_state()
         layer = getattr(self, "channel_layer", None)
         logger.info(
             "connect channel_layer=%s channel_name=%s run_id=%s",
@@ -492,6 +769,9 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
             getattr(self, "channel_name", None),
             self.run_id,
         )
+        resumed_model_name = None
+        if reused_existing_run:
+            resumed_model_name = await _get_last_assistant_model_for_run(self.run_id)
         profile = await _get_profile(agent.policy_name)
         configured_provider = profile.provider if profile else getattr(settings, "LLM_PROVIDER", "openai")
         model_name = profile.model if profile else agent.default_model
@@ -503,75 +783,62 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
                 provider,
                 model_name,
             )
-        self.client = get_client(provider)
-        self.model_name = model_name
-        self.provider = provider
-        self.provider_label = format_provider_display(provider)
-        transport_resolver = getattr(self.client, "resolve_transport", None)
-        resolved_transport = (
-            transport_resolver() if callable(transport_resolver) else getattr(self.client, "transport", "http")
-        )
-        self.transport = (resolved_transport or "http").lower()
-        self.use_ws = self.transport == "ws"
-        transport_label = self._transport_label()
-        runtime_label = f"{self.provider_label}:{self.model_name or 'unknown'}:{transport_label}"
-        logger.debug(
-            "Opening transport session for agent=%s provider=%s run=%s model=%s transport=%s",
-            agent.slug,
-            self.provider,
-            self.run_id,
-            model_name,
-            self.transport,
-        )
+        self.client = None
         self.session = None
-        if self.use_ws:
-            await self.client.cleanup_ws_sessions()
-            try:
-                self.session = await self.client.get_ws_session(
-                    self.run_id, model_name, agent_id=str(agent.id)
-                )
-                session_previous_response_id = str(
-                    getattr(self.session, "previous_response_id", "") or ""
-                ).strip()
-                if hydrated_previous_response_id and not session_previous_response_id:
-                    self.session.previous_response_id = hydrated_previous_response_id
-                    restored_previous_response_id = True
+        self.transport = "http"
+        self.use_ws = False
+        self._model_candidates = await _get_model_failover_candidates(agent, provider, model_name)
+        if not self._model_candidates:
+            self._model_candidates = [{"provider": provider, "model": model_name, "source": "primary"}]
+        self._backup_retry_policy = await _get_backup_retry_policy(agent)
+        self._active_model_candidate_index = 0
+        if resumed_model_name:
+            resumed_provider = normalize_provider_for_model(provider, resumed_model_name)
+            for index, candidate in enumerate(self._model_candidates):
+                candidate_provider = str(candidate.get("provider") or "").strip().lower()
+                candidate_model = str(candidate.get("model") or "").strip()
+                if candidate_provider == resumed_provider and candidate_model == resumed_model_name:
                     logger.info(
-                        "Restored persisted previous_response_id for agent=%s run=%s previous_response_id=%s",
+                        "Restoring active model candidate from run history agent=%s run=%s provider=%s model=%s candidate_index=%s",
                         agent.slug,
                         self.run_id,
-                        hydrated_previous_response_id,
+                        resumed_provider,
+                        resumed_model_name,
+                        index,
                     )
-                elif session_previous_response_id and session_previous_response_id != hydrated_previous_response_id:
-                    await _set_run_previous_response_id(self.run_id, session_previous_response_id)
-            except Exception as exc:
-                logger.error(
-                    "Failed to establish transport session for provider=%s agent=%s run=%s model=%s: %s",
-                    self.provider,
+                    if index > 0:
+                        self._model_candidates = self._model_candidates[index:] + self._model_candidates[:index]
+                    self._active_model_candidate_index = 0
+                    break
+        await self._switch_model_candidate(self._active_model_candidate_index)
+        if self.use_ws:
+            session_previous_response_id = _normalize_provider_response_id(
+                self.provider,
+                getattr(self.session, "previous_response_id", ""),
+            )
+            if hydrated_previous_response_id and not session_previous_response_id:
+                self.session.previous_response_id = hydrated_previous_response_id or ""
+                restored_previous_response_id = True
+                logger.info(
+                    "Restored persisted previous_response_id for agent=%s run=%s previous_response_id=%s",
                     agent.slug,
                     self.run_id,
-                    model_name,
-                    exc,
-                    exc_info=True,
+                    hydrated_previous_response_id,
                 )
-                await self.close(code=1011)
-                return
-            logger.info(
-                "Transport session established for provider=%s agent=%s run=%s model=%s",
-                self.provider,
-                agent.slug,
-                self.run_id,
-                model_name,
-            )
+            elif session_previous_response_id and session_previous_response_id != hydrated_previous_response_id:
+                await _set_run_previous_response_id(self.run_id, session_previous_response_id)
         else:
+            if self.session is None:
+                self.session = SimpleNamespace(previous_response_id=hydrated_previous_response_id)
+            else:
+                self.session.previous_response_id = hydrated_previous_response_id
             logger.info(
                 "Transport ready for provider=%s agent=%s run=%s model=%s",
                 self.provider,
                 agent.slug,
                 self.run_id,
-                model_name,
+                self.model_name,
             )
-        self.current_runtime_label = runtime_label
 
         effective_tools = await _get_effective_tools(agent, user)
         self.tools_meta = [
@@ -677,7 +944,7 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
         await self.accept()
         self._connected = True
         transport_status = await _build_transport_status(agent)
-        runtime_label = getattr(self, "current_runtime_label", None) or f"{self.provider_label}:{self.model_name or 'unknown'}:{self._transport_label()}"
+        transport_label = self._transport_label()
         await self.send_json(
             {
                 "type": "connected",
@@ -689,7 +956,7 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
                 "transport": self.transport,
                 "transport_label": transport_label,
                 "run_id": self.run_id,
-                "model": model_name,
+                "model": self.model_name,
                 "approval_grants": await _get_active_tool_approval_grants(self.run_id),
                 "run_status": run.status,
                 "handoff": handoff_payload or None,
@@ -699,7 +966,7 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
         transport_runtime = self._transport_label()
         if reused_existing_run:
             reconnect_text = (
-                f"{self.provider_label} {model_name} {transport_detail} run reconnected after a local browser disconnect."
+                f"{self.provider_label} {self.model_name} {transport_detail} run reconnected after a local browser disconnect."
             )
             if self.use_ws and (restored_previous_response_id or str(getattr(self.session, "previous_response_id", "") or "").strip()):
                 reconnect_text += " Responses continuity was restored from our saved provider cursor."
@@ -712,9 +979,9 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
                     "text": reconnect_text,
                     "timestamp": timezone.now().isoformat(),
                 }
-            )
+        )
         system_detail = (
-            f"{self.provider_label} provider '{model_name}' transport '{transport_detail}' connected on run {self.run_id}."
+            f"{self.provider_label} provider '{self.model_name}' transport '{transport_detail}' connected on run {self.run_id}."
         )
         await self.send_json(
             {
@@ -724,7 +991,7 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
                 "timestamp": timezone.now().isoformat(),
                 "provider": self.provider,
                 "provider_label": self.provider_label,
-                "model": model_name,
+                "model": self.model_name,
                 "transport": self.transport,
                 "transport_label": transport_runtime,
             }
@@ -963,18 +1230,21 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
                     "role": "operator",
                     "direction": "out",
                     "author": author_label or ("You via Telegram" if source_transport else "You"),
+                    "source_transport": source_transport or "",
                     "text": sanitized_text,
                     "timestamp": timezone.now().isoformat(),
                 }
             )
-        if mirror_to_transport and not source_transport:
-            user = self.scope.get("user")
-            await sync_to_async(send_run_transport_message)(
-                run_id=str(self.run_id),
-                text=sanitized_text,
-                author_label=(getattr(user, "get_username", lambda: None)() or "user"),
-                control_payload={"event_type": "chat_message", "role": "user"},
-            )
+        if mirror_to_transport and not source_transport and self.agent:
+            mirror_enabled = await sync_to_async(get_agent_telegram_mirror_enabled)(self.agent)
+            if mirror_enabled:
+                user = self.scope.get("user")
+                await sync_to_async(send_run_transport_message)(
+                    run_id=str(self.run_id),
+                    text=sanitized_text,
+                    author_label=(getattr(user, "get_username", lambda: None)() or "user"),
+                    control_payload={"event_type": "chat_message", "role": "user"},
+                )
         run_status = await _get_run_status(self.run_id or "")
         if run_status in {AgentRun.Status.PAUSED, AgentRun.Status.WAITING_FOR_USER}:
             self._queued_user_message = True
@@ -1052,7 +1322,7 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
                 self.run_id,
                 self._transport_label(),
                 len(input_items),
-                getattr(self.session, "previous_response_id", None),
+                self._current_previous_response_id(),
                 len(tools or []),
             )
             if tools:
@@ -1065,7 +1335,7 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
             }
             if tools:
                 payload_snapshot["tools"] = tools
-            previous_id = getattr(self.session, "previous_response_id", None)
+            previous_id = self._current_previous_response_id()
             if previous_id:
                 payload_snapshot["previous_response_id"] = previous_id
             if self._last_tool_call_id:
@@ -1075,7 +1345,7 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
                     self._transport_label(),
                     self._last_tool_call_id,
                     self._last_provider_call_id,
-                    getattr(self.session, "previous_response_id", None),
+                    self._current_previous_response_id(),
                     bool(self._tool_output_payload),
                     timezone.now().isoformat(),
                 )
@@ -1098,7 +1368,12 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
                 )
                 await self._log_transport_traffic(
                     f"{self._transport_label()} RCV",
-                    response.get("raw") if isinstance(response, dict) else response,
+                    {
+                        "response": response.get("raw") if isinstance(response, dict) else response,
+                        "text": response.get("text") if isinstance(response, dict) else None,
+                        "tool_calls": response.get("tool_calls") if isinstance(response, dict) else None,
+                        "response_id": response.get("response_id") if isinstance(response, dict) else None,
+                    },
                 )
                 logger.debug(
                     "Transport response run=%s transport=%s status=%s tool_calls=%s",
@@ -1109,13 +1384,39 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
                 )
                 response_id = str(response.get("response_id") or "").strip()
                 if response_id:
-                    await _set_run_previous_response_id(self.run_id or "", response_id)
+                    normalized_response_id = _normalize_provider_response_id(self.provider, response_id)
+                    if normalized_response_id:
+                        self._response_chain_previous_id = normalized_response_id
+                        if self.session:
+                            self.session.previous_response_id = normalized_response_id
+                        await _set_run_previous_response_id(self.run_id or "", normalized_response_id)
                 self._include_system_context = False
             except Exception as exc:
                 if self._is_previous_response_not_found(exc):
+                    self._response_chain_previous_id = None
                     if self.session:
                         self.session.previous_response_id = None
                     await _set_run_previous_response_id(self.run_id or "", None)
+                elif (
+                    self._active_model_candidate_index + 1 < len(self._model_candidates)
+                    and is_retryable_model_failure(
+                        exc,
+                        client=self.client,
+                        retry_policy=self._backup_retry_policy,
+                    )
+                ):
+                    logger.warning(
+                        "WS model failover run=%s transport=%s provider=%s model=%s next_provider=%s next_model=%s error=%s",
+                        self.run_id,
+                        self._transport_label(),
+                        self.provider,
+                        self.model_name,
+                        self._model_candidates[self._active_model_candidate_index + 1]["provider"],
+                        self._model_candidates[self._active_model_candidate_index + 1]["model"],
+                        exc,
+                    )
+                    await self._switch_model_candidate(self._active_model_candidate_index + 1)
+                    continue
                 elif not self._is_ws_exception(exc):
                     logger.exception(
                         "Unexpected transport exception in dispatch run=%s transport=%s provider=%s model=%s",
@@ -1141,7 +1442,22 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
                 continue
 
             tool_calls = response.get("tool_calls") or []
+            assistant_text = response.get("text") or ""
+            if not tool_calls and assistant_text:
+                synthesized_tool_calls = extract_code_like_tool_calls(assistant_text, self._tool_names())
+                if synthesized_tool_calls:
+                    logger.warning(
+                        "Repaired code-like tool output run=%s transport=%s provider=%s model=%s tool_names=%s",
+                        self.run_id,
+                        self._transport_label(),
+                        self.provider,
+                        self.model_name,
+                        [call.get("name") for call in synthesized_tool_calls],
+                    )
+                    tool_calls = synthesized_tool_calls
+                    assistant_text = ""
             if tool_calls:
+                self._append_tool_call_history(assistant_text, tool_calls)
                 for call in tool_calls:
                     logger.info(
                         "Transport tool call run=%s transport=%s name=%s call_id=%s",
@@ -1159,7 +1475,6 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
                 self._transport_label(),
                 bool(response.get("text")),
             )
-            assistant_text = response.get("text") or ""
             if assistant_text:
                 self.history.append({"role": "assistant", "content": assistant_text})
                 await _persist_chat_history_event(
@@ -1178,80 +1493,199 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
                         "timestamp": timezone.now().isoformat(),
                     }
                 )
-                await sync_to_async(send_run_transport_message)(
-                    run_id=str(self.run_id),
-                    text=assistant_text,
-                    author_label="assistant",
-                    control_payload={"event_type": "assistant_message"},
-                )
+                if self.agent:
+                    mirror_enabled = await sync_to_async(get_agent_telegram_mirror_enabled)(self.agent)
+                    if mirror_enabled:
+                        await sync_to_async(send_run_transport_message)(
+                            run_id=str(self.run_id),
+                            text=assistant_text,
+                            author_label="assistant",
+                            control_payload={"event_type": "assistant_message"},
+                        )
+                self._response_chain_previous_id = None
+                if self.session:
+                    self.session.previous_response_id = None
+                self._tool_output_payload = None
+                await _set_run_previous_response_id(self.run_id or "", None)
                 return
 
     async def _dispatch_to_provider_http(self):
         if await self._dispatch_blocked_by_run_status():
             return
         tools_available = self.tool_definitions if self.tool_definitions else None
-        model = self.model_name or "unknown"
-        while True:
-            if await self._dispatch_blocked_by_run_status():
-                return
-            snapshot_messages = [
-                {"role": entry.get("role"), "content": (entry.get("content") or "")[:160]}
-                for entry in self.history[-4:]
-            ]
-            tools_to_send = tools_available if tools_available else None
-            payload_snapshot: dict[str, object] = {"model": model, "messages": snapshot_messages}
-            if tools_to_send:
-                payload_snapshot["tools"] = [entry.get("name") for entry in tools_to_send if entry.get("name")]
-            await self._log_transport_traffic("HTTP SEND", payload_snapshot)
-            try:
-                response = await self.client.complete(
-                    self.history,
-                    model=model,
-                    tools=tools_to_send,
-                )
-            except Exception as exc:
-                await self._send_http_error(exc)
-                return
-            await self._log_transport_traffic(
-                "HTTP RCV",
-                {
-                    "model": model,
-                    "response_id": response.get("response_id"),
-                    "text": (response.get("text") or "")[:400],
-                },
-            )
-            tool_calls = response.get("tool_calls") or []
-            if tool_calls:
-                for call in tool_calls:
-                    await self._handle_tool_call(call)
-                continue
-
-            assistant_text = response.get("text") or ""
-            if assistant_text:
-                self.history.append({"role": "assistant", "content": assistant_text})
-                await _persist_chat_history_event(
-                    self.run_id or "",
-                    "assistant",
-                    assistant_text,
-                    model=model,
-                    provider_response_id=response.get("response_id"),
-                    step_index=getattr(self.run, "current_step_index", None),
-                )
-                await self.send_json(
+        model_candidates = self._model_candidates or [
+            {"provider": self.provider, "model": self.model_name or "unknown", "source": "primary"}
+        ]
+        candidate_index = min(self._active_model_candidate_index, len(model_candidates) - 1)
+        retry_without_previous_response = False
+        while candidate_index < len(model_candidates):
+            candidate = model_candidates[candidate_index]
+            moved_to_next_candidate = False
+            if candidate_index != self._active_model_candidate_index:
+                await self._switch_model_candidate(candidate_index)
+                retry_without_previous_response = False
+            model = self.model_name or "unknown"
+            while True:
+                if await self._dispatch_blocked_by_run_status():
+                    return
+                if not self._tool_result_event.is_set():
+                    logger.info(
+                        "HTTP dispatch waiting for tool output run=%s transport=%s pending_tool_call_id=%s provider_call_id=%s ts=%s",
+                        self.run_id,
+                        self._transport_label(),
+                        self._pending_tool_call_id,
+                        self._pending_provider_call_id,
+                        timezone.now().isoformat(),
+                    )
+                    return
+                snapshot_messages = [
+                    {"role": entry.get("role"), "content": entry.get("content") or ""}
+                    for entry in self.history[-4:]
+                ]
+                tools_to_send = tools_available if tools_available else None
+                payload_snapshot: dict[str, object] = {"model": model, "messages": snapshot_messages}
+                if tools_to_send:
+                    payload_snapshot["tools"] = tools_to_send
+                await self._log_transport_traffic("HTTP SEND", payload_snapshot)
+                try:
+                    response = await retry_with_backoff(
+                        lambda: self.client.complete(
+                            self.history,
+                            model=model,
+                            tools=tools_to_send,
+                            previous_response_id=self._current_previous_response_id(),
+                            outstanding_provider_call_id=(
+                                str(self._tool_output_payload.get("provider_call_id") or "").strip()
+                                if self._tool_output_payload
+                                else None
+                            ),
+                        ),
+                        max_retries=int(
+                            self._backup_retry_policy.get("retry_same_model_attempts", 1) or 0
+                        ),
+                        is_transient_error=lambda exc: is_retryable_model_failure(
+                            exc,
+                            client=self.client,
+                            retry_policy=self._backup_retry_policy,
+                        ),
+                    )
+                except Exception as exc:
+                    if (
+                        not retry_without_previous_response
+                        and getattr(self.client, "is_previous_response_not_found", None)
+                        and self.client.is_previous_response_not_found(exc)
+                    ):
+                        logger.debug(
+                            "HTTP previous_response_id not found run=%s transport=%s model=%s; clearing chain id and retrying once",
+                            self.run_id,
+                            self._transport_label(),
+                            model,
+                        )
+                        retry_without_previous_response = True
+                        self._response_chain_previous_id = None
+                        if self.session:
+                            self.session.previous_response_id = None
+                        await _set_run_previous_response_id(self.run_id or "", None)
+                        continue
+                    if candidate_index + 1 < len(model_candidates) and is_retryable_model_failure(
+                        exc,
+                        client=self.client,
+                        retry_policy=self._backup_retry_policy,
+                    ):
+                        logger.warning(
+                            "HTTP model failover run=%s transport=%s provider=%s model=%s next_provider=%s next_model=%s error=%s",
+                            self.run_id,
+                            self._transport_label(),
+                            self.provider,
+                            model,
+                            model_candidates[candidate_index + 1]["provider"],
+                            model_candidates[candidate_index + 1]["model"],
+                            exc,
+                        )
+                        candidate_index += 1
+                        moved_to_next_candidate = True
+                        retry_without_previous_response = False
+                        await self._switch_model_candidate(candidate_index)
+                        break
+                    await self._send_http_error(exc)
+                    return
+                await self._log_transport_traffic(
+                    "HTTP RCV",
                     {
-                        "type": "message",
-                        "role": "assistant",
-                        "text": assistant_text,
-                        "timestamp": timezone.now().isoformat(),
-                    }
+                        "model": model,
+                        "response": response.get("raw") if isinstance(response, dict) else response,
+                        "text": response.get("text") if isinstance(response, dict) else None,
+                        "tool_calls": response.get("tool_calls") if isinstance(response, dict) else None,
+                        "response_id": response.get("response_id") if isinstance(response, dict) else None,
+                    },
                 )
-                await sync_to_async(send_run_transport_message)(
-                    run_id=str(self.run_id),
-                    text=assistant_text,
-                    author_label="assistant",
-                    control_payload={"event_type": "assistant_message"},
-                )
-                return
+                response_id = str(response.get("response_id") or "").strip()
+                if response_id:
+                    if self.session:
+                        normalized_response_id = _normalize_provider_response_id(self.provider, response_id)
+                        if normalized_response_id:
+                            self._response_chain_previous_id = normalized_response_id
+                            self.session.previous_response_id = normalized_response_id
+                            await _set_run_previous_response_id(self.run_id or "", normalized_response_id)
+                tool_calls = response.get("tool_calls") or []
+                assistant_text = response.get("text") or ""
+                if not tool_calls and assistant_text:
+                    synthesized_tool_calls = extract_code_like_tool_calls(assistant_text, self._tool_names())
+                    if synthesized_tool_calls:
+                        logger.warning(
+                            "Repaired code-like tool output run=%s transport=%s provider=%s model=%s tool_names=%s",
+                            self.run_id,
+                            self._transport_label(),
+                            self.provider,
+                            model,
+                            [call.get("name") for call in synthesized_tool_calls],
+                        )
+                        tool_calls = synthesized_tool_calls
+                        assistant_text = ""
+                if tool_calls:
+                    self._append_tool_call_history(assistant_text, tool_calls)
+                    for call in tool_calls:
+                        await self._handle_tool_call(call)
+                    return
+
+                if assistant_text:
+                    self.history.append({"role": "assistant", "content": assistant_text})
+                    await _persist_chat_history_event(
+                        self.run_id or "",
+                        "assistant",
+                        assistant_text,
+                        model=model,
+                        provider_response_id=response.get("response_id"),
+                        step_index=getattr(self.run, "current_step_index", None),
+                    )
+                    await self.send_json(
+                        {
+                            "type": "message",
+                            "role": "assistant",
+                            "text": assistant_text,
+                            "timestamp": timezone.now().isoformat(),
+                        }
+                    )
+                    if self.agent:
+                        mirror_enabled = await sync_to_async(get_agent_telegram_mirror_enabled)(self.agent)
+                        if mirror_enabled:
+                            await sync_to_async(send_run_transport_message)(
+                                run_id=str(self.run_id),
+                                text=assistant_text,
+                                author_label="assistant",
+                                control_payload={"event_type": "assistant_message"},
+                            )
+                    self._response_chain_previous_id = None
+                    if self.session:
+                        self.session.previous_response_id = None
+                    self._tool_output_payload = None
+                    await _set_run_previous_response_id(self.run_id or "", None)
+                    return
+
+                candidate_index += 1
+                if moved_to_next_candidate:
+                    continue
+                break
 
     async def _handle_tool_call(self, call: dict[str, object]):
         tool_name = str(call.get("name") or "").strip()
@@ -1435,6 +1869,48 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
             if isinstance(entry.get("name"), str) and entry.get("name")
         ]
 
+    def _append_tool_call_history(self, assistant_text: str, tool_calls: list[dict[str, object]]) -> None:
+        normalized_calls: list[dict[str, object]] = []
+        for call in tool_calls:
+            if not isinstance(call, dict):
+                continue
+            normalized_calls.append(
+                {
+                    "id": str(call.get("id") or call.get("call_id") or call.get("provider_call_id") or "").strip(),
+                    "name": str(call.get("name") or "").strip(),
+                    "arguments": call.get("arguments") or {},
+                }
+            )
+        if not normalized_calls:
+            return
+        entry: dict[str, object] = {"role": "assistant", "content": assistant_text or ""}
+        entry["tool_calls"] = normalized_calls
+        self.history.append(entry)
+
+    def _current_previous_response_id(self) -> str | None:
+        raw_chain_id = getattr(self, "_response_chain_previous_id", None)
+        raw_session_id = getattr(self.session, "previous_response_id", None)
+        chain_id = _normalize_provider_response_id(self.provider, raw_chain_id)
+        session_id = _normalize_provider_response_id(self.provider, raw_session_id)
+        logger.debug(
+            "Resolved previous_response_id run=%s raw_chain_id=%r raw_session_id=%r normalized_chain_id=%r normalized_session_id=%r",
+            self.run_id,
+            raw_chain_id,
+            raw_session_id,
+            chain_id,
+            session_id,
+        )
+        if chain_id:
+            return chain_id
+        return session_id or None
+
+    async def _hydrate_agents_md_bootstrap_state(self) -> None:
+        if self._agents_md_bootstrap_complete or not self.run_id:
+            return
+        self._agents_md_bootstrap_complete = await _run_has_agents_md_bootstrap_complete(self.run_id)
+        if self._agents_md_bootstrap_complete:
+            logger.info("Restored AGENTS.md bootstrap completion run=%s", self.run_id)
+
     def _ensure_system_context(self) -> None:
         agent = self.agent
         if not agent:
@@ -1445,6 +1921,7 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
             transport=self.transport,
             tool_names=self._tool_names(),
             authenticated_user=getattr(self, "scope", {}).get("user") or getattr(self.run, "started_by", None),
+            agents_md_bootstrap_complete=self._agents_md_bootstrap_complete,
         )
         self.system_context = context
         if not context:
@@ -1494,6 +1971,7 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
             timezone.now().isoformat(),
         )
         last_payload: dict[str, object] | None = None
+        agents_md_bootstrap_complete = self._agents_md_bootstrap_complete
         for payload in pending:
             tool_call_id = payload.get("tool_call_id")
             logger.debug(
@@ -1515,14 +1993,15 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
                 or ""
             )
             provider_call_id = str(provider_call_id).strip() or None
-            previous_response_id = getattr(self.session, "previous_response_id", None)
-            should_stage_for_provider = bool(provider_call_id and previous_response_id)
+            previous_response_id = self._current_previous_response_id()
+            should_stage_for_provider = bool(provider_call_id and (previous_response_id or self.provider != "openai"))
             if should_stage_for_provider:
                 self.history.append(
                     {
                         "role": "tool",
                         "content": tool_output_text,
                         "tool_call_id": tool_call_id,
+                        "tool_name": str(payload.get("tool_name") or "tool").strip() or "tool",
                         "provider_call_id": provider_call_id,
                     }
                 )
@@ -1546,6 +2025,52 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
             )
             if should_stage_for_provider:
                 last_payload = payload
+            if not agents_md_bootstrap_complete:
+                try:
+                    tool_details = await _get_tool_call_details(str(tool_call_id or ""))
+                except Exception:
+                    logger.exception(
+                        "Failed to inspect tool call for AGENTS.md bootstrap run=%s tool_call_id=%s",
+                        self.run_id,
+                        tool_call_id,
+                    )
+                    tool_details = None
+                if tool_details:
+                    tool_name = str(tool_details.get("tool_name") or "").strip()
+                    status = str(tool_details.get("status") or "").strip().upper()
+                    args = tool_details.get("args") if isinstance(tool_details.get("args"), dict) else {}
+                    path_value = str((args or {}).get("path") or "").strip()
+                    path_name = Path(path_value).name.upper() if path_value else ""
+                    if tool_name == "file_read" and status == ToolCall.Status.COMPLETED and path_name == "AGENTS.MD":
+                        agents_md_bootstrap_complete = True
+                        try:
+                            await sync_to_async(append_event)(
+                                run_id=self.run_id,
+                                event_type=AGENTS_MD_BOOTSTRAP_EVENT,
+                                payload={
+                                    "tool_call_id": str(tool_call_id or ""),
+                                    "tool_name": tool_name,
+                                    "path": path_value,
+                                    "status": status,
+                                },
+                                broadcast_to_run=False,
+                            )
+                        except Exception:
+                            logger.exception(
+                                "Failed to persist AGENTS.md bootstrap marker run=%s tool_call_id=%s path=%s",
+                                self.run_id,
+                                tool_call_id,
+                                path_value,
+                            )
+                        logger.info(
+                            "Marked AGENTS.md bootstrap complete run=%s tool_call_id=%s path=%s",
+                            self.run_id,
+                            tool_call_id,
+                            path_value,
+                        )
+            if agents_md_bootstrap_complete:
+                self._agents_md_bootstrap_complete = True
+                self._include_system_context = False
         if last_payload:
             self._last_tool_call_id = last_payload.get("tool_call_id")
             api_provider_call_id = last_payload.get("provider_call_id") or self._pending_provider_call_id
@@ -1562,7 +2087,7 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
                 self.run_id,
                 self._pending_tool_call_id,
                 self._pending_provider_call_id,
-                getattr(self.session, "previous_response_id", None),
+                self._current_previous_response_id(),
             )
             self._pending_tool_call_id = None
             self._pending_provider_call_id = None
@@ -1814,7 +2339,7 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
         )
 
     def _build_input_items(self):
-        previous_response_id = getattr(self.session, "previous_response_id", None)
+        previous_response_id = self._current_previous_response_id()
         outstanding_provider_call_id = None
         if self._tool_output_payload:
             raw_provider_id = self._tool_output_payload.get("provider_call_id")
@@ -1833,7 +2358,7 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
     def _build_ws_input_items(self) -> list[dict[str, object]]:
         return build_ws_request_input_items(
             self.history,
-            previous_response_id=getattr(self.session, "previous_response_id", None),
+            previous_response_id=self._current_previous_response_id(),
             outstanding_provider_call_id=(
                 str(self._tool_output_payload.get("provider_call_id") or "").strip()
                 if self._tool_output_payload

@@ -10,6 +10,7 @@ from memory.models import MemoryHealthSnapshot, MemoryRecord, RecurrenceRule, Sc
 @admin.register(MemoryRecord)
 class MemoryRecordAdmin(admin.ModelAdmin):
     list_display = (
+        "id",
         "scope_type",
         "scope_id",
         "memory_kind",

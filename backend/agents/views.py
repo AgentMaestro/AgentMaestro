@@ -18,7 +18,9 @@ from agents.utils import (
     build_transport_status,
     find_agent_telegram_endpoint,
     format_provider_display,
+    get_agent_telegram_mirror_enabled,
     normalize_provider_for_model,
+    set_agent_telegram_mirror_enabled,
 )
 from core.models import Workspace, WorkspaceMembership
 
@@ -164,6 +166,25 @@ def _parse_sandbox_paths(raw: object | None) -> list[str]:
     return sanitized
 
 
+def _parse_backup_models(raw: object | None) -> list[dict[str, str]]:
+    selected: list[dict[str, str]] = []
+    if raw is None:
+        return selected
+    if not isinstance(raw, (list, tuple)):
+        raw = [raw]
+    seen: set[tuple[str, str, str]] = set()
+    for value in raw:
+        decoded = AgentLLMForm._decode_backup_model_value(value)
+        if not decoded:
+            continue
+        key = (decoded["company"], decoded["api"], decoded["name"])
+        if key in seen:
+            continue
+        seen.add(key)
+        selected.append(decoded)
+    return selected
+
+
 def _workspace_from_payload(payload: dict[str, object], create: bool = False) -> Workspace | None:
     workspace_id = payload.get("workspace_id")
     workspace_name = payload.get("workspace_name") or "Default Workspace"
@@ -291,6 +312,7 @@ def _build_wizard_sidebar(current_step: int, session_data: dict[str, object]) ->
     workspace = session_data.get("workspace", {})
     tool_ids = session_data.get("tools", {}).get("tool_ids", [])
     sandbox_paths = basics.get("sandbox_paths") or []
+    backup_models = llm.get("backup_models") or []
     workspace_name = workspace.get("workspace_name")
     if workspace.get("workspace_id") and not workspace_name:
         workspace_name = "existing workspace"
@@ -333,6 +355,12 @@ def _build_wizard_sidebar(current_step: int, session_data: dict[str, object]) ->
                 "state": _sidebar_state(current_step=current_step, step_number=2),
             },
             {
+                "label": "backups",
+                "value": f"{len(backup_models)} selected" if backup_models else "none selected",
+                "href": f"{create_url}?step=2",
+                "state": _sidebar_state(current_step=current_step, step_number=2),
+            },
+            {
                 "label": "allowed paths",
                 "value": f"{len(sandbox_paths)} configured" if sandbox_paths else "not set",
                 "href": f"{create_url}?step=1",
@@ -359,13 +387,16 @@ def _build_review_context(session_data: dict[str, object], user) -> dict[str, ob
     basics = dict(session_data.get("basics", {}))
     basics.setdefault("sandbox_paths", [])
     name = basics.get("name", "")
+    llm = dict(session_data.get("llm", {}))
+    llm.setdefault("backup_models", [])
+    llm["backup_retry_policy"] = dict(Agent.DEFAULT_BACKUP_RETRY_POLICY)
     if name:
         unique_name = Agent.generate_unique_name(name)
         basics["unique_name"] = unique_name
         basics["name_conflict"] = unique_name != name
     return {
         "basics": basics,
-        "llm": session_data.get("llm", {}),
+        "llm": llm,
         "tools": tools,
         "workspace": session_data.get("workspace", {}),
     }
@@ -396,6 +427,13 @@ def agent_create_wizard(request):
         if step_def["form"] and form and form.is_valid():
             if step_def["key"] == "tools" and isinstance(form, AgentToolsForm):
                 cleaned = {"tool_ids": form.get_selected_tool_ids()}
+            elif step_def["key"] == "llm" and isinstance(form, AgentLLMForm):
+                cleaned = {
+                    "default_model": form.cleaned_data.get("default_model"),
+                    "backup_models": _parse_backup_models(form.cleaned_data.get("backup_models")),
+                    "temperature": form.cleaned_data.get("temperature"),
+                    "policy_name": form.cleaned_data.get("policy_name"),
+                }
             else:
                 cleaned = form.cleaned_data
             if step_def["key"] == "workspace":
@@ -456,18 +494,19 @@ def _complete_wizard(request, session_data: dict[str, object], owner_form: forms
 
     workspace = _workspace_from_payload(workspace_payload, create=True)
     with agent_creation_context(request.user):
-        agent = Agent.objects.create(
-            workspace=workspace,
-            name=basics.get("name", "New Agent"),
-            description=basics.get("description", "") or "",
-            soul=basics.get("soul", ""),
-            default_model=llm.get("default_model", "gpt-5"),
-            temperature=llm.get("temperature", "0.70"),
-            policy_name=llm.get("policy_name", "react"),
-            role=llm.get("role", "assisting"),
-            tool_policy_json={"selected_tools": [definition.tool.name for definition in tools]},
-            sandbox_paths=basics.get("sandbox_paths", []),
-            owner=owner or request.user,
+            agent = Agent.objects.create(
+                workspace=workspace,
+                name=basics.get("name", "New Agent"),
+                description=basics.get("description", "") or "",
+                soul=basics.get("soul", ""),
+                default_model=llm.get("default_model", "gpt-5"),
+                temperature=llm.get("temperature", "0.70"),
+                policy_name=llm.get("policy_name", "react"),
+                backup_models_json=llm.get("backup_models", []),
+                backup_retry_policy_json=dict(Agent.DEFAULT_BACKUP_RETRY_POLICY),
+                tool_policy_json={"selected_tools": [definition.tool.name for definition in tools]},
+                sandbox_paths=basics.get("sandbox_paths", []),
+                owner=owner or request.user,
         )
     _create_tool_grants(agent, workspace, session_data)
 
@@ -542,6 +581,7 @@ def agent_detail(request, slug: str):
         "websocket_url": f"/ws/agents/{agent.slug}/chat/",
         "sandbox_paths": agent.sandbox_paths or [],
         "telegram_status": build_transport_status(agent, telegram_endpoint),
+        "telegram_mirror_enabled": get_agent_telegram_mirror_enabled(agent),
         "user_name": (request.user.get_full_name() or request.user.username or "You").strip() or "You",
         "llm_provider": normalized_provider,
         "llm_provider_label": provider_label,
@@ -550,6 +590,27 @@ def agent_detail(request, slug: str):
         "llm_transport_label": transport_label,
     }
     return render(request, "agents/agent_detail.html", context)
+
+
+@login_required
+@require_http_methods(["POST"])
+def agent_telegram_mirror_toggle(request, slug: str):
+    agent = get_object_or_404(Agent.objects.select_related("workspace", "owner"), slug=slug)
+    if not _can_access_agent(request.user, agent):
+        raise PermissionDenied("Workspace access required to view this agent.")
+
+    raw_enabled = request.POST.get("enabled")
+    if raw_enabled is None:
+        try:
+            import json
+
+            payload = json.loads(request.body.decode("utf-8") or "{}")
+        except Exception:
+            payload = {}
+        raw_enabled = payload.get("enabled")
+    enabled = str(raw_enabled).strip().lower() in {"1", "true", "yes", "on"}
+    updated = set_agent_telegram_mirror_enabled(agent, enabled)
+    return JsonResponse({"ok": True, "enabled": enabled, "updated": updated})
 
 
 def _serialize_effective_tools(effective_tools: list) -> list[dict[str, object]]:

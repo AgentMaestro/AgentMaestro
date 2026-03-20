@@ -17,6 +17,23 @@ class AgentStepInline(admin.TabularInline):
         return format_datetime_eastern(obj.created_at)
 
 
+@admin.register(AgentStep)
+class AgentStepAdmin(admin.ModelAdmin):
+    list_display = ("id", "run", "step_index", "kind", "created_at_display")
+    list_filter = ("kind", "created_at")
+    search_fields = ("id", "run__id", "run__agent__name", "payload")
+    readonly_fields = ("created_at_display", "updated_at_display")
+    ordering = ("-created_at",)
+
+    @admin.display(description="Created At")
+    def created_at_display(self, obj: AgentStep) -> str:
+        return format_datetime_eastern(obj.created_at)
+
+    @admin.display(description="Updated At")
+    def updated_at_display(self, obj: AgentStep) -> str:
+        return format_datetime_eastern(obj.updated_at)
+
+
 class RunEventInline(admin.TabularInline):
     model = RunEvent
     fields = ("seq", "event_type", "payload", "created_at_display")

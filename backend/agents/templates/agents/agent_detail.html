@@ -264,17 +264,47 @@
       color: #0f172a;
     }
 
+    .agent-switch-card select {
+      width: 100%;
+      border-radius: 8px;
+      padding: 0.45rem 0.6rem;
+      background: #0f172a;
+      color: #f8fafc;
+      border: 1px solid rgba(255, 255, 255, 0.2);
+    }
+
+    .telegram-card-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.75rem;
+      margin-bottom: 0.5rem;
+    }
+
+    .telegram-mirror-toggle {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.45rem;
+      font-size: 0.85rem;
+      font-weight: 600;
+      color: rgba(248, 250, 252, 0.88);
+      white-space: nowrap;
+      cursor: pointer;
+      user-select: none;
+    }
+
+    .telegram-mirror-toggle input {
+      width: 16px;
+      height: 16px;
+      margin: 0;
+      accent-color: #38bdf8;
+    }
     .chat-status-actions {
       display: flex;
       align-items: center;
       gap: 0.5rem;
       flex-wrap: wrap;
       justify-content: flex-end;
-    }
-    .run-control-group {
-      display: flex;
-      align-items: center;
-      gap: 0.5rem;
     }
     .status-action {
       border-radius: 6px;
@@ -300,20 +330,6 @@
       display: none;
     }
 
-    .agent-switch {
-      display: flex;
-      flex-direction: column;
-      align-items: flex-end;
-      gap: 0.2rem;
-    }
-
-    .agent-switch select {
-      border-radius: 6px;
-      padding: 4px 8px;
-      background: #0f172a;
-      color: #f8fafc;
-      border: 1px solid rgba(255, 255, 255, 0.2);
-    }
 
     .chat-stream {
       padding: 2rem;
@@ -328,6 +344,8 @@
       margin-bottom: 1rem;
       overflow-y: auto;
       padding-right: 0.5rem;
+      padding-bottom: 1.5rem;
+      scroll-padding-bottom: 1.5rem;
     }
 
     .chat-messages article {
@@ -824,21 +842,27 @@
             <div class="sidebar-section-label">agent</div>
 
             <div class="agent-sidebar-meta">
-              <div class="agent-sidebar-meta-card">
+              <div class="agent-sidebar-meta-card agent-switch-card">
                 <span class="agent-sidebar-meta-label">name</span>
-                <div class="agent-sidebar-meta-value">{{ agent.name }}</div>
+                {% if owner_agents %}
+                  <select id="agent-switcher" data-agent-switcher onchange="if(this.value) window.location.href=this.value">
+                    {% for item in owner_agents %}
+                      <option value="/agents/{{ item.slug }}/" data-agent-slug="{{ item.slug }}" {% if item.slug == agent.slug %}selected{% endif %}>
+                        {{ item.name }}
+                      </option>
+                    {% endfor %}
+                  </select>
+                {% else %}
+                  <div class="agent-sidebar-meta-value">No alternate agents available.</div>
+                {% endif %}
               </div>
               <div class="agent-sidebar-meta-card">
                 <span class="agent-sidebar-meta-label">workspace</span>
                 <div class="agent-sidebar-meta-value">{{ workspace.name }}</div>
               </div>
               <div class="agent-sidebar-meta-card">
-                <span class="agent-sidebar-meta-label">policy</span>
-                <div class="agent-sidebar-meta-value">{{ agent.policy_name }}</div>
-              </div>
-              <div class="agent-sidebar-meta-card">
                 <span class="agent-sidebar-meta-label">model</span>
-                <div class="agent-sidebar-meta-value">{{ agent.default_model }} - Temperature {{ agent.temperature }}</div>
+                <div class="agent-sidebar-meta-value">{{ agent.default_model }} ({{ agent.temperature }})</div>
               </div>
             </div>
 
@@ -855,7 +879,18 @@
 
             {% if telegram_status %}
               <div class="sandbox-card telegram-card">
-                <strong>Telegram</strong>
+                <div class="telegram-card-header">
+                  <strong>Telegram</strong>
+                  <label class="telegram-mirror-toggle">
+                    <input
+                      type="checkbox"
+                      data-telegram-mirror-toggle
+                      {% if telegram_mirror_enabled %}checked{% endif %}
+                      {% if not telegram_status.connected %}disabled{% endif %}
+                    >
+                    <span>Mirror chat</span>
+                  </label>
+                </div>
                 {% if telegram_status.detail %}
                   <p style="margin-bottom: 0.5rem;">{{ telegram_status.detail }}</p>
                 {% endif %}
@@ -912,6 +947,8 @@
       data-llm-model="{{ llm_model }}"
       data-llm-transport="{{ llm_transport }}"
       data-llm-transport-label="{{ llm_transport_label }}"
+      data-telegram-toggle-url="{% url 'agents:agent_telegram_mirror_toggle' slug=agent.slug %}"
+      data-telegram-mirror-enabled="{% if telegram_mirror_enabled %}true{% else %}false{% endif %}"
     >
       <header class="chat-stream-header">
         <div>
@@ -920,26 +957,10 @@
             Workspace: {{ workspace.name }}
           </p>
         </div>
-        {% if owner_agents %}
-          <div class="agent-switch">
-            <label for="agent-switcher">Switch agent</label>
-            <select id="agent-switcher" data-agent-switcher onchange="if(this.value) window.location.href=this.value">
-              {% for item in owner_agents %}
-                <option value="/agents/{{ item.slug }}/" data-agent-slug="{{ item.slug }}" {% if item.slug == agent.slug %}selected{% endif %}>
-                  {{ item.name }}
-                </option>
-              {% endfor %}
-            </select>
-          </div>
-        {% endif %}
         <div class="chat-status-actions">
-          <span class="status-pill" data-connection-status>Connecting…</span>
+          <span class="status-pill" data-connection-status>Connecting?</span>
           <button type="button" class="status-action hidden" data-connection-action>Connect</button>
-          <div class="run-control-group">
-            <span class="status-pill run-status" data-run-status>RUNNING</span>
-            <button type="button" class="status-action warning" data-run-pause>Pause</button>
-            <button type="button" class="status-action success" data-run-resume disabled>Resume</button>
-          </div>
+          <span class="status-pill run-status" data-run-status>RUNNING</span>
         </div>
       </header>
       <div class="chat-messages" data-chat-messages></div>
@@ -953,7 +974,7 @@
     </section>
   </div>
 
-  <script src="{% static 'agents/chat.js' %}?v=20260316-tool-warning-status" defer></script>
+  <script src="{% static 'agents/chat.js' %}?v=20260319-telegram-mirror-ui" defer></script>
 </body>
 
 </html>

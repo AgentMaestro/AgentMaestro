@@ -149,19 +149,19 @@ _TOOL_EXAMPLES = {
     },
     "schedule_task": [
         {
-            "title": "daily weather report for Richmond, VA",
-            "task_type": "daily_weather_report",
-            "execution_mode": "deterministic",
+            "title": "daily repo backup summary",
+            "task_type": "other_task",
+            "execution_mode": "headless_run",
             "timezone": "America/New_York",
-            "local_time": "08:00",
+            "local_time": "05:00",
             "execution_payload": {
-                "location": "Richmond, VA",
-                "query": "site:weather.com Richmond VA daily and weekly weather forecast",
-                "source_domain": "weather.com"
+                "objective": "Create a backup commit for the repository and summarize the last 24 hours of work.",
+                "repo_dir": "C:/Dev/AgentMaestro",
+                "notes": "Use git status and git log, then create a concise backup commit if there are changes."
             }
         },
         {
-            "title": "daily repo backup summary",
+            "title": "weekly digest",
             "task_type": "other_daily_task",
             "execution_mode": "headless_run",
             "recurrence": {
@@ -177,9 +177,9 @@ _TOOL_EXAMPLES = {
             }
         },
         {
-            "title": "coach weather checks",
-            "task_type": "daily_weather_report",
-            "execution_mode": "deterministic",
+            "title": "daily maintenance digest",
+            "task_type": "other_daily_task",
+            "execution_mode": "headless_run",
             "recurrence": {
                 "timezone": "America/New_York",
                 "frequency": "hourly",
@@ -190,8 +190,8 @@ _TOOL_EXAMPLES = {
                 "window_end_time": "19:00"
             },
             "execution_payload": {
-                "location": "Richmond, VA",
-                "source_domain": "weather.com"
+                "objective": "Summarize overnight changes and produce a short maintenance digest.",
+                "notes": "Review logs, open issues, and any queued tasks before writing the digest."
             }
         }
     ],
@@ -367,9 +367,9 @@ _TOOL_ADDITIONAL_DOCS = {
     "- Example procedural memory: `scope_type='agent'`, `scope_id='<agent-id>'`, `memory_kind='procedural'`, `dedupe_key='procedure:test-runner'`, `content='When Telegram testing locally, clear the webhook and switch to polling first.'`.\n"
     "- Example episodic memory: `scope_type='user'`, `scope_id='<user-id>'`, `memory_kind='episodic'`, `dedupe_mode='none'`, `dedupe_key='scheduled-task-exec-bucket:<task-id>:daily-weather-report'`, `content='On March 13, 2026, Scott validated Telegram approvals end-to-end.'`, `expires_at='2026-03-31T23:59:59Z'`.",
     "schedule_task": "\n\nSCHEDULING NOTES:\n"
-    "- `schedule_task` supports both built-in deterministic jobs and general headless recurring agent work.\n"
-    "- Use `task_type=daily_weather_report` with `execution_mode=deterministic` for the built-in weather scheduler.\n"
-    "- Use `task_type=other_daily_task` with `execution_mode=headless_run` for general recurring work such as backups, digests, maintenance, or delegated research.\n"
+    "- `schedule_task` creates recurring headless agent work.\n"
+    "- Use `execution_mode=headless_run` and choose a descriptive `task_type` such as `other_task` or `other_daily_task`.\n"
+    "- Scheduled runs inherit the agent's backup models and retry policy, so backup failover applies automatically.\n"
     "- Prefer `recurrence` for anything more complex than a single daily wall-clock time.\n"
     "- Use `title` and `execution_payload` to describe the recurring job clearly so the future headless run has enough context.\n",
     "search_memory": "\n\nMEMORY NOTES:\n"
@@ -1113,15 +1113,15 @@ TOOL_REGISTRY = [
             },
             {
                 "name": "schedule_task",
-                "description": "Create a recurring task attached to the current agent and store the request as episodic memory. Use deterministic mode for built-in weather automation. Use headless_run for general recurring agent work such as backups, digests, repo maintenance, or delegated research.",
+                "description": "Create a recurring task attached to the current agent and store the request as episodic memory. Scheduled tasks run headlessly. Use a descriptive task_type and headless_run for recurring agent work such as backups, digests, repo maintenance, or delegated research.",
                 "risk": ToolRisk.SAFE,
                 "args_schema": {
                     "type": "object",
                     "additionalProperties": False,
                     "properties": {
                         "title": {"type": "string"},
-                        "task_type": {"type": "string", "enum": ["daily_weather_report", "daily_email_check", "other_daily_task"]},
-                        "execution_mode": {"type": "string", "enum": ["deterministic", "headless_run"], "default": "deterministic"},
+                        "task_type": {"type": "string", "enum": ["other_task", "other_daily_task"]},
+                        "execution_mode": {"type": "string", "enum": ["deterministic", "headless_run"], "default": "headless_run"},
                         "timezone": {"type": "string", "description": "Daily shorthand timezone. Optional when recurrence.timezone is provided."},
                         "local_time": {"type": "string", "description": "Daily shorthand local wall-clock time in HH:MM format. Optional when recurrence is provided."},
                         "recurrence": {

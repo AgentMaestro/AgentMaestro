@@ -131,12 +131,12 @@ def execute_native_tool_call(tool_call: ToolCall) -> dict[str, object]:
         scheduled_task = create_scheduled_task(
             agent=tool_call.run.agent,
             owner=tool_call.run.started_by or tool_call.run.agent.owner,
-            task_type=str(args.get("task_type") or "daily_weather_report"),
+            task_type=str(args.get("task_type") or "other_task"),
             local_time_value=str(args.get("local_time") or "08:00"),
             timezone_name=str(args.get("timezone") or "UTC"),
             title=str(args.get("title") or ""),
             execution_payload=dict(args.get("execution_payload") or {}),
-            execution_mode=str(args.get("execution_mode") or "deterministic"),
+            execution_mode=str(args.get("execution_mode") or "headless_run"),
             recurrence_config=dict(args.get("recurrence") or args.get("recurrence_config") or {}),
         )
         return {

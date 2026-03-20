@@ -58,11 +58,21 @@ def _extract_request_id(event: Dict[str, Any]) -> Optional[str]:
 
 PING_INTERVAL_SECONDS = 25
 
+def _normalize_openai_base_path(path: str) -> str:
+    clean = (path or "").rstrip("/")
+    if clean.endswith("/v1"):
+        return clean
+    if clean:
+        return f"{clean}/v1"
+    return "/v1"
+
+
 def _build_ws_url(base_url: str) -> str:
     parsed = urlparse(base_url)
     scheme = "wss" if parsed.scheme in ("https", "wss") else "ws"
     netloc = parsed.netloc or parsed.path
-    return f"{scheme}://{netloc}/v1/responses"
+    normalized_path = _normalize_openai_base_path(parsed.path if parsed.netloc else "")
+    return f"{scheme}://{netloc}{normalized_path}/responses"
 
 
 def _auth_headers(api_key: str) -> List[Tuple[str, str]]:
@@ -220,7 +230,7 @@ class OpenAIResponsesWSClient:
         self.timeout = timeout
 
     async def create_response(
-        self, *, model: str, input_text: str, system_text: Optional[str] = None
+        self, *, model: str, input_text: str, system_text: Optional[str] = None, tools: Optional[List[Dict[str, Any]]] = None
     ) -> Dict[str, Any]:
         url = _build_ws_url(self.base_url)
         input_items: List[Dict[str, Any]] = []
@@ -242,8 +252,11 @@ class OpenAIResponsesWSClient:
         payload: Dict[str, Any] = {
             "type": "response.create",
             "model": model,
+            "store": True,
             "input": input_items,
         }
+        if tools:
+            payload["tools"] = tools
 
         headers = _auth_headers(self.api_key)
         try:
@@ -495,14 +508,26 @@ class OpenAIResponsesWebSocketSession:
         payload: Dict[str, Any] = {
             "type": "response.create",
             "model": self._model,
-            "store": False,
+            "store": True,
             "input": input_items,
         }
         if tools:
             payload["tools"] = tools
-        payload["previous_response_id"] = self.previous_response_id
+        raw_previous_response_id = self.previous_response_id
+        previous_response_id = str(raw_previous_response_id or "").strip() or None
         metadata = payload.get("metadata") or {}
         request_id = str(uuid.uuid4())
+        logger.debug(
+            "%s send_request previous_response_id raw=%r normalized=%r run=%s model=%s request_id=%s",
+            OPENAI_WS_LOG_PREFIX,
+            raw_previous_response_id,
+            previous_response_id,
+            self._run_id,
+            self._model,
+            request_id,
+        )
+        if previous_response_id:
+            payload["previous_response_id"] = previous_response_id
         metadata["request_id"] = request_id
         payload["metadata"] = metadata
         attempt = 0
@@ -786,3 +811,6 @@ class OpenAIResponsesWSSessionPool:
             self._sessions.clear()
         for session in sessions:
             await session.close()
+
+
+

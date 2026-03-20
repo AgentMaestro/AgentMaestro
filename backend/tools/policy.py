@@ -37,6 +37,13 @@ def _required_parameters(tool: Tool, args_schema: dict) -> list[str]:
 
 def _format_tool_description(tool: Tool, definition: ToolDefinition, args_schema: dict) -> str:
     description = (definition.description or tool.description or "").strip()
+    if tool.name in {"remember", "search_memory"}:
+        memory_note = (
+            "Use the actual tool directly; do not emit code-like placeholders such as "
+            "`default_api.remember(...)`, `print(default_api.remember(...))`, or `tool_code` text when the memory tool is available."
+        )
+        if memory_note not in description:
+            description = f"{description}\n\n{memory_note}".strip() if description else memory_note
     required = _required_parameters(tool, args_schema)
     if not required:
         return description

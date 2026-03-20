@@ -106,6 +106,70 @@ def build_input_items(
     return items
 
 
+def select_turn_history(
+    history: list[dict[str, object]],
+    *,
+    previous_response_id: str | None = None,
+    outstanding_provider_call_id: str | None = None,
+    outstanding_provider_call_ids: Iterable[str] | None = None,
+    run_id: str | None = None,
+) -> list[dict[str, object]]:
+    previous_response_id = str(previous_response_id or "").strip() or None
+    if not previous_response_id:
+        logger.info(
+            "Selected turn history run=%s mode=full_history items=%d previous_response_id=<none>",
+            run_id,
+            len(history),
+        )
+        return list(history)
+
+    allowed_provider_call_ids: set[str] = set()
+    if outstanding_provider_call_id:
+        allowed_provider_call_ids.add(str(outstanding_provider_call_id).strip())
+    if outstanding_provider_call_ids:
+        for raw_value in outstanding_provider_call_ids:
+            value = str(raw_value or "").strip()
+            if value:
+                allowed_provider_call_ids.add(value)
+
+    if history and history[-1].get("role") == "tool" and allowed_provider_call_ids:
+        tool_entries: list[dict[str, object]] = []
+        for entry in reversed(history):
+            if entry.get("role") != "tool":
+                break
+            provider_call_id = str(entry.get("provider_call_id") or "").strip()
+            if provider_call_id and provider_call_id in allowed_provider_call_ids:
+                tool_entries.append(entry)
+        tool_entries.reverse()
+        if tool_entries:
+            logger.info(
+                "Selected turn history run=%s mode=tool_outputs_only items=%d previous_response_id=%s provider_call_ids=%s",
+                run_id,
+                len(tool_entries),
+                previous_response_id,
+                sorted(allowed_provider_call_ids),
+            )
+            return tool_entries
+
+    for index in range(len(history) - 1, -1, -1):
+        if history[index].get("role") == "user":
+            selected = list(history[index:])
+            logger.info(
+                "Selected turn history run=%s mode=last_user_turn items=%d previous_response_id=%s",
+                run_id,
+                len(selected),
+                previous_response_id,
+            )
+            return selected
+
+    logger.info(
+        "Selected turn history run=%s mode=empty_fallback items=0 previous_response_id=%s",
+        run_id,
+        previous_response_id,
+    )
+    return []
+
+
 def build_ws_request_input_items(
     history: list[dict[str, object]],
     *,

@@ -3,12 +3,54 @@ import logging
 from typing import Any, Dict, Iterable, List, Optional, Sequence
 
 import httpx
+from django.conf import settings
 
 from .common import normalize_openai_compatible_tools
 
 logger = logging.getLogger(__name__)
 DEFAULT_CLIENT_NAME = "agentmaestro/1.0"
 DEFAULT_TIMEOUT_SECONDS = 60.0
+
+
+def _show_condensed_system_logs() -> bool:
+    return getattr(settings, "SHOW_CONDENSED_SYSTEM_LOGS", True)
+
+
+def _json_dump(data: Any) -> str:
+    return json.dumps(data, ensure_ascii=False, default=str)
+
+
+def _tool_names(tools: Sequence[Dict[str, Any]]) -> List[str]:
+    names: List[str] = []
+    for tool in tools:
+        if not isinstance(tool, dict):
+            continue
+        func = tool.get("function") if isinstance(tool.get("function"), dict) else tool
+        name = str(func.get("name") or tool.get("name") or "").strip()
+        if name:
+            names.append(name)
+    return names
+
+
+def _summarize_response(data: Dict[str, Any], text: str, tool_calls: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
+    summary: Dict[str, Any] = {}
+    response_id = str(data.get("response_id") or data.get("id") or "").strip()
+    if response_id:
+        summary["response_id"] = response_id
+    summary["text_len"] = len(text or "")
+    summary["tool_calls"] = len(tool_calls)
+    usage = data.get("usageMetadata") or {}
+    if isinstance(usage, dict):
+        prompt_tokens = usage.get("promptTokenCount")
+        completion_tokens = usage.get("candidatesTokenCount")
+        total_tokens = usage.get("totalTokenCount")
+        if isinstance(prompt_tokens, (int, float)):
+            summary["prompt_tokens"] = int(prompt_tokens)
+        if isinstance(completion_tokens, (int, float)):
+            summary["completion_tokens"] = int(completion_tokens)
+        if isinstance(total_tokens, (int, float)):
+            summary["total_tokens"] = int(total_tokens)
+    return summary
 
 
 class GeminiHTTPService:
@@ -33,9 +75,15 @@ class GeminiHTTPService:
             tools: Optional[List[Dict[str, Any]]] = None,
             temperature: Optional[float] = None,
             max_output_tokens: Optional[int] = None,
+            previous_response_id: Optional[str] = None,
+            outstanding_provider_call_id: Optional[str] = None,
             extra: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        contents, system_instruction = self._build_contents(messages)
+        contents, system_instruction = self._build_contents(
+            messages,
+            previous_response_id=previous_response_id,
+            outstanding_provider_call_id=outstanding_provider_call_id,
+        )
         normalized_tools = normalize_openai_compatible_tools(tools or [])
         payload: Dict[str, Any] = {"model": model, "contents": contents}
         generation_config = self._build_generation_config(
@@ -50,27 +98,24 @@ class GeminiHTTPService:
             payload["systemInstruction"] = {"parts": [{"text": system_instruction}]}
         if extra:
             payload.update(extra)
+        if _show_condensed_system_logs():
+            log_payload = {
+                "model": model,
+                "contents": len(contents),
+                "tools": _tool_names(normalized_tools),
+                "has_system_instruction": bool(system_instruction),
+            }
+        else:
+            log_payload = payload
+        payload_text = _json_dump(log_payload)
 
         logger.info(
-            "[Gemini HTTP SEND] model=%s contents=%d tools=%d",
+            "[Gemini HTTP SEND] model=%s payload=%s",
             model,
-            len(contents),
-            len(normalized_tools),
+            payload_text,
         )
         url = f"{self.base_url}/{self._format_model_path(model)}:generateContent"
         headers = self._build_headers()
-        tool_names = [
-            entry.get("function", {}).get("name")
-            for entry in normalized_tools
-            if isinstance(entry, dict)
-            and entry.get("function", {}).get("name")
-        ]
-        payload_summary = {
-            "content_count": len(contents),
-            "tool_count": len(tool_names),
-            "tool_names": tool_names[:20],
-            "has_system_instruction": bool(system_instruction),
-        }
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             try:
                 response = await client.post(url, json=payload, headers=headers)
@@ -82,12 +127,11 @@ class GeminiHTTPService:
                     if len(response_text) <= 2000
                     else response_text[:2000] + "..."
                 )
-                summary_text = json.dumps(payload_summary, ensure_ascii=False)
                 logger.error(
-                    "[Gemini HTTP ERROR] status=%s url=%s payload_summary=%s response=%s",
+                    "[Gemini HTTP ERROR] status=%s url=%s payload=%s response=%s",
                     exc.response.status_code,
                     url,
-                    summary_text,
+                    payload_text,
                     truncated_response,
                 )
                 exc.args = (
@@ -100,13 +144,15 @@ class GeminiHTTPService:
         text = self._collect_candidate_text(candidate)
         tool_calls = self._collect_tool_calls(candidate, data)
         usage = self._collect_usage(data.get("usageMetadata") or {})
-        response_id = data.get("name") or data.get("responseId") or ""
+        response_id = str(data.get("responseId") or data.get("id") or "").strip() or None
+        if _show_condensed_system_logs():
+            response_payload = _summarize_response(data, text, tool_calls)
+        else:
+            response_payload = data
         logger.info(
-            "[Gemini HTTP RCV] model=%s response_id=%s text_len=%d tool_calls=%d",
+            "[Gemini HTTP RCV] model=%s response=%s",
             model,
-            response_id,
-            len(text),
-            len(tool_calls),
+            _json_dump(response_payload),
         )
         return {
             "text": text,
@@ -117,9 +163,12 @@ class GeminiHTTPService:
         }
 
     def _build_contents(
-            self, messages: Sequence[Dict[str, Any]]
+            self,
+            messages: Sequence[Dict[str, Any]],
+            *,
+            previous_response_id: str | None = None,
+            outstanding_provider_call_id: str | None = None,
     ) -> tuple[List[Dict[str, Any]], str | None]:
-        contents: List[Dict[str, Any]] = []
         system_texts: List[str] = []
         for msg in messages:
             role = (msg.get("role") or "").strip()
@@ -128,58 +177,56 @@ class GeminiHTTPService:
                 continue
             if role == "system":
                 system_texts.append(content)
+        if previous_response_id:
+            start_index = None
+            for index in range(len(messages) - 1, -1, -1):
+                if (messages[index].get("role") or "").strip() == "user":
+                    start_index = index
+                    break
+            selected_messages = list(messages[start_index:]) if start_index is not None else list(messages)
+        else:
+            selected_messages = list(messages)
+        contents: List[Dict[str, Any]] = []
+        for msg in selected_messages:
+            role = (msg.get("role") or "").strip()
+            content = str(msg.get("content") or "").strip()
+            if role == "system":
                 continue
-            normalized_role = "model" if role in {"assistant", "tool"} else "user"
+            if role == "assistant" and msg.get("tool_calls"):
+                tool_call_parts: List[Dict[str, Any]] = []
+                if content:
+                    tool_call_parts.append({"text": content})
+                for call in msg.get("tool_calls") or []:
+                    if not isinstance(call, dict):
+                        continue
+                    tool_name = str(
+                        call.get("name")
+                        or call.get("function", {}).get("name")
+                        or "tool"
+                    ).strip() or "tool"
+                    arguments = call.get("arguments")
+                    if isinstance(arguments, str):
+                        try:
+                            arguments = json.loads(arguments)
+                        except Exception:
+                            arguments = {"raw": arguments}
+                    if not isinstance(arguments, dict):
+                        arguments = {"value": arguments}
+                    tool_call_parts.append({"functionCall": {"name": tool_name, "args": arguments}})
+                if tool_call_parts:
+                    contents.append({"role": "model", "parts": tool_call_parts})
+                continue
+            if not content:
+                continue
+            if role == "tool":
+                contents.append(self._tool_message_to_function_response(content))
+                continue
+            normalized_role = "model" if role == "assistant" else "user"
             contents.append({"role": normalized_role, "parts": [{"text": content}]})
         if not contents:
             contents.append({"role": "user", "parts": [{"text": ""}]})
         instruction = "\n".join(system_texts).strip() or None
         return contents, instruction
-
-    def _build_config(
-            self,
-            normalized_tools: List[Dict[str, Any]],
-            temperature: Optional[float],
-            max_output_tokens: Optional[int],
-    ) -> Dict[str, Any]:
-        config: Dict[str, Any] = {}
-        tool_config = self._build_tool_config(normalized_tools)
-        if tool_config:
-            config.update(tool_config)
-        if temperature is not None:
-            config["temperature"] = temperature
-        if max_output_tokens is not None:
-            config["maxOutputTokens"] = max_output_tokens
-        return config
-
-    def _build_tool_config(self, normalized_tools: List[Dict[str, Any]]) -> Dict[str, Any]:
-        function_declarations: List[Dict[str, Any]] = []
-        for entry in normalized_tools:
-            function = entry.get("function") or {}
-            name = function.get("name")
-            if not name:
-                continue
-            params = self._clean_tool_parameters(function.get("parameters")) or {
-                "type": "object",
-                "properties": {},
-                "additionalProperties": True,
-            }
-            function_declarations.append(
-                {
-                    "name": name,
-                    "description": function.get("description") or "",
-                    "parameters": params,
-                }
-            )
-        if not function_declarations:
-            return {}
-        return {
-            "tools": [
-                {
-                    "functionDeclarations": function_declarations,
-                }
-            ]
-        }
 
     def _build_headers(self) -> Dict[str, str]:
         return {
@@ -311,6 +358,36 @@ class GeminiHTTPService:
             ]
         }
         return payload
+
+    @staticmethod
+    def _tool_message_to_function_response(content: str) -> Dict[str, Any]:
+        tool_name = "tool"
+        response_payload: Any = content
+        try:
+            parsed = json.loads(content)
+        except Exception:
+            parsed = None
+        if isinstance(parsed, dict):
+            tool_name = str(parsed.get("tool") or parsed.get("tool_name") or parsed.get("name") or tool_name).strip() or tool_name
+            if parsed.get("tool_result") is not None:
+                response_payload = parsed.get("tool_result")
+            elif parsed.get("result") is not None:
+                response_payload = parsed.get("result")
+            else:
+                response_payload = parsed
+        if isinstance(response_payload, str):
+            response_payload = {"text": response_payload}
+        return {
+            "role": "user",
+            "parts": [
+                {
+                    "functionResponse": {
+                        "name": tool_name,
+                        "response": response_payload,
+                    }
+                }
+            ],
+        }
 
     @staticmethod
     def _iter_function_calls(source: Dict[str, Any]) -> Iterable[Dict[str, Any]]:

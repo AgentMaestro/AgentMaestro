@@ -33,6 +33,9 @@ class BuildSystemContextTests(TestCase):
             authenticated_user=user,
         )
 
+        assert "Bootstrap status:" in context
+        assert "If this is the first turn of a new run and the repository `AGENTS.md` file is available" in context
+        assert "If the user asks what tools are available or how many tools you have" in context
         assert "Capability: Scheduling" in context
         assert "task_type=other_daily_task" in context
         assert "Capability: User Memory Scope" in context
@@ -41,3 +44,35 @@ class BuildSystemContextTests(TestCase):
         assert "Canonical auth username: system-context-scott" in context
         assert "Display name: Scott Kissinger" in context
         assert "For `remember` or `search_memory` with `scope_type=user`" in context
+
+    def test_marks_agents_md_bootstrap_complete_after_first_read(self):
+        User = get_user_model()
+        user = User.objects.create_user(
+            username="system-context-scott-bootstrap",
+            password="x",
+            email="scott@example.com",
+            first_name="Scott",
+            last_name="Kissinger",
+        )
+        workspace = Workspace.objects.create(name="Context Workspace Bootstrap")
+        agent = Agent.objects.create(
+            workspace=workspace,
+            owner=user,
+            created_by=user,
+            name="Context Agent Bootstrap",
+            soul="Use memory carefully.",
+        )
+
+        context = build_system_context(
+            agent,
+            model_name="gpt-5-codex",
+            transport="websocket",
+            tool_names=["file_read"],
+            authenticated_user=user,
+            agents_md_bootstrap_complete=True,
+        )
+
+        assert "Bootstrap status:" in context
+        assert "`AGENTS.md` has already been read in this run." in context
+        assert "Do not call `file_read` on `AGENTS.md` again" in context
+        assert "If this is the first turn of a new run and the repository `AGENTS.md` file is available" not in context
