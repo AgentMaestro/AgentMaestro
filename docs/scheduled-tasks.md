@@ -12,12 +12,10 @@ Scheduled tasks now separate:
 - `ScheduledTask` as the durable recurring task record.
 - `RecurrenceRule` as the reusable recurrence substrate.
 - Native `schedule_task` and `list_scheduled_tasks` tools.
-- `ScheduledTask.execution_mode` with:
-  - `deterministic`
-  - `headless_run`
+- `ScheduledTask.execution_mode` with the live `headless_run` path.
 - `ScheduledTask.last_run` and `ScheduledTask.active_run` for operational visibility.
 - `ScheduledTaskApproval` for reusable approval inheritance on headless runs.
-- A Celery beat poller that claims due tasks and either executes the deterministic path or launches a headless run.
+- A Celery beat poller that claims due tasks and launches a headless run.
 - Automatic cleanup of stale or terminal `active_run` references before due tasks are claimed.
 - First recurrence support for hourly, daily, weekly, monthly, quarterly, semiannual, and annual schedules.
 - Automatic episodic memory creation when a task is scheduled.
@@ -55,19 +53,7 @@ See `docs/recurrence-rules.md` for full details and examples.
 
 ## Execution Modes
 
-### Deterministic
-
-The deterministic `daily_weather_report` path still works as before:
-
-1. run `web_search`
-2. prefer a `weather.com` result when available
-3. run `fetch_url` on the selected page
-4. send the rendered report to the agent's paired transport conversation
-5. store a lightweight episodic memory noting the execution
-
-### Headless Run
-
-For `execution_mode="headless_run"`:
+All scheduled tasks execute through `execution_mode="headless_run"`:
 
 1. the due task is claimed by Celery
 2. a real `AgentRun` is created with headless metadata
@@ -92,42 +78,40 @@ Headless scheduled runs are conservative by design:
 
 ## Tool Examples
 
-Create a recurring daily weather report with the shorthand daily schedule:
+Create a recurring scheduled task with the shorthand daily schedule:
 
 ```json
 {
-  "title": "daily weather report for Richmond, VA",
-  "task_type": "daily_weather_report",
+  "title": "daily task for Richmond, VA",
+  "task_type": "other_task",
   "execution_mode": "headless_run",
   "timezone": "America/New_York",
   "local_time": "08:00",
   "execution_payload": {
-    "location": "Richmond, VA",
-    "query": "site:weather.com Richmond VA daily and weekly weather forecast",
-    "source_domain": "weather.com"
+    "objective": "Summarize the morning inbox and calendar for the owner.",
+    "integration_kind": "google",
+    "action_kind": "read"
   }
 }
 ```
 
-Create an hourly coaching-day weather check using the recurrence object:
+Create a generic recurring task using the recurrence object:
 
 ```json
 {
-  "title": "coach weather checks",
-  "task_type": "daily_weather_report",
-  "execution_mode": "deterministic",
+  "title": "daily workspace check",
+  "task_type": "other_task",
+  "execution_mode": "headless_run",
   "recurrence": {
     "timezone": "America/New_York",
     "frequency": "hourly",
     "interval": 1,
-    "by_weekday": ["mon", "wed", "fri", "sat"],
     "run_minute": 0,
     "window_start_time": "09:00",
     "window_end_time": "19:00"
   },
   "execution_payload": {
-    "location": "Richmond, VA",
-    "source_domain": "weather.com"
+    "objective": "Review the latest inbox and calendar state for the workspace owner."
   }
 }
 ```

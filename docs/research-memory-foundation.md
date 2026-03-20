@@ -99,7 +99,7 @@ Scheduled-task execution memories carry a stable bucket-style `dedupe_key` so th
 
 The first supported task type is:
 
-- `daily_weather_report`
+- `other_task`
 
 ## Headless Runs
 

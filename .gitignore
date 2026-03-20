@@ -102,6 +102,7 @@ temp_debug.py
 temp_edit.py
 .tmp_*.py
 .tmp_*.txt
+tmp_*.py
 
 
 # =========================================

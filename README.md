@@ -12,21 +12,23 @@ and production-safe.
 
 ------------------------------------------------------------------------
 
-# Current Capabilities (Mar 17, 2026)
+# Current Capabilities (Mar 20, 2026)
 
 - Full agent runtime with event loop
 - ToolRunner execution system (async-ready)
 - OpenAI WS + HTTP integration
 - Gemini HTTP-compatible provider path
+- Provider/system transport logs now support condensed or raw JSON mode
 - Multi-agent switching capability
 - Full developer and researcher tool suite
+- Google Bridge Gmail and Calendar read/write support
 - Safe bounded command execution and repo-scripted test runners
 - Telegram communication channel
 - Memory (STM + LTM)
-- Scheduled tasks
+- Scheduled tasks with headless execution
 - Autonomous coding workflows
 
-------------------------------------------------------------------------
+----------------------------------------------------------------------------------------------------
 
 ## Why AgentMaestro?
 
@@ -141,8 +143,9 @@ Parent/child relationships are first-class, enabling:
     - `celery -A agentmaestro worker --loglevel=info --pool=solo`
     - `celery -A agentmaestro beat --loglevel=info`
 7.  Run Django: `python manage.py runserver`.
-8.  Visit `/agents/new` to configure agents, `/agents/<slug>/` for the chat UI, and `/ui/agents/<uuid>/connect/telegram/` to pair bots.
-9.  Use `backend/scripts/test.ps1` to execute the test suite safely on Windows.
+8.  Visit `/agents/new` to configure agents, `/agents/<agent_slug>/` for the chat UI, and `/ui/agents/<uuid>/connect/telegram/` to pair bots.
+9.  Use `backend/scripts/runtests.ps1` to execute the backend test suite safely on Windows.
+10. Use `toolrunner/scripts/runtests.ps1` to execute the toolrunner test suite safely on Windows.
 
 ## Architecture Overview
 
@@ -192,14 +195,15 @@ Use this checklist when introducing a new tool:
 3. Run `python manage.py seed_tools` so the shared `Tool` row exists.
 4. Run `python manage.py seed_workspace_tools --workspace <workspace>` or create the workspace `ToolDefinition` manually, making sure it is linked to the shared `Tool`.
 5. Create or enable the `AgentToolGrant` row for each agent that should actually receive the tool.
-6. Verify the risk and approval defaults on both the shared `Tool` and any workspace override in `ToolDefinition`.
-7. Optionally add the tool name to `Agent.tool_policy_json[\"selected_tools\"]` for metadata consistency, but do not rely on that JSON alone for actual access.
+6. Note, for dev purposes 3, 4, and 5 can be performed by running `python manage.py seed_dev_tools` which will add to `Tools`, `ToolDefinitions`, and grant to all Agents in `AgentToolGrant`.
+7. Verify the risk and approval defaults on both the shared `Tool` and any workspace override in `ToolDefinition`.
+8. Optionally add the tool name to `Agent.tool_policy_json[\"selected_tools\"]` for metadata consistency, but do not rely on that JSON alone for actual access.
 
 ### Observability
 
 - WebSocket consumers stream `RunEvent`/`LLMMessage` updates, show approval cards, and emit tool status events in the chat UI.
 - Celery logs surface Telegram polling retries (timeout default 25s) and tool execution progress.
-- `backend/scripts/test.ps1` handles Windows permission quirks by clearing `.pytest-temp` and passing `--basetemp`.
+- `backend/scripts/runtests.ps1` handles Windows permission quirks by clearing `.pytest-temp` and passing `--basetemp`.
 
 ### Components
 
@@ -281,7 +285,7 @@ Planned stack:
 
 - `TELEGRAM_BOT_TOKEN`: the bot token the polling worker uses to talk to Telegram.
 - `TELEGRAM_POLL_INTERVAL_SECONDS`: how frequently the scheduler enqueues `comms.telegram_poll_scheduler` (defaults to 5s).
-- `TELEGRAM_POLL_TIMEOUT_SECONDS`: the long-poll timeout we pass to Telegram (default 25s).
+- `TELEGRAM_POLL_TIMEOUT_SECONDS`: the fixed long-poll timeout we pass to Telegram (default 5s).
 - `TELEGRAM_POLL_LOCK_REDIS_URL` / `CHANNEL_LAYER_REDIS_URL` / `CELERY_BROKER_URL`: Redis connections used for channel layers, polling locks, and the Celery broker.
 
 ### Running the poller

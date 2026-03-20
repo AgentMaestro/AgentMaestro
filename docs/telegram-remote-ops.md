@@ -120,13 +120,14 @@ TELEGRAM_CHAT_ID=<optional fixed chat id>
 TELEGRAM_ALLOWED_USER_IDS=<optional comma-separated telegram user ids>
 TELEGRAM_ENABLE_POLLING=1
 TELEGRAM_POLL_INTERVAL_SECONDS=5
-TELEGRAM_POLL_TIMEOUT_SECONDS=25
+TELEGRAM_POLL_TIMEOUT_SECONDS=5
 ```
 
 Notes:
 
 - `AGENTMAESTRO_BASE_URL` is still used for URL generation even in polling mode.
 - `TELEGRAM_ENABLE_POLLING=1` is required for Celery beat to enqueue poll jobs.
+- `TELEGRAM_POLL_TIMEOUT_SECONDS` is a fixed long-poll timeout and does not derive from the scheduler interval.
 - local polling does not require a public HTTPS endpoint.
 
 ## Backend Setup

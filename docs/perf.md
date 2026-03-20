@@ -114,3 +114,31 @@ The management command `python manage.py archive_runs --older-than 30 --compact`
 ## CI smoke-perf job
 
 See `.github/workflows/perf_smoke.yml`. It invokes the script in smoke mode and fails if averages exceed the target latencies or if any HTTP response is non-200. This job runs on every push to catch regressions before they land.
+
+## LLM provider matrix smoke
+
+Use the provider matrix smoke when you want one repeatable benchmark that compares model, provider, and transport combinations on the same agent scenarios.
+
+Run it with:
+
+```bash
+python manage.py llm_provider_matrix_smoke
+```
+
+Default config:
+
+- `smoke/llm_provider_matrix.json`
+
+Default scenarios:
+
+- `direct_reply` for a fast no-tool response
+- `repo_lookup` for a tool-using code lookup path
+
+Scoring:
+
+- `speed_score`: latency normalized to a 0-100 score against the scenario target in milliseconds.
+- `quality_score`: rubric score derived from scenario-specific checks.
+- `overall_score`: weighted blend of speed and quality. The default is `0.4 * speed + 0.6 * quality`.
+- `grade`: letter grade from `A` through `F` based on the overall score.
+
+The command prints a ranked summary and can also write the full JSON report when `--output` is supplied.

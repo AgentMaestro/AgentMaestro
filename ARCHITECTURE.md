@@ -34,6 +34,8 @@ PostgreSQL remains the canonical store for all runs, steps, events, tool calls, 
 - Approval endpoints and consumers surface `approvals.<workspace_id>` messages to the UI.
 - All write paths stay transactional and broadcast through `transaction.on_commit`.
 
+-----------------------------------------------------------------------
+
 ### Key models & services
 - `AgentRun`, `AgentStep`, `RunEvent`, `ToolCall`, `Artifact`
 - `runs.services.ticker` / `runs.tasks.run_tick`: deterministic tick loop
@@ -201,6 +203,22 @@ Constraints:
 - Per-workspace quotas throttle both rate and concurrency. Rate caps keep API endpoints within the burst-SLO numbers (run creation 10.29/s, spawn 2.14/s, snapshot 18.49/s, tick 41/s) while concurrency caps enforce a maximum of 5 live parent runs, 12 total runs, 4 pending subruns per parent, 6 workspace tool calls (1 per run), and 20/5 websocket sessions (workspace/user). All of these limits live in `core.services.limits` and are tuned via `backend/scripts/burst_slo_test.py`.
 
 ------------------------------------------------------------------------
+
+### OpenAI Responses continuation identifiers
+
+The provider bridge keeps three identifiers separate and uses them for different purposes:
+
+- `tool_call_id` is the internal `ToolCall` / run-tracking identifier used by AgentMaestro.
+- `provider_call_id` is OpenAI's `call_id`; it must be echoed back in `function_call_output` when resuming a Responses API tool call.
+- `previous_response_id` is the Responses API chain token; it preserves conversation continuity but is not the tool call id.
+
+This separation matters when resuming HTTP and WebSocket runs after tool execution. Tool output must carry the provider call id, while the response chain uses `previous_response_id` independently.
+
+If an older run still points at a stale `previous_response_id` after transport changes, delete and recreate the run before retrying HTTP Responses; a browser refresh will not repair the server-side chain.
+
+Provider-specific message serialization, tool payload shapes, and transport differences are documented in `backend/llm/PROTOCOLS.md`.
+
+-------------------------------------------------------------------------
 
 ## Design Goals
 

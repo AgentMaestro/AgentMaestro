@@ -68,7 +68,7 @@ Scheduled-task headless execution currently writes provenance at three levels:
 
 - scheduled-task creation memory:
   - `source_kind="scheduled_task_created"`
-- deterministic scheduled-task execution memory:
+- scheduled-task execution memory:
   - `source_kind="scheduled_task_executed"`
 - headless run outcome memory:
   - `source_kind="headless_run_completed"`

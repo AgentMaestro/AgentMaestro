@@ -1,12 +1,21 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
-from .config import SANDBOX_ROOT
+from . import config
+
+
+def _normalize_component(value: str) -> str:
+    cleaned = str(value or "").strip()
+    if not cleaned:
+        raise ValueError("path component is required")
+    # Keep sandbox path creation Windows-safe even when callers pass scoped ids.
+    return re.sub(r'[<>:"/\\|?*]+', "_", cleaned)
 
 
 def get_run_dir(workspace_id: str, run_id: str) -> Path:
-    path = SANDBOX_ROOT / workspace_id / run_id
+    path = config.SANDBOX_ROOT / _normalize_component(workspace_id) / _normalize_component(run_id)
     path.mkdir(parents=True, exist_ok=True)
     return path
 
