@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from fastapi.responses import JSONResponse
@@ -44,7 +44,7 @@ def _normalize_newlines(text: str) -> str:
 def _isoformat_epoch_seconds(value: int | None) -> str | None:
     if value is None:
         return None
-    return datetime.fromtimestamp(value, tz=timezone.utc).isoformat().replace("+00:00", "Z")
+    return datetime.fromtimestamp(value, tz=UTC).isoformat().replace("+00:00", "Z")
 
 
 def _run_command(
@@ -88,7 +88,11 @@ def run_git_log(run_dir: Path, args: GitLogArgs, policy: dict | None = None):
     try:
         repo_path = resolve_policy_path(run_dir, repo_dir, policy)
     except ValueError as exc:
-        error_code = "PATH_OUTSIDE_WORKSPACE" if "path traversal outside of workspace" in str(exc) else "PATH_NOT_ALLOWED"
+        error_code = (
+            "PATH_OUTSIDE_WORKSPACE"
+            if "path traversal outside of workspace" in str(exc)
+            else "PATH_NOT_ALLOWED"
+        )
         return _error_response(error_code, str(exc))
 
     if not repo_path.exists():

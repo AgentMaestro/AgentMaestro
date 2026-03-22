@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from typing import Iterable
+from collections.abc import Iterable
 
 from fastapi.responses import JSONResponse
 
@@ -12,14 +12,13 @@ _MISSING_MODULE_RE = re.compile(
 )
 
 
-def detect_missing_python_module(result: dict[str, object], expected_modules: Iterable[str]) -> str | None:
+def detect_missing_python_module(
+    result: dict[str, object], expected_modules: Iterable[str]
+) -> str | None:
     expected = {name.strip() for name in expected_modules if name and name.strip()}
     if not expected:
         return None
-    combined = "\n".join(
-        str(part or "")
-        for part in (result.get("stderr"), result.get("stdout"))
-    )
+    combined = "\n".join(str(part or "") for part in (result.get("stderr"), result.get("stdout")))
     for match in _MISSING_MODULE_RE.finditer(combined):
         module_name = match.group("module").strip()
         top_level = module_name.split(".", 1)[0]

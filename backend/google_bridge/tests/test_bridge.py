@@ -1369,6 +1369,61 @@ def test_execute_google_task_creates_calendar_event(monkeypatch):
     assert "Event ID: event-1" in result["summary_text"]
 
 
+@override_settings(TIME_ZONE="Europe/London")
+def test_execute_google_task_defaults_calendar_timezone_to_local_setting(monkeypatch):
+    workspace, user, account = _make_account()
+
+    captured: dict[str, object] = {}
+
+    class FakeClient:
+        def __init__(self, connection):
+            self.connection = connection
+
+        def create_calendar_event(
+            self,
+            *,
+            calendar_id: str = "primary",
+            summary: str = "",
+            description: str = "",
+            location: str = "",
+            start: dict | None = None,
+            end: dict | None = None,
+            attendees: list[str] | None = None,
+            send_updates: str = "",
+        ):
+            captured["calendar_id"] = calendar_id
+            captured["start"] = start
+            captured["end"] = end
+            return {"id": "event-1", "htmlLink": "https://calendar.google.com/event?eid=event-1", "summary": summary}
+
+    monkeypatch.setattr("google_bridge.services.bridge.GoogleBridgeClient", FakeClient)
+
+    execute_google_task(
+        payload={
+            "integration_kind": "google",
+            "resource_kind": "calendar",
+            "action_kind": "create",
+            "operation": "create",
+            "account_scope": "primary",
+            "calendar_id": "primary",
+            "summary": "Calendar write test",
+            "description": "Smoke test event",
+            "location": "Court 1",
+            "start": "2026-03-22T09:00:00",
+            "end": "2026-03-22T09:30:00",
+            "attendees": ["someone@example.com"],
+            "send_updates": "none",
+        },
+        workspace=workspace,
+        owner=user,
+        account=account,
+    )
+
+    assert captured["calendar_id"] == "primary"
+    assert captured["start"] == {"dateTime": "2026-03-22T09:00:00+00:00", "timeZone": "Europe/London"}
+    assert captured["end"] == {"dateTime": "2026-03-22T09:30:00+00:00", "timeZone": "Europe/London"}
+
+
 def test_execute_google_task_updates_calendar_event(monkeypatch):
     workspace, user, account = _make_account()
 

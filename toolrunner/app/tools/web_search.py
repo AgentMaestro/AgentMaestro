@@ -33,8 +33,7 @@ class SearchResult:
 
 
 class WebSearchProvider(Protocol):
-    def search(self, query: str, max_results: int) -> list[SearchResult]:
-        ...
+    def search(self, query: str, max_results: int) -> list[SearchResult]: ...
 
 
 class BraveWebSearchProvider:
@@ -107,6 +106,10 @@ def run_web_search(_run_dir, args: WebSearchArgs, _policy: dict | None = None):
         results = provider.search(args.query, args.max_results)
     except WebSearchError as exc:
         return _error(exc.code, exc.message, exc.details)
+    if not results:
+        logger.warning(
+            "Brave search returned no results query=%r max_results=%s", args.query, args.max_results
+        )
     return JSONResponse(
         status_code=200,
         content={

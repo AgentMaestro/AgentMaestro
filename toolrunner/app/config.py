@@ -263,12 +263,40 @@ def policy_resolution_roots(run_dir: Path, policy: dict[str, Any] | None = None)
     return tuple(roots)
 
 
+def _format_path_resolution_error(
+    *,
+    requested_path: str,
+    reason: str,
+    resolved_path: Path | None = None,
+    workspace_root: Path | None = None,
+    policy_roots: Sequence[Path] | None = None,
+) -> str:
+    roots = policy_roots or ()
+    root_text = ", ".join(os.path.normpath(str(root)) for root in roots) if roots else "none"
+    parts = [reason, f"requested={requested_path!r}"]
+    if resolved_path is not None:
+        parts.append(f"resolved={resolved_path}")
+    if workspace_root is not None:
+        parts.append(f"workspace_root={workspace_root}")
+    parts.append(f"allowed_roots={root_text}")
+    return "; ".join(parts)
+
+
 def resolve_policy_path(run_dir: Path, raw_path: str, policy: dict[str, Any] | None = None) -> Path:
     requested = Path(str(raw_path or ".").strip() or ".")
+    policy_roots = policy_resolution_roots(run_dir, policy)
     if requested.is_absolute():
         resolved = requested.resolve()
-        if not is_under_allowed_root(resolved, policy_resolution_roots(run_dir, policy)):
-            raise ValueError(f"Path '{resolved}' is not permitted")
+        if not is_under_allowed_root(resolved, policy_roots):
+            raise ValueError(
+                _format_path_resolution_error(
+                    requested_path=str(raw_path or "."),
+                    reason="absolute path is outside allowed roots",
+                    resolved_path=resolved,
+                    workspace_root=run_dir.resolve(),
+                    policy_roots=policy_roots,
+                )
+            )
         return resolved
     base_root = policy_runtime_root(policy, "repo_root") or run_dir.resolve()
     base_root = Path(base_root)
@@ -276,30 +304,87 @@ def resolve_policy_path(run_dir: Path, raw_path: str, policy: dict[str, Any] | N
     resolved = (base_root / requested).resolve()
     try:
         if resolved != base_resolved and not resolved.is_relative_to(base_resolved):
-            raise ValueError("path traversal outside of workspace")
+            raise ValueError(
+                _format_path_resolution_error(
+                    requested_path=str(raw_path or "."),
+                    reason="path traversal outside of workspace",
+                    resolved_path=resolved,
+                    workspace_root=base_resolved,
+                    policy_roots=policy_roots,
+                )
+            )
     except ValueError as exc:
-        raise ValueError("path traversal outside of workspace") from exc
-    if not is_under_allowed_root(resolved, policy_resolution_roots(run_dir, policy)):
-        raise ValueError(f"Path '{resolved}' is not permitted")
+        raise ValueError(
+            _format_path_resolution_error(
+                requested_path=str(raw_path or "."),
+                reason="path traversal outside of workspace",
+                resolved_path=resolved,
+                workspace_root=base_resolved,
+                policy_roots=policy_roots,
+            )
+        ) from exc
+    if not is_under_allowed_root(resolved, policy_roots):
+        raise ValueError(
+            _format_path_resolution_error(
+                requested_path=str(raw_path or "."),
+                reason="resolved path is outside allowed roots",
+                resolved_path=resolved,
+                workspace_root=base_resolved,
+                policy_roots=policy_roots,
+            )
+        )
     return resolved
 
 
 def resolve_path_from_base(base_dir: Path, raw_path: str, policy: dict[str, Any] | None = None) -> Path:
     requested = Path(str(raw_path or ".").strip() or ".")
+    policy_roots = policy_resolution_roots(base_dir, policy)
     if requested.is_absolute():
         resolved = requested.resolve()
-        if not is_under_allowed_root(resolved, policy_resolution_roots(base_dir, policy)):
-            raise ValueError(f"Path '{resolved}' is not permitted")
+        if not is_under_allowed_root(resolved, policy_roots):
+            raise ValueError(
+                _format_path_resolution_error(
+                    requested_path=str(raw_path or "."),
+                    reason="absolute path is outside allowed roots",
+                    resolved_path=resolved,
+                    workspace_root=base_dir.resolve(),
+                    policy_roots=policy_roots,
+                )
+            )
         return resolved
     base_resolved = base_dir.resolve()
     resolved = (base_resolved / requested).resolve()
     try:
         if resolved != base_resolved and not resolved.is_relative_to(base_resolved):
-            raise ValueError("path traversal outside of workspace")
+            raise ValueError(
+                _format_path_resolution_error(
+                    requested_path=str(raw_path or "."),
+                    reason="path traversal outside of workspace",
+                    resolved_path=resolved,
+                    workspace_root=base_resolved,
+                    policy_roots=policy_roots,
+                )
+            )
     except ValueError as exc:
-        raise ValueError("path traversal outside of workspace") from exc
-    if not is_under_allowed_root(resolved, policy_resolution_roots(base_dir, policy)):
-        raise ValueError(f"Path '{resolved}' is not permitted")
+        raise ValueError(
+            _format_path_resolution_error(
+                requested_path=str(raw_path or "."),
+                reason="path traversal outside of workspace",
+                resolved_path=resolved,
+                workspace_root=base_resolved,
+                policy_roots=policy_roots,
+            )
+        ) from exc
+    if not is_under_allowed_root(resolved, policy_roots):
+        raise ValueError(
+            _format_path_resolution_error(
+                requested_path=str(raw_path or "."),
+                reason="resolved path is outside allowed roots",
+                resolved_path=resolved,
+                workspace_root=base_resolved,
+                policy_roots=policy_roots,
+            )
+        )
     return resolved
 
 

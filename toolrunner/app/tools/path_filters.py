@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import fnmatch
+from collections.abc import Iterable, Sequence
 from pathlib import Path
-from typing import Iterable, Sequence
 
 
 def glob_candidates(

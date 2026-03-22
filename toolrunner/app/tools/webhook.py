@@ -3,6 +3,7 @@ from __future__ import annotations
 from fastapi import HTTPException
 from fastapi.responses import JSONResponse
 
+
 def create_webhook(payload: dict) -> JSONResponse:
     event = str(payload.get("event") or "").strip()
     if not event:

@@ -478,6 +478,8 @@ def test_hydrate_agents_md_bootstrap_state_restores_marker_from_run_events():
     assert "AGENTS.md has already been read in this run." in consumer.system_context
     assert "Do not call `file_read` on `AGENTS.md` again" in consumer.system_context
     assert "If this is the first turn of a new run and the repository `AGENTS.md` file is available" not in consumer.system_context
+    run.refresh_from_db()
+    assert run.agents_md_bootstrap_complete is True
 
 
 @pytest.mark.django_db(transaction=True)

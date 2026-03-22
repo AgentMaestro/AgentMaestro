@@ -3,9 +3,9 @@ from __future__ import annotations
 import os
 import subprocess
 import time
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Mapping, Sequence
 
 
 @dataclass(slots=True)
@@ -24,7 +24,9 @@ class SubprocessExecutionResult:
     timeout_source: str | None
 
 
-def timeout_details(timeout_seconds: int | None, source: str | None) -> dict[str, int | float | str | None]:
+def timeout_details(
+    timeout_seconds: int | None, source: str | None
+) -> dict[str, int | float | str | None]:
     if timeout_seconds is None:
         return {
             "timeout_ms": None,

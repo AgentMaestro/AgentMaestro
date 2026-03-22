@@ -1,9 +1,7 @@
 from __future__ import annotations
 
 import json
-import re
 from pathlib import Path
-from typing import Dict, List
 
 from fastapi.responses import JSONResponse
 
@@ -12,7 +10,7 @@ from ..models import FormatArgs, RunCommandArgs
 from .python_runner_support import detect_missing_python_module, missing_python_module_response
 from .run_command import run_command
 
-FORMAT_DEFAULT_ARGS: Dict[str, List[str]] = {
+FORMAT_DEFAULT_ARGS: dict[str, list[str]] = {
     "ruff_format": [],
     "black": [],
     "prettier": [],
@@ -33,14 +31,14 @@ def _error_response(code: str, message: str, details: dict | None = None, status
     )
 
 
-def _build_command(run_dir: Path, args: FormatArgs, policy: dict | None = None) -> List[str]:
+def _build_command(run_dir: Path, args: FormatArgs, policy: dict | None = None) -> list[str]:
     if args.tool == "command":
         if not args.cmd:
             raise ValueError("cmd is required when tool is command")
         return list(args.cmd or [])
 
     if args.tool == "ruff_format":
-        command = [PYTHON_INTERPRETER, "-m", "ruff", "format"]
+        command = [PYTHON_INTERPRETER, "-I", "-m", "ruff", "format"]
     else:
         command = [args.tool]
 
@@ -60,8 +58,8 @@ def _build_command(run_dir: Path, args: FormatArgs, policy: dict | None = None) 
     return command
 
 
-def _collect_changed_files(stdout: str) -> List[str]:
-    files: List[str] = []
+def _collect_changed_files(stdout: str) -> list[str]:
+    files: list[str] = []
     for line in stdout.splitlines():
         if line.startswith("+++ "):
             path = line[4:].strip()
@@ -71,6 +69,14 @@ def _collect_changed_files(stdout: str) -> List[str]:
                 path = path[2:]
             files.append(path)
     return sorted(set(files))
+
+
+def _resolve_requested_paths(
+    run_dir: Path, paths: list[str] | None, policy: dict | None = None
+) -> list[str]:
+    if not paths:
+        return []
+    return [str(resolve_policy_path(run_dir, rel_path, policy)) for rel_path in paths]
 
 
 def _invoke_run_command(run_dir: Path, run_args: RunCommandArgs, policy: dict | None):
@@ -86,9 +92,15 @@ def _invoke_run_command(run_dir: Path, run_args: RunCommandArgs, policy: dict | 
 
 def run_formatter(run_dir: Path, args: FormatArgs, policy: dict | None = None):
     try:
+        resolved_cwd = str(resolve_policy_path(run_dir, args.cwd or ".", policy))
+        resolved_paths = _resolve_requested_paths(run_dir, args.paths, policy)
         command = _build_command(run_dir, args, policy)
     except ValueError as exc:
-        error_code = "PATH_OUTSIDE_WORKSPACE" if "path traversal outside of workspace" in str(exc) else "PATH_NOT_ALLOWED"
+        error_code = (
+            "PATH_OUTSIDE_WORKSPACE"
+            if "path traversal outside of workspace" in str(exc)
+            else "PATH_NOT_ALLOWED"
+        )
         return _error_response(error_code, str(exc))
 
     run_args = RunCommandArgs(
@@ -136,7 +148,11 @@ def run_formatter(run_dir: Path, args: FormatArgs, policy: dict | None = None):
                 "timeout_source": "args.timeout_ms",
             },
         )
-    if isinstance(result.get("exit_code"), int) and result.get("exit_code") != 0 and not formatter_check_failed:
+    if (
+        isinstance(result.get("exit_code"), int)
+        and result.get("exit_code") != 0
+        and not formatter_check_failed
+    ):
         return JSONResponse(
             status_code=200,
             content={
@@ -144,7 +160,15 @@ def run_formatter(run_dir: Path, args: FormatArgs, policy: dict | None = None):
                 "error": {
                     "code": "tool_runner.FORMAT_FAILED",
                     "message": f"formatter exited with code {result['exit_code']}",
-                    "details": {"tool": args.tool, "mode": args.mode, "cwd": args.cwd, "paths": args.paths or [], "command": command},
+                    "details": {
+                        "tool": args.tool,
+                        "mode": args.mode,
+                        "cwd": args.cwd,
+                        "resolved_cwd": resolved_cwd,
+                        "paths": args.paths or [],
+                        "resolved_paths": resolved_paths,
+                        "command": command,
+                    },
                 },
                 "result": result,
             },
@@ -159,6 +183,11 @@ def run_formatter(run_dir: Path, args: FormatArgs, policy: dict | None = None):
         "exit_code": result.get("exit_code"),
         "duration_ms": result.get("duration_ms", 0),
         "timed_out": result.get("timed_out", False),
+        "requested_cwd": args.cwd,
+        "resolved_cwd": resolved_cwd,
+        "requested_paths": args.paths or [],
+        "resolved_paths": resolved_paths,
+        "command": command,
         "changed_files": changed_files,
         "parse_mode": args.tool,
         "parse_warning": parse_warning,
@@ -167,6 +196,8 @@ def run_formatter(run_dir: Path, args: FormatArgs, policy: dict | None = None):
         "stdout_truncated": result.get("stdout_truncated", False),
         "stderr_truncated": result.get("stderr_truncated", False),
         "python_interpreter": PYTHON_INTERPRETER if args.tool == "ruff_format" else None,
-        "python_interpreter_source": PYTHON_INTERPRETER_SOURCE if args.tool == "ruff_format" else None,
+        "python_interpreter_source": PYTHON_INTERPRETER_SOURCE
+        if args.tool == "ruff_format"
+        else None,
     }
     return JSONResponse(status_code=200, content={"ok": True, "result": final})

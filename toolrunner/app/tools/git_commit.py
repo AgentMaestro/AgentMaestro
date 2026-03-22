@@ -63,11 +63,15 @@ def _check_exit_code(result: dict, error_format: str) -> JSONResponse | None:
     exit_code = result.get("exit_code")
     if exit_code is None or exit_code == 0:
         return None
-    combined = f"{result.get('stdout','')}\n{result.get('stderr','')}"
+    combined = f"{result.get('stdout', '')}\n{result.get('stderr', '')}"
     text = combined.strip()
     if "nothing to commit" in text.lower():
         return _error_response("CONFLICT", "nothing to commit")
-    return _error_response("INVALID_ARGUMENT", text or error_format, {"stdout": result.get("stdout"), "stderr": result.get("stderr")})
+    return _error_response(
+        "INVALID_ARGUMENT",
+        text or error_format,
+        {"stdout": result.get("stdout"), "stderr": result.get("stderr")},
+    )
 
 
 def _normalize_newlines(text: str) -> str:
@@ -79,7 +83,11 @@ def run_git_commit(run_dir: Path, args: GitCommitArgs, policy: dict | None = Non
     try:
         repo_path = resolve_policy_path(run_dir, repo_dir, policy)
     except ValueError as exc:
-        error_code = "PATH_OUTSIDE_WORKSPACE" if "path traversal outside of workspace" in str(exc) else "PATH_NOT_ALLOWED"
+        error_code = (
+            "PATH_OUTSIDE_WORKSPACE"
+            if "path traversal outside of workspace" in str(exc)
+            else "PATH_NOT_ALLOWED"
+        )
         return _error_response(error_code, str(exc))
 
     if not repo_path.exists():
@@ -97,7 +105,11 @@ def run_git_commit(run_dir: Path, args: GitCommitArgs, policy: dict | None = Non
             try:
                 target = resolve_path_from_base(repo_path, rel_path, policy)
             except ValueError as exc:
-                error_code = "PATH_OUTSIDE_WORKSPACE" if "path traversal outside of workspace" in str(exc) else "PATH_NOT_ALLOWED"
+                error_code = (
+                    "PATH_OUTSIDE_WORKSPACE"
+                    if "path traversal outside of workspace" in str(exc)
+                    else "PATH_NOT_ALLOWED"
+                )
                 return _error_response(error_code, str(exc))
             try:
                 relative = target.relative_to(repo_path).as_posix()
@@ -116,7 +128,9 @@ def run_git_commit(run_dir: Path, args: GitCommitArgs, policy: dict | None = Non
 
     if args.add_all:
         add_all_cmd = ["git", "add", "-A"]
-        result, error = _run_git_command(repo_path, add_all_cmd, args.timeout_ms, args.max_output_bytes)
+        result, error = _run_git_command(
+            repo_path, add_all_cmd, args.timeout_ms, args.max_output_bytes
+        )
         if error:
             return error
         exit_error = _check_exit_code(result, "git add --all failed")

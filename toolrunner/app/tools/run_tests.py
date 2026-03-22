@@ -89,7 +89,9 @@ def run_predefined_tests(
                     "truncated": False,
                 }
             )
-            logger.warning("run_tests missing script suite=%s workspace_root=%s", suite, workspace_root)
+            logger.warning(
+                "run_tests missing script suite=%s workspace_root=%s", suite, workspace_root
+            )
             continue
 
         if matched_candidate and matched_candidate.endswith("test.ps1"):

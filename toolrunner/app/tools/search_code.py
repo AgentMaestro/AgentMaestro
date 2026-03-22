@@ -4,8 +4,8 @@ import bisect
 import os
 import re
 import time
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Iterable, Sequence
 
 from fastapi.responses import JSONResponse
 
@@ -23,6 +23,7 @@ from ..config import (
 from ..models import SearchCodeArgs
 from ..sandbox import is_safe_path
 from .path_filters import first_matching_pattern, glob_candidates, matches_patterns
+
 
 def _error(
     code: str,
@@ -100,7 +101,11 @@ def list_search_code(run_dir: Path, args: SearchCodeArgs, policy: dict | None = 
         try:
             root_path = resolve_policy_path(run_dir, args.root, policy)
         except ValueError as exc:
-            error_code = "PATH_OUTSIDE_WORKSPACE" if "path traversal outside of workspace" in str(exc) else "PATH_NOT_ALLOWED"
+            error_code = (
+                "PATH_OUTSIDE_WORKSPACE"
+                if "path traversal outside of workspace" in str(exc)
+                else "PATH_NOT_ALLOWED"
+            )
             return _error(error_code, str(exc), extra_patterns=args.exclude_globs)
         requested_root = Path(args.root)
         if requested_root.is_absolute():
@@ -236,7 +241,9 @@ def list_search_code(run_dir: Path, args: SearchCodeArgs, policy: dict | None = 
         match_count, snippets = _process_file(root_path)
         if match_count:
             files_with_matches += 1
-            _add_match_entry(root_path.relative_to(candidate_run_dir).as_posix(), match_count, snippets)
+            _add_match_entry(
+                root_path.relative_to(candidate_run_dir).as_posix(), match_count, snippets
+            )
         if _timed_out() or total_matches >= args.max_results:
             truncated = True
             stop = True

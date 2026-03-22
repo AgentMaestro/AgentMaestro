@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Dict, List
 
 from fastapi.responses import JSONResponse
 
@@ -37,11 +36,35 @@ def _invoke_run_command(run_dir: Path, run_args: RunCommandArgs, policy: dict | 
         return run_command(run_dir, run_args)
 
 
+def _coverage_file_summary(path: str, info: dict[str, object]) -> dict[str, object]:
+    summary = info.get("summary") if isinstance(info.get("summary"), dict) else {}
+    percent = summary.get("percent_covered", info.get("percent_covered"))
+    item: dict[str, object] = {
+        "path": path,
+        "percent": percent,
+    }
+    for key in (
+        "covered_lines",
+        "missing_lines",
+        "excluded_lines",
+        "num_statements",
+        "percent_covered",
+    ):
+        value = summary.get(key, info.get(key))
+        if value is not None:
+            item[key] = value
+    return item
+
+
 def run_coverage(run_dir: Path, args: CoverageArgs, policy: dict | None = None):
     try:
         working_dir = resolve_policy_path(run_dir, args.cwd or ".", policy)
     except ValueError as exc:
-        error_code = "PATH_OUTSIDE_WORKSPACE" if "path traversal outside of workspace" in str(exc) else "PATH_NOT_ALLOWED"
+        error_code = (
+            "PATH_OUTSIDE_WORKSPACE"
+            if "path traversal outside of workspace" in str(exc)
+            else "PATH_NOT_ALLOWED"
+        )
         return _error_response(error_code, str(exc))
 
     pytest_cmd = [PYTHON_INTERPRETER, "-m", "coverage", "run", "-m", "pytest", *(args.args or [])]
@@ -157,7 +180,7 @@ def run_coverage(run_dir: Path, args: CoverageArgs, policy: dict | None = None):
     try:
         with coverage_path.open("r", encoding="utf-8") as handle:
             coverage_data = json.load(handle)
-    except json.JSONDecodeError as exc:
+    except json.JSONDecodeError:
         return _error_response(
             "INTERNAL",
             "coverage.json invalid",
@@ -166,15 +189,17 @@ def run_coverage(run_dir: Path, args: CoverageArgs, policy: dict | None = None):
 
     total_percent = coverage_data.get("totals", {}).get("percent_covered")
     files_data = coverage_data.get("files", {})
-    files = []
+    files: list[dict[str, object]] = []
     if isinstance(files_data, dict):
         for path, info in files_data.items():
-            percent = info.get("percent_covered")
-            if percent is not None:
-                files.append({"path": path, "percent": percent})
+            if isinstance(info, dict):
+                files.append(_coverage_file_summary(path, info))
     files.sort(key=lambda item: item["path"])
 
     final = {
+        "requested_cwd": args.cwd,
+        "resolved_cwd": str(working_dir),
+        "requested_args": args.args or [],
         "exit_code": payload["result"].get("exit_code"),
         "duration_ms": payload["result"].get("duration_ms", 0),
         "timed_out": payload["result"].get("timed_out", False),

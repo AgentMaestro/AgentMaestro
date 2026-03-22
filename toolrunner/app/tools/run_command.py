@@ -32,7 +32,11 @@ def run_command(run_dir: Path, args: RunCommandArgs, policy: dict | None = None)
     try:
         working_dir = resolve_policy_path(run_dir, args.cwd or ".", policy)
     except ValueError as exc:
-        error_code = "PATH_OUTSIDE_WORKSPACE" if "path traversal outside of workspace" in str(exc) else "PATH_NOT_ALLOWED"
+        error_code = (
+            "PATH_OUTSIDE_WORKSPACE"
+            if "path traversal outside of workspace" in str(exc)
+            else "PATH_NOT_ALLOWED"
+        )
         return _error_response(error_code, str(exc), {"cwd": args.cwd})
     if not working_dir.exists():
         return _error_response(
@@ -65,6 +69,8 @@ def run_command(run_dir: Path, args: RunCommandArgs, policy: dict | None = None)
         return _error_response("INVALID_ARGUMENT", str(exc))
 
     result = {
+        "requested_cwd": args.cwd,
+        "resolved_cwd": str(working_dir),
         "exit_code": completed.exit_code,
         "duration_ms": completed.duration_ms,
         "timed_out": completed.timed_out,
@@ -72,11 +78,12 @@ def run_command(run_dir: Path, args: RunCommandArgs, policy: dict | None = None)
         "stderr": completed.stderr,
         "stdout_truncated": completed.stdout_truncated,
         "stderr_truncated": completed.stderr_truncated,
-        **timeout_details(int(timeout_seconds) if timeout_seconds is not None else None, "args.timeout_ms"),
+        **timeout_details(
+            int(timeout_seconds) if timeout_seconds is not None else None, "args.timeout_ms"
+        ),
     }
     if completed.timed_out and not result["stderr"]:
         result["stderr"] = (
-            f"command timed out after {result['timeout_ms']} ms "
-            f"(source={result['timeout_source']})"
+            f"command timed out after {result['timeout_ms']} ms (source={result['timeout_source']})"
         )
     return JSONResponse(status_code=200, content={"ok": True, "result": result})

@@ -3,13 +3,18 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
-from typing import Dict, List
 
 from fastapi.responses import JSONResponse
 
-from ..config import PYTHON_INTERPRETER, PYTHON_INTERPRETER_SOURCE, is_under_allowed_root, normalize_search_root, policy_allowed_roots
+from ..config import (
+    PYTHON_INTERPRETER,
+    PYTHON_INTERPRETER_SOURCE,
+    is_under_allowed_root,
+    normalize_search_root,
+    policy_allowed_roots,
+    resolve_policy_path,
+)
 from ..models import RunCommandArgs, RunnerTestArgs
-from ..sandbox import safe_join
 from .python_runner_support import detect_missing_python_module, missing_python_module_response
 from .run_command import run_command
 
@@ -94,7 +99,9 @@ def _policy_root(policy: dict | None, key: str) -> Path | None:
         return None
 
 
-def _resolve_script_path(run_dir: Path, script_path: str, policy: dict | None = None) -> tuple[Path | None, list[str]]:
+def _resolve_script_path(
+    run_dir: Path, script_path: str, policy: dict | None = None
+) -> tuple[Path | None, list[str]]:
     requested = Path(script_path)
     searched_roots: list[str] = []
     if requested.is_absolute():
@@ -140,7 +147,7 @@ def _resolve_script_path(run_dir: Path, script_path: str, policy: dict | None = 
 
 
 def _parse_summary(text: str) -> dict[str, int]:
-    summary: Dict[str, int] = {
+    summary: dict[str, int] = {
         "passed": 0,
         "failed": 0,
         "skipped": 0,
@@ -170,8 +177,8 @@ def _parse_summary(text: str) -> dict[str, int]:
     return summary
 
 
-def _collect_tracebacks(text: str) -> Dict[str, str]:
-    traces: Dict[str, str] = {}
+def _collect_tracebacks(text: str) -> dict[str, str]:
+    traces: dict[str, str] = {}
     lines = text.splitlines()
     index = 0
     while index < len(lines):
@@ -181,7 +188,7 @@ def _collect_tracebacks(text: str) -> Dict[str, str]:
             continue
         nodeid = match.group("nodeid").strip()
         index += 1
-        block: List[str] = []
+        block: list[str] = []
         while index < len(lines):
             line = lines[index]
             stripped = line.strip()
@@ -193,8 +200,8 @@ def _collect_tracebacks(text: str) -> Dict[str, str]:
     return traces
 
 
-def _extract_failures(text: str) -> List[Dict[str, object]]:
-    failures: List[Dict[str, object]] = []
+def _extract_failures(text: str) -> list[dict[str, object]]:
+    failures: list[dict[str, object]] = []
     traces = _collect_tracebacks(text)
     for raw in text.splitlines():
         line = raw.strip()
@@ -215,13 +222,23 @@ def _extract_failures(text: str) -> List[Dict[str, object]]:
 
 
 def run_tests(run_dir: Path, args: RunnerTestArgs, policy: dict | None = None):
-    command: List[str]
+    try:
+        resolved_cwd = resolve_policy_path(run_dir, args.cwd or ".", policy)
+    except ValueError:
+        resolved_cwd = None
+    command: list[str]
     if args.kind == "powershell_script":
         if not args.script_path:
-            return _error_response("INVALID_ARGUMENT", "script_path is required for powershell_script")
+            return _error_response(
+                "INVALID_ARGUMENT", "script_path is required for powershell_script"
+            )
         script_path, searched_roots = _resolve_script_path(run_dir, args.script_path, policy)
         if script_path is None:
-            return _error_response("NOT_FOUND", "script not found", {"path": args.script_path, "searched_roots": searched_roots})
+            return _error_response(
+                "NOT_FOUND",
+                "script not found",
+                {"path": args.script_path, "searched_roots": searched_roots},
+            )
         allowed_roots = [normalize_search_root(run_dir), *policy_allowed_roots(policy)]
         repo_root = _policy_root(policy, "repo_root")
         tmp_root = _policy_root(policy, "tmp_root")
@@ -233,10 +250,18 @@ def run_tests(run_dir: Path, args: RunnerTestArgs, policy: dict | None = None):
             return _error_response(
                 "PATH_NOT_ALLOWED",
                 "script path not permitted",
-                {"path": str(script_path), "requested_path": args.script_path, "searched_roots": searched_roots},
+                {
+                    "path": str(script_path),
+                    "requested_path": args.script_path,
+                    "searched_roots": searched_roots,
+                },
             )
         if not script_path.exists():
-            return _error_response("NOT_FOUND", "script not found", {"path": args.script_path, "searched_roots": searched_roots})
+            return _error_response(
+                "NOT_FOUND",
+                "script not found",
+                {"path": args.script_path, "searched_roots": searched_roots},
+            )
         command = [
             "powershell",
             "-NoProfile",
@@ -268,6 +293,7 @@ def run_tests(run_dir: Path, args: RunnerTestArgs, policy: dict | None = None):
     details = {
         "kind": args.kind,
         "cwd": args.cwd,
+        "resolved_cwd": str(resolved_cwd) if resolved_cwd else None,
         "script_path": args.script_path,
         "pytest_args": args.pytest_args,
         "cmd": args.cmd,
@@ -320,6 +346,10 @@ def run_tests(run_dir: Path, args: RunnerTestArgs, policy: dict | None = None):
         "exit_code": result.get("exit_code"),
         "duration_ms": result.get("duration_ms", 0),
         "timed_out": result.get("timed_out", False),
+        "requested_cwd": args.cwd,
+        "resolved_cwd": str(resolved_cwd) if resolved_cwd else None,
+        "requested_script_path": args.script_path,
+        "resolved_script_path": str(script_path) if args.kind == "powershell_script" and script_path else None,
         "summary": summary,
         "parse_mode": args.parse,
         "failed_tests": failed_tests,

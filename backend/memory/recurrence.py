@@ -4,6 +4,7 @@ import calendar
 from datetime import date, datetime, time, timedelta, timezone as dt_timezone
 from zoneinfo import ZoneInfo
 
+from core.services.timezones import get_local_timezone_name
 from django.core.exceptions import ValidationError
 from django.utils import timezone
 
@@ -24,7 +25,7 @@ MONTHLY_FREQUENCIES = {"monthly": 1, "quarterly": 3, "semiannual": 6}
 def normalize_recurrence_rule_data(data: dict[str, object]) -> dict[str, object]:
     normalized: dict[str, object] = {
         "name": str(data.get("name") or "").strip(),
-        "timezone": _normalize_timezone_name(data.get("timezone") or "UTC"),
+        "timezone": _normalize_timezone_name(data.get("timezone") or get_local_timezone_name()),
         "frequency": str(data.get("frequency") or "daily").strip().lower(),
         "interval": _normalize_interval(data.get("interval") or 1),
         "by_weekday": _normalize_weekday_list(data.get("by_weekday") or []),
@@ -420,7 +421,7 @@ def _normalize_interval(value: object) -> int:
 def _normalize_timezone_name(value: object) -> str:
     candidate = str(value or "").strip()
     if not candidate:
-        raise ValidationError({"timezone": ["Timezone is required."]})
+        candidate = get_local_timezone_name()
     try:
         ZoneInfo(candidate)
     except Exception as exc:  # noqa: BLE001

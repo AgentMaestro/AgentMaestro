@@ -42,7 +42,7 @@ def test_format_runner_ruff_check(monkeypatch, tmp_path: Path):
     assert payload["ok"]
     result = payload["result"]
     assert result["changed_files"] == ["app/models.py"]
-    assert captured["cmd"][0:4] == [PYTHON_INTERPRETER, "-m", "ruff", "format"]
+    assert captured["cmd"][0:5] == [PYTHON_INTERPRETER, "-I", "-m", "ruff", "format"]
     assert "--check" in captured["cmd"]
     assert "--diff" in captured["cmd"]
     assert captured["cmd"].count("format") == 1
@@ -78,7 +78,7 @@ def test_format_runner_apply(monkeypatch, tmp_path: Path):
     response = run_formatter(tmp_path, args)
     payload = json.loads(response.body)
     result = payload["result"]
-    assert captured["cmd"][:3] == [PYTHON_INTERPRETER, "-m", "ruff"]
+    assert captured["cmd"][:4] == [PYTHON_INTERPRETER, "-I", "-m", "ruff"]
     assert result["changed_files"] == ["toolrunner/app/tests/test_format_runner.py"]
     assert captured["cmd"].count("format") == 1
     assert result["parse_mode"] == "ruff_format"

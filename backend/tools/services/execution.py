@@ -27,6 +27,7 @@ _DEFAULT_TOOLRUNNER_HTTP_TIMEOUT_BUFFER_S = 30.0
 _NATIVE_TOOL_NAMES = {
     "remember",
     "search_memory",
+    "get_current_datetime",
     "schedule_task",
     "edit_scheduled_task",
     "disable_scheduled_task",

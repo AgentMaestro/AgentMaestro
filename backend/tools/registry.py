@@ -1,5 +1,5 @@
-from copy import deepcopy
 import json
+from copy import deepcopy
 
 from google_bridge.services.schema import (
     GOOGLE_BRIDGE_TOOL_DESCRIPTION,
@@ -7,6 +7,7 @@ from google_bridge.services.schema import (
     GOOGLE_BRIDGE_TOOL_NAME,
     build_google_bridge_args_schema,
 )
+
 from .models import ToolRisk
 
 
@@ -49,23 +50,40 @@ _TOOL_EXAMPLES = {
     ],
     "repo_tree": [
         {"path": "backend", "max_depth": 3, "include_files": True},
-        {"path": "C:\\Dev\\AgentMaestro\\backend\\runs\\tests\\fixtures\\tool_repo", "max_depth": 3, "include_files": True},
+        {
+            "path": "C:\\Dev\\AgentMaestro\\backend\\runs\\tests\\fixtures\\tool_repo",
+            "max_depth": 3,
+            "include_files": True,
+        },
     ],
     "file_write": [
         {"path": "notes/hello.py", "content": "print('hello')\n"},
-        {"path": "C:\\tmp\\agentmaestro\\smoke_tools\\hello.py", "content": "print('hello')\n", "overwrite": True},
+        {
+            "path": "C:\\tmp\\agentmaestro\\smoke_tools\\hello.py",
+            "content": "print('hello')\n",
+            "overwrite": True,
+        },
     ],
     "file_delete": [
         {"path": "notes/hello.py"},
         {"path": "C:\\tmp\\agentmaestro\\smoke_tools\\hello.py"},
     ],
     "file_patch": [
-        {"path": "notes/hello.py", "patch_unified": "--- a/notes/hello.py\n+++ b/notes/hello.py\n@@ -1,1 +1,1 @@\n-print('hello')\n+print('hello world')\n"},
-        {"path": "C:\\tmp\\agentmaestro\\smoke_tools\\hello.py", "patch_unified": "--- a/hello.py\n+++ b/hello.py\n@@ -1,1 +1,1 @@\n-print('hello')\n+print('hello world')\n"},
+        {
+            "path": "notes/hello.py",
+            "patch_unified": "--- a/notes/hello.py\n+++ b/notes/hello.py\n@@ -1,1 +1,1 @@\n-print('hello')\n+print('hello world')\n",
+        },
+        {
+            "path": "C:\\tmp\\agentmaestro\\smoke_tools\\hello.py",
+            "patch_unified": "--- a/hello.py\n+++ b/hello.py\n@@ -1,1 +1,1 @@\n-print('hello')\n+print('hello world')\n",
+        },
     ],
     "git_add": [
         {"repo_dir": ".", "paths": ["backend/tools/admin.py"]},
-        {"repo_dir": "C:\\Dev\\AgentMaestro", "paths": ["C:\\Dev\\AgentMaestro\\backend\\tools\\admin.py"]},
+        {
+            "repo_dir": "C:\\Dev\\AgentMaestro",
+            "paths": ["C:\\Dev\\AgentMaestro\\backend\\tools\\admin.py"],
+        },
     ],
     "git_status": [
         {"repo_dir": ".", "porcelain": "v1", "include_untracked": True},
@@ -73,15 +91,25 @@ _TOOL_EXAMPLES = {
     ],
     "git_diff": [
         {"repo_dir": ".", "paths": ["backend/tools/admin.py"], "staged": False},
-        {"repo_dir": "C:\\Dev\\AgentMaestro", "paths": ["C:\\Dev\\AgentMaestro\\backend\\tools\\admin.py"], "staged": False},
+        {
+            "repo_dir": "C:\\Dev\\AgentMaestro",
+            "paths": ["C:\\Dev\\AgentMaestro\\backend\\tools\\admin.py"],
+            "staged": False,
+        },
     ],
     "git_log": [
         {"repo_dir": ".", "max_count": 5},
         {"repo_dir": "C:\\Dev\\AgentMaestro", "max_count": 5},
     ],
     "git_apply": [
-        {"repo_dir": ".", "patch_unified": "--- a/example.txt\n+++ b/example.txt\n@@ -1 +1 @@\n-old\n+new\n"},
-        {"repo_dir": "C:\\Dev\\AgentMaestro", "patch_unified": "--- a/example.txt\n+++ b/example.txt\n@@ -1 +1 @@\n-old\n+new\n"},
+        {
+            "repo_dir": ".",
+            "patch_unified": "--- a/example.txt\n+++ b/example.txt\n@@ -1 +1 @@\n-old\n+new\n",
+        },
+        {
+            "repo_dir": "C:\\Dev\\AgentMaestro",
+            "patch_unified": "--- a/example.txt\n+++ b/example.txt\n@@ -1 +1 @@\n-old\n+new\n",
+        },
     ],
     "git_branch_create": [
         {"repo_dir": ".", "name": "smoke/tool-docs", "checkout": False},
@@ -93,7 +121,11 @@ _TOOL_EXAMPLES = {
     ],
     "git_commit": [
         {"repo_dir": ".", "message": "Smoke test commit"},
-        {"repo_dir": "C:\\Dev\\AgentMaestro", "message": "Smoke test commit", "paths_to_add": ["C:\\Dev\\AgentMaestro\\backend\\tools\\admin.py"]},
+        {
+            "repo_dir": "C:\\Dev\\AgentMaestro",
+            "message": "Smoke test commit",
+            "paths_to_add": ["C:\\Dev\\AgentMaestro\\backend\\tools\\admin.py"],
+        },
     ],
     "git_push": [
         {"repo_dir": ".", "remote": "origin", "ref": "main"},
@@ -101,23 +133,54 @@ _TOOL_EXAMPLES = {
     ],
     "python_exec": [
         {"code": "from pathlib import Path\nprint(Path('README.md').exists())"},
-        {"files": [{"path": "scripts/hello.py", "content_b64": "cHJpbnQoJ2hlbGxvJykK"}], "entrypoint": "scripts/hello.py"},
+        {
+            "files": [{"path": "scripts/hello.py", "content_b64": "cHJpbnQoJ2hlbGxvJykK"}],
+            "entrypoint": "scripts/hello.py",
+        },
     ],
     "webhook": {"url": "https://example.test/webhook", "payload": {"event": "smoke"}},
     "coverage_runner": [
-        {"kind": "pytest_coverage", "cwd": ".", "args": ["toolrunner/app/tests/test_file_write.py"], "timeout_ms": 600000},
-        {"kind": "pytest_coverage", "cwd": "C:\\Dev\\AgentMaestro", "args": ["C:\\Dev\\AgentMaestro\\toolrunner\\app\\tests\\test_file_write.py"], "timeout_ms": 600000},
+        {
+            "kind": "pytest_coverage",
+            "cwd": ".",
+            "args": ["toolrunner/app/tests/test_file_write.py"],
+            "timeout_ms": 600000,
+        },
+        {
+            "kind": "pytest_coverage",
+            "cwd": "C:\\Dev\\AgentMaestro",
+            "args": ["C:\\Dev\\AgentMaestro\\toolrunner\\app\\tests\\test_file_write.py"],
+            "timeout_ms": 600000,
+        },
     ],
     "format_runner": [
-        {"tool": "ruff_format", "mode": "apply", "cwd": ".", "paths": ["toolrunner/app/tests/test_file_write.py"]},
-        {"tool": "ruff_format", "mode": "apply", "cwd": "C:\\Dev\\AgentMaestro", "paths": ["C:\\Dev\\AgentMaestro\\toolrunner\\app\\tests\\test_file_write.py"]},
+        {
+            "tool": "ruff_format",
+            "mode": "apply",
+            "cwd": ".",
+            "paths": ["toolrunner/app/tests/test_file_write.py"],
+        },
+        {
+            "tool": "ruff_format",
+            "mode": "apply",
+            "cwd": "C:\\Dev\\AgentMaestro",
+            "paths": ["C:\\Dev\\AgentMaestro\\toolrunner\\app\\tests\\test_file_write.py"],
+        },
     ],
     "lint_runner": [
         {"tool": "ruff", "cwd": ".", "paths": ["backend/tools"]},
-        {"tool": "ruff", "cwd": "C:\\Dev\\AgentMaestro", "paths": ["C:\\Dev\\AgentMaestro\\backend\\tools"]},
+        {
+            "tool": "ruff",
+            "cwd": "C:\\Dev\\AgentMaestro",
+            "paths": ["C:\\Dev\\AgentMaestro\\backend\\tools"],
+        },
     ],
     "run_command": {
-        "cmd": ["cmd", "/C", "echo RUN_COMMAND_SMOKE_OK && dir C:\\Dev\\AgentMaestro\\toolrunner\\app\\tools"],
+        "cmd": [
+            "cmd",
+            "/C",
+            "echo RUN_COMMAND_SMOKE_OK && dir C:\\Dev\\AgentMaestro\\toolrunner\\app\\tools",
+        ],
         "cwd": ".",
     },
     "run_command_safe": {
@@ -127,7 +190,11 @@ _TOOL_EXAMPLES = {
     },
     "search_code": [
         {"query": "provider_call_id", "root": "backend", "include_globs": ["**/*.py"]},
-        {"query": "provider_call_id", "root": "C:\\Dev\\AgentMaestro\\backend", "include_globs": ["**/*.py"]},
+        {
+            "query": "provider_call_id",
+            "root": "C:\\Dev\\AgentMaestro\\backend",
+            "include_globs": ["**/*.py"],
+        },
     ],
     "web_search": {"query": "AgentMaestro orchestration platform", "max_results": 5},
     "fetch_url": {"url": "https://example.com", "extract": "main_text", "max_chars": 4000},
@@ -163,8 +230,8 @@ _TOOL_EXAMPLES = {
             "execution_payload": {
                 "objective": "Create a backup commit for the repository and summarize the last 24 hours of work.",
                 "repo_dir": "C:/Dev/AgentMaestro",
-                "notes": "Use git status and git log, then create a concise backup commit if there are changes."
-            }
+                "notes": "Use git status and git log, then create a concise backup commit if there are changes.",
+            },
         },
         {
             "title": "weekly digest",
@@ -174,13 +241,13 @@ _TOOL_EXAMPLES = {
                 "timezone": "America/New_York",
                 "frequency": "daily",
                 "interval": 1,
-                "local_time": "05:00"
+                "local_time": "05:00",
             },
             "execution_payload": {
                 "objective": "Create a backup commit for the repository and summarize the last 24 hours of work.",
                 "repo_dir": "C:/Dev/AgentMaestro",
-                "notes": "Use git status and git log, then create a concise backup commit if there are changes."
-            }
+                "notes": "Use git status and git log, then create a concise backup commit if there are changes.",
+            },
         },
         {
             "title": "daily maintenance digest",
@@ -193,13 +260,13 @@ _TOOL_EXAMPLES = {
                 "by_weekday": ["mon", "wed", "fri", "sat"],
                 "run_minute": 0,
                 "window_start_time": "09:00",
-                "window_end_time": "19:00"
+                "window_end_time": "19:00",
             },
             "execution_payload": {
                 "objective": "Summarize overnight changes and produce a short maintenance digest.",
-                "notes": "Review logs, open issues, and any queued tasks before writing the digest."
-            }
-        }
+                "notes": "Review logs, open issues, and any queued tasks before writing the digest.",
+            },
+        },
     ],
     "edit_scheduled_task": [
         {
@@ -210,51 +277,68 @@ _TOOL_EXAMPLES = {
             "local_time": "05:00",
             "execution_payload": {
                 "objective": "Create a backup commit for the repository and summarize the last 24 hours of work.",
-                "repo_dir": "C:/Dev/AgentMaestro"
+                "repo_dir": "C:/Dev/AgentMaestro",
             },
             "recurrence": {
                 "timezone": "America/New_York",
                 "frequency": "daily",
                 "interval": 1,
-                "local_time": "05:00"
-            }
+                "local_time": "05:00",
+            },
         }
     ],
-    "disable_scheduled_task": [
-        {
-            "scheduled_task_id": "scheduled-task-id-from-list"
-        }
-    ],
-    "enable_scheduled_task": [
-        {
-            "scheduled_task_id": "scheduled-task-id-from-list"
-        }
-    ],
-    "list_scheduled_tasks": {
-        "enabled_only": True,
-        "limit": 10
-    },
+    "disable_scheduled_task": [{"scheduled_task_id": "scheduled-task-id-from-list"}],
+    "enable_scheduled_task": [{"scheduled_task_id": "scheduled-task-id-from-list"}],
+    "list_scheduled_tasks": {"enabled_only": True, "limit": 10},
     "spawn_subrun": {
         "input_text": "Research the current weather outlook for Ocala tennis conditions and return a concise summary.",
         "metadata": {"purpose": "focused research", "topic": "weather"},
         "join_policy": "WAIT_ALL",
-        "failure_policy": "IGNORE_FAILURE"
+        "failure_policy": "IGNORE_FAILURE",
     },
+    "get_current_datetime": [{}],
     "shell_exec": [
         {"cmd": ["powershell", "-NoProfile", "-Command", "Get-Location"], "cwd": "."},
-        {"cmd": ["powershell", "-NoProfile", "-Command", "Get-Location"], "cwd": "C:\\Dev\\AgentMaestro"},
+        {
+            "cmd": ["powershell", "-NoProfile", "-Command", "Get-Location"],
+            "cwd": "C:\\Dev\\AgentMaestro",
+        },
     ],
     "test_runner": [
-        {"kind": "pytest", "pytest_args": ["toolrunner/app/tests/test_file_write.py"], "cwd": ".", "parse": "pytest", "timeout_ms": 600000},
-        {"kind": "pytest", "pytest_args": ["C:\\Dev\\AgentMaestro\\toolrunner\\app\\tests\\test_file_write.py"], "cwd": "C:\\Dev\\AgentMaestro", "parse": "pytest", "timeout_ms": 600000},
+        {
+            "kind": "pytest",
+            "pytest_args": ["toolrunner/app/tests/test_file_write.py"],
+            "cwd": ".",
+            "parse": "pytest",
+            "timeout_ms": 600000,
+        },
+        {
+            "kind": "pytest",
+            "pytest_args": ["C:\\Dev\\AgentMaestro\\toolrunner\\app\\tests\\test_file_write.py"],
+            "cwd": "C:\\Dev\\AgentMaestro",
+            "parse": "pytest",
+            "timeout_ms": 600000,
+        },
     ],
     "run_tests": {
         "suites": ["backend"],
         "timeout_seconds": 900,
     },
     "typecheck_runner": [
-        {"tool": "mypy", "cwd": ".", "args": ["backend"], "timeout_ms": 300000, "max_output_bytes": 262144},
-        {"tool": "mypy", "cwd": "C:\\Dev\\AgentMaestro", "args": ["C:\\Dev\\AgentMaestro\\backend"], "timeout_ms": 300000, "max_output_bytes": 262144},
+        {
+            "tool": "mypy",
+            "cwd": ".",
+            "args": ["backend"],
+            "timeout_ms": 300000,
+            "max_output_bytes": 262144,
+        },
+        {
+            "tool": "mypy",
+            "cwd": "C:\\Dev\\AgentMaestro",
+            "args": ["C:\\Dev\\AgentMaestro\\backend"],
+            "timeout_ms": 300000,
+            "max_output_bytes": 262144,
+        },
     ],
 }
 
@@ -309,9 +393,9 @@ _TOOL_ADDITIONAL_DOCS = {
     "- Prefer `kind=pytest` for narrow smoke tests and `kind=powershell_script` for repo-standard test entrypoints.\n\n"
     "MINIMAL SUCCESSFUL EXAMPLES:\n"
     "- Pytest mode:\n"
-    "  `{ \"kind\": \"pytest\", \"pytest_args\": [\"toolrunner/app/tests/test_file_write.py\"], \"cwd\": \".\", \"parse\": \"pytest\" }`\n"
+    '  `{ "kind": "pytest", "pytest_args": ["toolrunner/app/tests/test_file_write.py"], "cwd": ".", "parse": "pytest" }`\n'
     "- PowerShell script mode:\n"
-    "  `{ \"kind\": \"powershell_script\", \"script_path\": \"backend/scripts/runtests.ps1\", \"cwd\": \".\" }`\n\n"
+    '  `{ "kind": "powershell_script", "script_path": "backend/scripts/runtests.ps1", "cwd": "." }`\n\n'
     "TROUBLESHOOTING:\n"
     "- If you get an HTTP 500 or generic runner failure, retry once with the same payload to rule out a transient worker issue.\n"
     "- If it still fails, narrow the test target or switch from script mode to direct pytest mode.\n"
@@ -326,7 +410,7 @@ _TOOL_ADDITIONAL_DOCS = {
     "- Provide pytest target arguments via `args`.\n"
     "- Coverage generates a `coverage.json` artifact in the working directory.\n\n"
     "MINIMAL SUCCESSFUL EXAMPLE:\n"
-    "- `{ \"kind\": \"pytest_coverage\", \"cwd\": \".\", \"args\": [\"toolrunner/app/tests/test_file_write.py\"] }`\n\n"
+    '- `{ "kind": "pytest_coverage", "cwd": ".", "args": ["toolrunner/app/tests/test_file_write.py"] }`\n\n'
     "TROUBLESHOOTING:\n"
     "- If coverage fails with a generic runner error, try the same target first with `test_runner`.\n"
     "- If the test run passes but coverage still fails, inspect logs for the follow-up `coverage json` command.\n"
@@ -340,9 +424,10 @@ _TOOL_ADDITIONAL_DOCS = {
     "- Supported formatter modes are `ruff_format`, `black`, `prettier`, and `command`.\n"
     "- Choose `mode=check` for validation-only or `mode=apply` to write changes.\n"
     "- `cwd` and each item in `paths` may be absolute or repo-relative.\n"
+    "- For Ruff-style runs (`ruff_format`), omit `cmd` entirely and use `paths` plus optional `args` only.\n"
     "- Use `cmd` only when `tool=command`.\n\n"
     "MINIMAL SUCCESSFUL EXAMPLE:\n"
-    "- `{ \"tool\": \"ruff_format\", \"mode\": \"apply\", \"cwd\": \".\", \"paths\": [\"toolrunner/app/tests/test_file_write.py\"] }`\n\n"
+    '- `{ "tool": "ruff_format", "mode": "apply", "cwd": ".", "paths": ["toolrunner/app/tests/test_file_write.py"] }`\n\n'
     "TROUBLESHOOTING:\n"
     "- If formatting fails, try a single file in `paths` before expanding scope.\n"
     "- `changed_files` parsing is best for `ruff_format`; other formatter modes may only return stdout/stderr.\n"
@@ -353,10 +438,11 @@ _TOOL_ADDITIONAL_DOCS = {
     "- If `ruff` is missing, the tool reports the resolved interpreter path and source.",
     "run_command_safe": "\n\nSAFE COMMAND NOTES:\n"
     "- `argv` is required and must be a list of strings.\n"
-    "- Only allowlisted executables are supported: `python`, `pytest`, `ruff`, `mypy`, `uv`, and `django-admin`.\n"
+    "- Allowed executables are limited to `python`, `pytest`, `ruff`, `mypy`, `uv`, and `django-admin`.\n"
     "- `git` is explicitly blocked. Use the dedicated `git_*` tools instead.\n"
     "- Shell composition, shell wrappers, package installs, migrations, dev servers, and other interactive or long-running commands are rejected.\n"
-    "- `cwd` must stay inside the active workspace root.\n",
+    "- `cwd` must stay inside the active workspace root.\n"
+    "- Common rejections include `git status`, `pip install`, `python manage.py runserver`, and chained shell commands.\n",
     "run_tests": "\n\nREPO TEST SCRIPT NOTES:\n"
     "- `suites` is required and only accepts `backend`, `toolrunner`, or `all`.\n"
     "- This tool only runs the repo-owned PowerShell test entrypoints.\n"
@@ -371,7 +457,7 @@ _TOOL_ADDITIONAL_DOCS = {
     "- Do not use `run_command` for Git operations that map to `git_add`, `git_status`, `git_diff`, `git_log`, `git_apply`, `git_commit`, `git_push`, `git_checkout`, or `git_branch_create`.\n"
     "- Do not use `run_command` for direct file content reads that should go through `file_read`.\n\n"
     "MINIMAL SUCCESSFUL EXAMPLE:\n"
-    "- `{ \"cmd\": [\"cmd\", \"/C\", \"echo RUN_COMMAND_SMOKE_OK && dir C:\\\\Dev\\\\AgentMaestro\\\\toolrunner\\\\app\\\\tools\"], \"cwd\": \".\" }`\n\n"
+    '- `{ "cmd": ["cmd", "/C", "echo RUN_COMMAND_SMOKE_OK && dir C:\\\\Dev\\\\AgentMaestro\\\\toolrunner\\\\app\\\\tools"], "cwd": "." }`\n\n'
     "TROUBLESHOOTING:\n"
     "- If validation fails, check that `cmd` is an array and not a single string.\n"
     "- If you need shell features such as `&&`, invoke a shell explicitly through `cmd /C` or `powershell -Command`.\n"
@@ -409,6 +495,8 @@ _TOOL_ADDITIONAL_DOCS = {
     "- Scheduled work runs headlessly. Use `other_task` for the task label and put structured intent in `execution_payload`.\n"
     "- Scheduled runs inherit the agent's backup models and retry policy, so backup failover applies automatically.\n"
     "- Prefer `recurrence` for anything more complex than a single daily wall-clock time.\n"
+    "- If a timezone argument is omitted, the bridge assumes the local Tango timezone from `TIME_ZONE` / `settings.TIME_ZONE` rather than UTC.\n"
+    "- If the schedule depends on a relative date like tomorrow or next Friday and the current local date is not already known, call `get_current_datetime` first and anchor the schedule in that local time.\n"
     "- Use `title` and `execution_payload` to describe the recurring job clearly so the future headless run has enough context.\n"
     "- list_scheduled_tasks already returns scheduled_task_id, so use that identifier for future edit, disable, or enable operations.\n",
     "search_memory": "\n\nMEMORY NOTES:\n"
@@ -424,6 +512,10 @@ _TOOL_ADDITIONAL_DOCS = {
     "- Use `metadata` for operator-readable purpose labels, not large payloads.\n"
     "- The default `join_policy` is `wait_all` and the default `failure_policy` is `ignore_failure`.\n"
     "- Reserve `FAIL_FAST` for critical safety or security situations only.\n",
+    "get_current_datetime": "\n\nTIME NOTES:\n"
+    "- `get_current_datetime` takes no arguments.\n"
+    "- It returns the current local datetime in the Tango timezone as an ISO 8601 string with offset.\n"
+    "- The Tango timezone defaults to `America/New_York` and can be overridden with `TANGO_TIME_ZONE`.\n",
     "shell_exec": "\n\nPATH NOTES:\n"
     "- `cwd` may be absolute or repo-relative.\n"
     "- Repo-relative `cwd` values resolve from the repository root when one is provided in policy context.",
@@ -466,6 +558,9 @@ _TOOL_ADDITIONAL_DOCS = {
     "lint_runner": "\n\nPATH NOTES:\n"
     "- `cwd` and each item in `paths` may be absolute or repo-relative.\n"
     "- Repo-relative values resolve from the repository root when one is provided in policy context.\n\n"
+    "RUN MODE NOTES:\n"
+    "- For Ruff-style runs (`ruff`), omit `cmd` entirely and use `paths` plus optional `args` only.\n"
+    "- Use `cmd` only when `tool=command`.\n\n"
     "PYTHON ENVIRONMENT NOTES:\n"
     "- `ruff` runs through `TOOLRUNNER_PYTHON`.\n"
     "- If `TOOLRUNNER_PYTHON` is unset, toolrunner falls back to `.venv` discovery before using plain `python`.\n"
@@ -602,6 +697,10 @@ _TOOL_RESPONSE_FIELDS = {
         "child_retryable": "True when the child failure looks transient and the parent may reasonably retry.",
         "child_recommended_action": "Short operator/model guidance for what to do next after a child failure.",
     },
+    "get_current_datetime": {
+        "datetime": "ISO 8601 local datetime string in the Tango timezone.",
+        "timezone": "The IANA timezone used to format the returned local datetime.",
+    },
     "file_write": {
         "resolved_path": "The exact filesystem path that was ultimately written.",
         "created": "True when the file did not exist before this write.",
@@ -624,7 +723,7 @@ _TOOL_RESPONSE_FIELDS = {
     },
     "coverage_runner": {
         "total_percent": "Overall measured coverage percentage from coverage.json.",
-        "files": "Per-file coverage percentages extracted from coverage.json.",
+        "files": "Per-file coverage summaries extracted from coverage.json.",
         "coverage_json_path": "Filesystem path to the generated coverage.json artifact.",
         "stdout": "Stdout from the coverage run command.",
         "python_interpreter": "Interpreter path used for Python-backed coverage commands.",
@@ -656,6 +755,11 @@ _TOOL_RESPONSE_FIELDS = {
     "format_runner": {
         "changed_files": "Files detected as changed by formatter output parsing.",
         "parse_mode": "The formatter/parser mode used to interpret output.",
+        "requested_cwd": "The cwd value supplied by the caller.",
+        "resolved_cwd": "The resolved absolute cwd used for execution.",
+        "requested_paths": "The path list supplied by the caller.",
+        "resolved_paths": "The resolved absolute paths used for execution.",
+        "command": "The exact command line executed by the runner.",
         "stdout": "Captured formatter stdout.",
         "stderr": "Captured formatter stderr.",
         "python_interpreter": "Interpreter path used for Python-backed formatter modes such as ruff_format.",
@@ -668,6 +772,11 @@ _TOOL_RESPONSE_FIELDS = {
         "parse_mode": "The parser mode requested for result parsing.",
         "parse_source": "Whether parsing succeeded from stdout, stderr, or not at all.",
         "parse_warning": "Parsing warning when the output was truncated or invalid for the selected parser.",
+        "requested_cwd": "The cwd value supplied by the caller.",
+        "resolved_cwd": "The resolved absolute cwd used for execution.",
+        "requested_paths": "The path list supplied by the caller.",
+        "resolved_paths": "The resolved absolute paths used for execution.",
+        "command": "The exact command line executed by the runner.",
         "stdout": "Captured linter stdout.",
         "stderr": "Captured linter stderr.",
         "python_interpreter": "Interpreter path used for Python-backed linter modes such as ruff.",
@@ -825,6 +934,401 @@ TOOL_REGISTRY = [
         ],
     },
     {
+        "name": "Code Navigation",
+        "description": "Find files, symbols, and references quickly without scanning repository text by hand. Use these tools sequentially when precision matters, waiting for each result before issuing the next navigation call.",
+        "tools": [
+            {
+                "name": "search_files",
+                "description": "Search repository paths and file names by literal text, glob-style patterns, or regex. Use this when you need to locate files, directories, or a root scope by name or path. Do not use it for content search; use `search_code` instead. This tool matches names and paths only and does not search file contents. Hidden paths are included unless they are excluded by the default ignore rules; Test paths are included by default unless `include_tests` is turned off. Use `scope` as the canonical input name for the search root. Rank expectations are exact path/name matches first, then fuzzy/partial matches. Search one path/name query at a time; if you need multiple targets, make separate calls or use regex mode with `|` for alternatives, for example `code_navigation.py|run_command_safe`. In regex mode, exact path/name hits still sort ahead of fuzzy or partial matches. Use sequentially and wait for the result before issuing the next navigation call. Compact mode returns a standardized envelope with `tool`, `compact`, `query`, `scope`, `items`, `returned_count`, `max_results_used`, `selection`, `selection_excerpt`, `stats`, and `truncated`, and it omits legacy top-level fields.",
+                "risk": ToolRisk.SAFE,
+                "requires_approval": False,
+                "released": True,
+                "args_schema": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["query"],
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "Filename, partial path, glob-style pattern, or regex to match. Use this for path/name lookup only, not content search. Search one path/name query at a time; use separate calls for unrelated targets. In regex mode, use `|` for alternation, for example `code_navigation.py|run_command_safe`; exact path/name hits still sort ahead of fuzzy or partial matches.",
+                        },
+                        "scope": {
+                            "type": "string",
+                            "description": "Canonical file, directory, or root scope to search from. Repo-relative values are preferred.",
+                        },
+                        "compact": {
+                            "type": "boolean",
+                            "default": False,
+                            "description": "Return a smaller standardized items payload when true.",
+                        },
+                        "include_files": {
+                            "type": "boolean",
+                            "default": True,
+                            "description": "Whether file matches should be included.",
+                        },
+                        "include_dirs": {
+                            "type": "boolean",
+                            "default": True,
+                            "description": "Whether directory matches should be included.",
+                        },
+                        "is_regex": {
+                            "type": "boolean",
+                            "default": False,
+                            "description": "Treat the query as a regex when true.",
+                        },
+                        "case_sensitive": {
+                            "type": "boolean",
+                            "default": False,
+                            "description": "Use case-sensitive matching when true.",
+                        },
+                        "include_tests": {
+                            "type": "boolean",
+                            "default": True,
+                            "description": "Whether test paths are included. Test paths are included by default.",
+                        },
+                        "include_globs": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Optional glob filters that must match.",
+                        },
+                        "exclude_globs": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Optional glob filters to exclude.",
+                        },
+                        "max_results": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "default": 100,
+                            "description": "Top-N limit for returned matches.",
+                        },
+                        "max_depth": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "default": 8,
+                            "description": "Maximum directory depth to traverse.",
+                        },
+                        "timeout_ms": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "default": 3000,
+                            "description": "Search timeout in milliseconds.",
+                        },
+                    },
+                },
+            },
+            {
+                "name": "list_symbols",
+                "description": "List symbols defined in a file, directory, or repo root scope without reading every file manually. Use this when you already know the file or subtree and want a symbol outline. Do not use it for text search; use `search_code` or `search_files` instead. Use `scope` as the canonical input name for the symbol scope. Hidden paths are included unless excluded by the default ignore rules; test paths are included by default unless `include_tests` is turned off. Use sequentially and wait for the result before issuing the next navigation call. Compact mode returns a standardized envelope with `tool`, `compact`, `query`, `scope`, `items`, `returned_count`, `max_results_used`, `selection`, `selection_excerpt`, `stats`, and `truncated`, and it omits legacy top-level fields. In compact mode, symbol items include defining file, line, column, container/scope, and signature. Ordering is stable and grouped by path.",
+                "risk": ToolRisk.SAFE,
+                "requires_approval": False,
+                "released": True,
+                "args_schema": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "scope": {
+                            "type": "string",
+                            "description": "Canonical file, directory, or root scope. Repo-relative values are preferred.",
+                        },
+                        "compact": {
+                            "type": "boolean",
+                            "default": False,
+                            "description": "Return a smaller standardized items payload when true.",
+                        },
+                        "include_private": {
+                            "type": "boolean",
+                            "default": False,
+                            "description": "Include private symbols starting with underscore.",
+                        },
+                        "include_docstrings": {
+                            "type": "boolean",
+                            "default": False,
+                            "description": "Include docstring summaries when available.",
+                        },
+                        "include_tests": {
+                            "type": "boolean",
+                            "default": True,
+                            "description": "Whether test paths are included. Test paths are included by default.",
+                        },
+                        "language": {
+                            "type": "string",
+                            "description": "Optional language filter such as python or markdown.",
+                        },
+                        "include_globs": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Optional glob filters that must match.",
+                        },
+                        "exclude_globs": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Optional glob filters to exclude.",
+                        },
+                        "max_results": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "default": 100,
+                            "description": "Top-N limit for symbols returned per file and overall.",
+                        },
+                        "max_depth": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "default": 8,
+                            "description": "Maximum directory depth to traverse.",
+                        },
+                        "timeout_ms": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "default": 3000,
+                            "description": "Listing timeout in milliseconds.",
+                        },
+                    },
+                },
+            },
+            {
+                "name": "find_symbol",
+                "description": "Find a symbol definition by exact or fuzzy name. Use this when you know the symbol name and want the definition. Do not use it for content search; use `search_code` instead. The tool supports exact or fuzzy symbol matching and ranks exact matches above fuzzy matches when both are available. Use `scope` as the canonical input name for the symbol scope. Use this when the scope is a file, directory, or repo root and you want symbol resolution within that scope. Hidden paths are included unless excluded by the default ignore rules; test paths are included by default unless `include_tests` is turned off. Use sequentially and wait for the result before issuing the next navigation call. Compact mode returns a standardized envelope with `tool`, `compact`, `query`, `scope`, `items`, `returned_count`, `max_results_used`, `selection`, `selection_excerpt`, `stats`, and `truncated`, and it omits legacy top-level fields. In compact mode, symbol matches include defining file, line, column, container/scope, and signature. Ordering is stable and exact matches come first.",
+                "risk": ToolRisk.SAFE,
+                "requires_approval": False,
+                "released": True,
+                "args_schema": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["symbol_name"],
+                    "properties": {
+                        "symbol_name": {
+                            "type": "string",
+                            "description": "Symbol name or qualified symbol to locate.",
+                        },
+                        "scope": {
+                            "type": "string",
+                            "description": "Canonical file, directory, or root scope to narrow the search. Repo-relative values are preferred.",
+                        },
+                        "compact": {
+                            "type": "boolean",
+                            "default": False,
+                            "description": "Return a smaller standardized items payload when true.",
+                        },
+                        "kind": {
+                            "type": "string",
+                            "description": "Optional symbol kind filter such as function or class.",
+                        },
+                        "language": {
+                            "type": "string",
+                            "description": "Optional language filter such as python or markdown.",
+                        },
+                        "fuzzy": {
+                            "type": "boolean",
+                            "default": False,
+                            "description": "Allow approximate matching when true.",
+                        },
+                        "include_private": {
+                            "type": "boolean",
+                            "default": False,
+                            "description": "Include private symbols starting with underscore.",
+                        },
+                        "include_tests": {
+                            "type": "boolean",
+                            "default": True,
+                            "description": "Whether test paths are included. Test paths are included by default.",
+                        },
+                        "include_globs": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Optional glob filters that must match.",
+                        },
+                        "exclude_globs": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Optional glob filters to exclude.",
+                        },
+                        "max_results": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "default": 20,
+                            "description": "Top-N limit for returned matches.",
+                        },
+                        "max_depth": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "default": 8,
+                            "description": "Maximum directory depth to traverse.",
+                        },
+                        "timeout_ms": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "default": 3000,
+                            "description": "Lookup timeout in milliseconds.",
+                        },
+                    },
+                },
+            },
+            {
+                "name": "find_references",
+                "description": "Find where a symbol is used across the repository for impact analysis. Use this when you want to understand impact before changing a symbol. Do not use it for content search; use `search_code` instead. Use `scope` as the canonical input name for the reference scope. Use this when the scope is a file, directory, or repo root and you want usage references within that scope. Hidden paths are included unless excluded by the default ignore rules; test paths are included by default unless `include_tests` is turned off. Use sequentially and wait for the result before issuing the next navigation call. Compact mode returns a standardized envelope with `tool`, `compact`, `query`, `scope`, `items`, `returned_count`, `max_results_used`, `selection`, `selection_excerpt`, `stats`, and `truncated`, and it omits legacy top-level fields. In compact mode, each reference item includes a short line-numbered excerpt, and the first hit is also surfaced in `selection` and `selection_excerpt`. Ordering is stable and deterministic.",
+                "risk": ToolRisk.SAFE,
+                "requires_approval": False,
+                "released": True,
+                "args_schema": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["symbol"],
+                    "properties": {
+                        "symbol": {
+                            "type": "string",
+                            "description": "Symbol name to search for across the repository.",
+                        },
+                        "scope": {
+                            "type": "string",
+                            "description": "Canonical file, directory, or root scope to narrow the search. Repo-relative values are preferred.",
+                        },
+                        "compact": {
+                            "type": "boolean",
+                            "default": False,
+                            "description": "Return a smaller standardized items payload when true.",
+                        },
+                        "kind": {
+                            "type": "string",
+                            "description": "Optional symbol kind filter or usage label.",
+                        },
+                        "include_declarations": {
+                            "type": "boolean",
+                            "default": True,
+                            "description": "Include declarations as well as uses.",
+                        },
+                        "include_comments": {
+                            "type": "boolean",
+                            "default": False,
+                            "description": "Include comment mentions.",
+                        },
+                        "include_strings": {
+                            "type": "boolean",
+                            "default": False,
+                            "description": "Include string literal mentions.",
+                        },
+                        "include_tests": {
+                            "type": "boolean",
+                            "default": True,
+                            "description": "Whether test paths are included. Test paths are included by default.",
+                        },
+                        "include_globs": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Optional glob filters that must match.",
+                        },
+                        "exclude_globs": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Optional glob filters to exclude.",
+                        },
+                        "max_results": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "default": 50,
+                            "description": "Top-N limit for returned references.",
+                        },
+                        "max_depth": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "default": 8,
+                            "description": "Maximum directory depth to traverse.",
+                        },
+                        "context_lines": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "default": 8,
+                            "description": "Number of surrounding lines to include around each hit.",
+                        },
+                        "timeout_ms": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "default": 3000,
+                            "description": "Lookup timeout in milliseconds.",
+                        },
+                    },
+                },
+            },
+            {
+                "name": "jump_to_symbol",
+                "description": "Resolve a symbol and return the most relevant definition with nearby context. Use this when you want the best definition plus a small excerpt. Do not use it for content search; use `search_code` instead. Use `scope` as the canonical input name for the symbol scope. Use this when the scope is a file, directory, or repo root and you want the best symbol definition within that scope. Hidden paths are included unless excluded by the default ignore rules; test paths are included by default unless `include_tests` is turned off. Use sequentially and wait for the result before issuing the next navigation call. Compact mode returns a standardized envelope with `tool`, `compact`, `query`, `scope`, `items`, `returned_count`, `max_results_used`, `selection`, `selection_excerpt`, `stats`, and `truncated`, and it omits legacy top-level fields. In compact mode, the selected definition includes defining file, line, column, container/scope, signature, and a short line-numbered excerpt. Ordering is stable and the best match comes first.",
+                "risk": ToolRisk.SAFE,
+                "requires_approval": False,
+                "released": True,
+                "args_schema": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["symbol"],
+                    "properties": {
+                        "symbol": {"type": "string", "description": "Symbol name to resolve."},
+                        "scope": {
+                            "type": "string",
+                            "description": "Canonical file, directory, or root scope to narrow the search. Repo-relative values are preferred.",
+                        },
+                        "compact": {
+                            "type": "boolean",
+                            "default": False,
+                            "description": "Return a smaller standardized items payload when true.",
+                        },
+                        "kind": {
+                            "type": "string",
+                            "description": "Optional symbol kind filter such as function or class.",
+                        },
+                        "fuzzy": {
+                            "type": "boolean",
+                            "default": False,
+                            "description": "Allow approximate matching when true.",
+                        },
+                        "include_private": {
+                            "type": "boolean",
+                            "default": False,
+                            "description": "Include private symbols starting with underscore.",
+                        },
+                        "include_tests": {
+                            "type": "boolean",
+                            "default": True,
+                            "description": "Whether test paths are included. Test paths are included by default.",
+                        },
+                        "include_globs": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Optional glob filters that must match.",
+                        },
+                        "exclude_globs": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Optional glob filters to exclude.",
+                        },
+                        "max_results": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "default": 5,
+                            "description": "Top-N limit for candidate matches returned by the lookup.",
+                        },
+                        "max_depth": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "default": 8,
+                            "description": "Maximum directory depth to traverse.",
+                        },
+                        "context_lines": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "default": 8,
+                            "description": "Number of surrounding lines to include in the excerpt.",
+                        },
+                        "timeout_ms": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "default": 3000,
+                            "description": "Lookup timeout in milliseconds.",
+                        },
+                    },
+                },
+            },
+        ],
+    },
+    {
         "name": "File Write Operations",
         "description": "Modify files in the workspace while keeping the safety reviewable.",
         "tools": [
@@ -912,7 +1416,10 @@ TOOL_REGISTRY = [
                 "args_schema": {
                     "type": "object",
                     "properties": {
-                        "repo_dir": {"type": "string", "description": "Absolute or repo-relative repository path."},
+                        "repo_dir": {
+                            "type": "string",
+                            "description": "Absolute or repo-relative repository path.",
+                        },
                         "paths": {
                             "type": "array",
                             "items": {"type": "string"},
@@ -934,7 +1441,10 @@ TOOL_REGISTRY = [
                 "args_schema": {
                     "type": "object",
                     "properties": {
-                        "repo_dir": {"type": "string", "description": "Absolute or repo-relative repository path."},
+                        "repo_dir": {
+                            "type": "string",
+                            "description": "Absolute or repo-relative repository path.",
+                        },
                         "porcelain": {"type": "string", "enum": ["v1", "v2"]},
                         "include_untracked": {"type": "boolean"},
                         "timeout_ms": {"type": "integer", "minimum": 0},
@@ -951,7 +1461,10 @@ TOOL_REGISTRY = [
                 "args_schema": {
                     "type": "object",
                     "properties": {
-                        "repo_dir": {"type": "string", "description": "Absolute or repo-relative repository path."},
+                        "repo_dir": {
+                            "type": "string",
+                            "description": "Absolute or repo-relative repository path.",
+                        },
                         "staged": {"type": "boolean"},
                         "paths": {
                             "type": "array",
@@ -974,7 +1487,10 @@ TOOL_REGISTRY = [
                 "args_schema": {
                     "type": "object",
                     "properties": {
-                        "repo_dir": {"type": "string", "description": "Absolute or repo-relative repository path."},
+                        "repo_dir": {
+                            "type": "string",
+                            "description": "Absolute or repo-relative repository path.",
+                        },
                         "max_count": {"type": "integer", "minimum": 1},
                         "ref": {"type": "string"},
                         "timeout_ms": {"type": "integer", "minimum": 0},
@@ -991,7 +1507,10 @@ TOOL_REGISTRY = [
                 "args_schema": {
                     "type": "object",
                     "properties": {
-                        "repo_dir": {"type": "string", "description": "Absolute or repo-relative repository path."},
+                        "repo_dir": {
+                            "type": "string",
+                            "description": "Absolute or repo-relative repository path.",
+                        },
                         "patch_unified": {"type": "string"},
                         "strip_prefix": {"type": "integer", "minimum": 0},
                         "reject": {"type": "boolean"},
@@ -1011,7 +1530,10 @@ TOOL_REGISTRY = [
                 "args_schema": {
                     "type": "object",
                     "properties": {
-                        "repo_dir": {"type": "string", "description": "Absolute or repo-relative repository path."},
+                        "repo_dir": {
+                            "type": "string",
+                            "description": "Absolute or repo-relative repository path.",
+                        },
                         "name": {"type": "string"},
                         "start_point": {"type": "string"},
                         "checkout": {"type": "boolean"},
@@ -1031,7 +1553,10 @@ TOOL_REGISTRY = [
                 "args_schema": {
                     "type": "object",
                     "properties": {
-                        "repo_dir": {"type": "string", "description": "Absolute or repo-relative repository path."},
+                        "repo_dir": {
+                            "type": "string",
+                            "description": "Absolute or repo-relative repository path.",
+                        },
                         "ref": {"type": "string"},
                         "create": {"type": "boolean"},
                         "timeout_ms": {"type": "integer", "minimum": 0},
@@ -1049,7 +1574,10 @@ TOOL_REGISTRY = [
                 "args_schema": {
                     "type": "object",
                     "properties": {
-                        "repo_dir": {"type": "string", "description": "Absolute or repo-relative repository path."},
+                        "repo_dir": {
+                            "type": "string",
+                            "description": "Absolute or repo-relative repository path.",
+                        },
                         "message": {"type": "string"},
                         "paths_to_add": {
                             "type": "array",
@@ -1074,7 +1602,10 @@ TOOL_REGISTRY = [
                 "args_schema": {
                     "type": "object",
                     "properties": {
-                        "repo_dir": {"type": "string", "description": "Absolute or repo-relative repository path."},
+                        "repo_dir": {
+                            "type": "string",
+                            "description": "Absolute or repo-relative repository path.",
+                        },
                         "remote": {"type": "string"},
                         "ref": {"type": "string"},
                         "set_upstream": {"type": "boolean"},
@@ -1102,7 +1633,12 @@ TOOL_REGISTRY = [
                     "additionalProperties": False,
                     "properties": {
                         "query": {"type": "string"},
-                        "max_results": {"type": "integer", "minimum": 1, "maximum": 10, "default": 5},
+                        "max_results": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 10,
+                            "default": 5,
+                        },
                     },
                     "required": ["query"],
                 },
@@ -1118,8 +1654,17 @@ TOOL_REGISTRY = [
                     "additionalProperties": False,
                     "properties": {
                         "url": {"type": "string"},
-                        "extract": {"type": "string", "enum": ["main_text"], "default": "main_text"},
-                        "max_chars": {"type": "integer", "minimum": 1, "maximum": 50000, "default": 12000},
+                        "extract": {
+                            "type": "string",
+                            "enum": ["main_text"],
+                            "default": "main_text",
+                        },
+                        "max_chars": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 50000,
+                            "default": 12000,
+                        },
                     },
                     "required": ["url"],
                 },
@@ -1142,7 +1687,10 @@ TOOL_REGISTRY = [
                     "properties": {
                         "scope_type": {"type": "string", "enum": ["sandbox", "agent", "user"]},
                         "scope_id": {"type": "string"},
-                        "memory_kind": {"type": "string", "enum": ["episodic", "semantic", "procedural"]},
+                        "memory_kind": {
+                            "type": "string",
+                            "enum": ["episodic", "semantic", "procedural"],
+                        },
                         "content": {"type": "string"},
                         "tags": {"type": "array", "items": {"type": "string"}},
                         "importance": {"type": "number", "minimum": 0, "maximum": 1},
@@ -1170,7 +1718,10 @@ TOOL_REGISTRY = [
                         "query": {"type": "string"},
                         "scope_type": {"type": "string", "enum": ["sandbox", "agent", "user"]},
                         "scope_id": {"type": "string"},
-                        "memory_kind": {"type": "string", "enum": ["episodic", "semantic", "procedural"]},
+                        "memory_kind": {
+                            "type": "string",
+                            "enum": ["episodic", "semantic", "procedural"],
+                        },
                         "limit": {"type": "integer", "minimum": 1, "maximum": 20, "default": 5},
                     },
                     "required": ["query"],
@@ -1188,30 +1739,66 @@ TOOL_REGISTRY = [
                     "properties": {
                         "title": {"type": "string"},
                         "task_type": {"type": "string", "enum": ["other_task"]},
-                        "execution_mode": {"type": "string", "enum": ["headless_run"], "default": "headless_run"},
-                        "timezone": {"type": "string", "description": "Daily shorthand timezone. Optional when recurrence.timezone is provided."},
-                        "local_time": {"type": "string", "description": "Daily shorthand local wall-clock time in HH:MM format. Optional when recurrence is provided."},
+                        "execution_mode": {
+                            "type": "string",
+                            "enum": ["headless_run"],
+                            "default": "headless_run",
+                        },
+                        "timezone": {
+                            "type": "string",
+                            "description": "Daily shorthand timezone. Optional when recurrence.timezone is provided.",
+                        },
+                        "local_time": {
+                            "type": "string",
+                            "description": "Daily shorthand local wall-clock time in HH:MM format. Optional when recurrence is provided.",
+                        },
                         "recurrence": {
                             "type": "object",
                             "additionalProperties": False,
                             "properties": {
                                 "name": {"type": "string"},
                                 "timezone": {"type": "string"},
-                                "frequency": {"type": "string", "enum": ["hourly", "daily", "weekly", "monthly", "quarterly", "semiannual", "annual"]},
+                                "frequency": {
+                                    "type": "string",
+                                    "enum": [
+                                        "hourly",
+                                        "daily",
+                                        "weekly",
+                                        "monthly",
+                                        "quarterly",
+                                        "semiannual",
+                                        "annual",
+                                    ],
+                                },
                                 "interval": {"type": "integer", "minimum": 1},
-                                "by_weekday": {"type": "array", "items": {"type": "string", "enum": ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]}},
-                                "by_month_day": {"type": "array", "items": {"type": "integer", "minimum": 1, "maximum": 31}},
+                                "by_weekday": {
+                                    "type": "array",
+                                    "items": {
+                                        "type": "string",
+                                        "enum": ["mon", "tue", "wed", "thu", "fri", "sat", "sun"],
+                                    },
+                                },
+                                "by_month_day": {
+                                    "type": "array",
+                                    "items": {"type": "integer", "minimum": 1, "maximum": 31},
+                                },
                                 "week_of_month": {"type": "integer", "enum": [1, 2, 3, 4, -1]},
-                                "weekday_of_month": {"type": "string", "enum": ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]},
-                                "by_month": {"type": "array", "items": {"type": "integer", "minimum": 1, "maximum": 12}},
+                                "weekday_of_month": {
+                                    "type": "string",
+                                    "enum": ["mon", "tue", "wed", "thu", "fri", "sat", "sun"],
+                                },
+                                "by_month": {
+                                    "type": "array",
+                                    "items": {"type": "integer", "minimum": 1, "maximum": 12},
+                                },
                                 "local_time": {"type": "string"},
                                 "run_minute": {"type": "integer", "minimum": 0, "maximum": 59},
                                 "window_start_time": {"type": "string"},
                                 "window_end_time": {"type": "string"},
                                 "start_date": {"type": "string", "format": "date"},
                                 "end_date": {"type": "string", "format": "date"},
-                                "is_active": {"type": "boolean"}
-                            }
+                                "is_active": {"type": "boolean"},
+                            },
                         },
                         "execution_payload": {"type": "object"},
                     },
@@ -1222,7 +1809,7 @@ TOOL_REGISTRY = [
             },
             {
                 "name": "edit_scheduled_task",
-                "description": "Edit an existing scheduled task attached to the current agent. Use this to change the title, recurrence, timezone, local_time, enabled state, or execution_payload without creating a new task.",
+                "description": "Edit an existing scheduled task attached to the current agent. Use this to change the title, recurrence, timezone, local_time, enabled state, or execution_payload without creating a new task. If a timezone is omitted, the bridge assumes the local Tango timezone from `TIME_ZONE` / `settings.TIME_ZONE` rather than UTC. If the schedule depends on a relative date like tomorrow or next Friday and the current local date is not already known, call `get_current_datetime` first and anchor the schedule in that local time.",
                 "risk": ToolRisk.SAFE,
                 "args_schema": {
                     "type": "object",
@@ -1239,21 +1826,47 @@ TOOL_REGISTRY = [
                             "properties": {
                                 "name": {"type": "string"},
                                 "timezone": {"type": "string"},
-                                "frequency": {"type": "string", "enum": ["hourly", "daily", "weekly", "monthly", "quarterly", "semiannual", "annual"]},
+                                "frequency": {
+                                    "type": "string",
+                                    "enum": [
+                                        "hourly",
+                                        "daily",
+                                        "weekly",
+                                        "monthly",
+                                        "quarterly",
+                                        "semiannual",
+                                        "annual",
+                                    ],
+                                },
                                 "interval": {"type": "integer", "minimum": 1},
-                                "by_weekday": {"type": "array", "items": {"type": "string", "enum": ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]}},
-                                "by_month_day": {"type": "array", "items": {"type": "integer", "minimum": 1, "maximum": 31}},
+                                "by_weekday": {
+                                    "type": "array",
+                                    "items": {
+                                        "type": "string",
+                                        "enum": ["mon", "tue", "wed", "thu", "fri", "sat", "sun"],
+                                    },
+                                },
+                                "by_month_day": {
+                                    "type": "array",
+                                    "items": {"type": "integer", "minimum": 1, "maximum": 31},
+                                },
                                 "week_of_month": {"type": "integer", "enum": [1, 2, 3, 4, -1]},
-                                "weekday_of_month": {"type": "string", "enum": ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]},
-                                "by_month": {"type": "array", "items": {"type": "integer", "minimum": 1, "maximum": 12}},
+                                "weekday_of_month": {
+                                    "type": "string",
+                                    "enum": ["mon", "tue", "wed", "thu", "fri", "sat", "sun"],
+                                },
+                                "by_month": {
+                                    "type": "array",
+                                    "items": {"type": "integer", "minimum": 1, "maximum": 12},
+                                },
                                 "local_time": {"type": "string"},
                                 "run_minute": {"type": "integer", "minimum": 0, "maximum": 59},
                                 "window_start_time": {"type": "string"},
                                 "window_end_time": {"type": "string"},
                                 "start_date": {"type": "string", "format": "date"},
                                 "end_date": {"type": "string", "format": "date"},
-                                "is_active": {"type": "boolean"}
-                            }
+                                "is_active": {"type": "boolean"},
+                            },
                         },
                         "execution_payload": {"type": "object"},
                         "delivery_target": {"type": "string"},
@@ -1318,11 +1931,19 @@ TOOL_REGISTRY = [
                     "properties": {
                         "input_text": {"type": "string"},
                         "metadata": {"type": "object"},
-                        "join_policy": {"type": "string", "enum": ["WAIT_ALL", "WAIT_ANY", "QUORUM", "TIMEOUT"], "default": "WAIT_ALL"},
+                        "join_policy": {
+                            "type": "string",
+                            "enum": ["WAIT_ALL", "WAIT_ANY", "QUORUM", "TIMEOUT"],
+                            "default": "WAIT_ALL",
+                        },
                         "quorum": {"type": "integer", "minimum": 1},
                         "timeout_seconds": {"type": "integer", "minimum": 1},
-                        "failure_policy": {"type": "string", "enum": ["FAIL_FAST", "CANCEL_SIBLINGS", "IGNORE_FAILURE"], "default": "IGNORE_FAILURE"},
-                        "group_id": {"type": "string"}
+                        "failure_policy": {
+                            "type": "string",
+                            "enum": ["FAIL_FAST", "CANCEL_SIBLINGS", "IGNORE_FAILURE"],
+                            "default": "IGNORE_FAILURE",
+                        },
+                        "group_id": {"type": "string"},
                     },
                     "required": ["input_text"],
                 },
@@ -1333,13 +1954,31 @@ TOOL_REGISTRY = [
     },
     {
         "name": GOOGLE_BRIDGE_TOOL_GROUP_NAME,
-        "description": "Google bridge for Gmail and Calendar reads plus Gmail draft/send/trash/delete workflows and Calendar read/create/update/delete workflows. Bare Gmail list reads default to unread messages. Use include_read=true when you want all Gmail messages, or provide a query/label filter for a narrower mailbox view. Gmail list/read query filters support exact sender, sender domain, subject, and top-level OR splitting across those clauses. Use account_scope=all when you want the bridge to fan out across every active connected account and merge the results. For Gmail trash/delete queries, use account_scope=all when you want the same query to apply across every connected account. Calendar list reads can omit calendar_id or use all to inspect every calendar on the connected account, while primary stays available when you explicitly want one calendar. For Gmail reads, use query filters such as from:info@airbnb.com for exact sender, from:airbnb.com for sender-domain, subject:(\"Airbnb\") for subject search, plus label_ids or include_read for mailbox filtering. For Gmail trash/delete, never use read as a lookup step. OR is supported for Gmail list/read searches and bulk trash/delete cleanup only at the top level, where it is split into separate Gmail clauses before merging or deleting. Nested OR inside parentheses is rejected as malformed. For bulk cleanup, choose the Gmail query shape that matches your intent: subject:(\"Airbnb\") for subject-based cleanup, from:info@airbnb.com for exact sender cleanup, and from:airbnb.com for sender-domain cleanup. If you need multiple cleanup targets in one call, join them with OR and the bridge will split them into separate Gmail clauses as long as each clause is complete. For Gmail writes, create a draft first and then send it when ready. The preferred delete pattern in each case is action_kind=delete with operation=trash (or omit operation and let it default) plus the matching Gmail query. Keep delete_mode at trash unless you explicitly want permanent deletion. Gmail OR fan-out is capped at 10 top-level clauses by default; set TOOLRUNNER_GMAIL_OR_CLAUSE_LIMIT to adjust it. If the agent accidentally writes `from:@domain.com` or adds stray spaces after query tokens, the bridge normalizes that to the canonical Gmail form. The payload contract stays JSON-in / JSON-out so future Google surfaces can reuse the same shape.",
+        "description": 'Google bridge for Gmail and Calendar reads plus Gmail draft/send/trash/delete workflows and Calendar read/create/update/delete workflows. Bare Gmail list reads default to unread messages. Use include_read=true when you want all Gmail messages, or provide a query/label filter for a narrower mailbox view. Gmail list/read query filters support exact sender, sender domain, subject, and top-level OR splitting across those clauses. Use account_scope=all when you want the bridge to fan out across every active connected account and merge the results. For Gmail trash/delete queries, use account_scope=all when you want the same query to apply across every connected account. Calendar list reads can omit calendar_id or use all to inspect every calendar on the connected account, while primary stays available when you explicitly want one calendar. For Gmail reads, use query filters such as from:info@airbnb.com for exact sender, from:airbnb.com for sender-domain, subject:("Airbnb") for subject search, plus label_ids or include_read for mailbox filtering. For Gmail trash/delete, never use read as a lookup step. OR is supported for Gmail list/read searches and bulk trash/delete cleanup only at the top level, where it is split into separate Gmail clauses before merging or deleting. Nested OR inside parentheses is rejected as malformed. For bulk cleanup, choose the Gmail query shape that matches your intent: subject:("Airbnb") for subject-based cleanup, from:info@airbnb.com for exact sender cleanup, and from:airbnb.com for sender-domain cleanup. If you need multiple cleanup targets in one call, join them with OR and the bridge will split them into separate Gmail clauses as long as each clause is complete. For Gmail and Calendar writes, if a timezone argument is omitted, the bridge assumes the local Tango timezone from `TIME_ZONE` / `settings.TIME_ZONE` rather than UTC. For Gmail writes, create a draft first and then send it when ready. Calendar create, update, and delete workflows are supported. The preferred delete pattern in each case is action_kind=delete with operation=trash (or omit operation and let it default) plus the matching Gmail query. Keep delete_mode at trash unless you explicitly want permanent deletion. Gmail OR fan-out is capped at 10 top-level clauses by default; set TOOLRUNNER_GMAIL_OR_CLAUSE_LIMIT to adjust it. If the agent accidentally writes `from:@domain.com` or adds stray spaces after query tokens, the bridge normalizes that to the canonical Gmail form. The payload contract stays JSON-in / JSON-out so future Google surfaces can reuse the same shape.',
         "tools": [
             {
                 "name": GOOGLE_BRIDGE_TOOL_NAME,
                 "description": GOOGLE_BRIDGE_TOOL_DESCRIPTION,
                 "risk": ToolRisk.SAFE,
                 "args_schema": build_google_bridge_args_schema(),
+                "requires_approval": False,
+                "released": True,
+            },
+        ],
+    },
+    {
+        "name": "Utilities",
+        "description": "Small safe utilities for local runtime context and coordination.",
+        "tools": [
+            {
+                "name": "get_current_datetime",
+                "description": "Return the current ISO 8601 local datetime string in the Tango timezone.",
+                "risk": ToolRisk.SAFE,
+                "args_schema": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {},
+                },
                 "requires_approval": False,
                 "released": True,
             },
@@ -1364,13 +2003,19 @@ TOOL_REGISTRY = [
                                 "type": "object",
                                 "additionalProperties": False,
                                 "properties": {
-                                    "path": {"type": "string", "description": "Absolute or repo-relative file path to write before execution."},
+                                    "path": {
+                                        "type": "string",
+                                        "description": "Absolute or repo-relative file path to write before execution.",
+                                    },
                                     "content_b64": {"type": "string"},
                                 },
                                 "required": ["path", "content_b64"],
                             },
                         },
-                        "entrypoint": {"type": "string", "description": "Absolute or repo-relative path to the Python entrypoint file."},
+                        "entrypoint": {
+                            "type": "string",
+                            "description": "Absolute or repo-relative path to the Python entrypoint file.",
+                        },
                     },
                 },
                 "requires_approval": True,
@@ -1397,7 +2042,10 @@ TOOL_REGISTRY = [
                     "additionalProperties": False,
                     "properties": {
                         "kind": {"type": "string", "enum": ["pytest_coverage"]},
-                        "cwd": {"type": "string", "description": "Absolute or repo-relative working directory."},
+                        "cwd": {
+                            "type": "string",
+                            "description": "Absolute or repo-relative working directory.",
+                        },
                         "args": {"type": "array", "items": {"type": "string"}},
                         "timeout_ms": {"type": "integer", "minimum": 0},
                         "max_output_bytes": {"type": "integer", "minimum": 1},
@@ -1415,12 +2063,26 @@ TOOL_REGISTRY = [
                     "type": "object",
                     "additionalProperties": False,
                     "properties": {
-                        "tool": {"type": "string", "enum": ["ruff_format", "black", "prettier", "command"]},
+                        "tool": {
+                            "type": "string",
+                            "enum": ["ruff_format", "black", "prettier", "command"],
+                        },
                         "mode": {"type": "string", "enum": ["check", "apply"]},
-                        "cwd": {"type": "string", "description": "Absolute or repo-relative working directory."},
-                        "paths": {"type": "array", "items": {"type": "string"}, "description": "Absolute or repo-relative target paths."},
+                        "cwd": {
+                            "type": "string",
+                            "description": "Absolute or repo-relative working directory.",
+                        },
+                        "paths": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Absolute or repo-relative target paths.",
+                        },
                         "args": {"type": "array", "items": {"type": "string"}},
-                        "cmd": {"type": "array", "items": {"type": "string"}},
+                        "cmd": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Only valid when tool=command. Omit for ruff_format, black, and prettier runs.",
+                        },
                         "timeout_ms": {"type": "integer", "minimum": 0},
                         "max_output_bytes": {"type": "integer", "minimum": 1},
                     },
@@ -1437,11 +2099,25 @@ TOOL_REGISTRY = [
                     "type": "object",
                     "additionalProperties": False,
                     "properties": {
-                        "tool": {"type": "string", "enum": ["ruff", "flake8", "eslint", "prettier", "command"]},
-                        "cwd": {"type": "string", "description": "Absolute or repo-relative working directory."},
-                        "paths": {"type": "array", "items": {"type": "string"}, "description": "Absolute or repo-relative target paths."},
+                        "tool": {
+                            "type": "string",
+                            "enum": ["ruff", "flake8", "eslint", "prettier", "command"],
+                        },
+                        "cwd": {
+                            "type": "string",
+                            "description": "Absolute or repo-relative working directory.",
+                        },
+                        "paths": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Absolute or repo-relative target paths.",
+                        },
                         "args": {"type": "array", "items": {"type": "string"}},
-                        "cmd": {"type": "array", "items": {"type": "string"}},
+                        "cmd": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Only valid when tool=command. Omit for ruff, flake8, eslint, and prettier runs.",
+                        },
                         "timeout_ms": {"type": "integer", "minimum": 0},
                         "max_output_bytes": {"type": "integer", "minimum": 1},
                         "parse": {"type": "string", "enum": ["ruff", "flake8", "eslint", "none"]},
@@ -1532,7 +2208,10 @@ TOOL_REGISTRY = [
                             "type": "string",
                             "description": "Search pattern. Use literal text when is_regex=false, or regex syntax when is_regex=true. Prefer `|` for alternatives instead of the word `OR`.",
                         },
-                        "root": {"type": "string", "description": "Optional absolute or repo-relative search root."},
+                        "root": {
+                            "type": "string",
+                            "description": "Optional absolute or repo-relative search root.",
+                        },
                         "is_regex": {
                             "type": "boolean",
                             "description": "Set true to interpret query as a regex. Use regex alternation (`|`) for alternatives, not the word `OR`.",
@@ -1559,7 +2238,10 @@ TOOL_REGISTRY = [
                     "additionalProperties": False,
                     "properties": {
                         "cmd": {"type": "array", "items": {"type": "string"}},
-                        "cwd": {"type": "string", "description": "Absolute or repo-relative working directory."},
+                        "cwd": {
+                            "type": "string",
+                            "description": "Absolute or repo-relative working directory.",
+                        },
                         "env": {"type": "object", "additionalProperties": {"type": "string"}},
                     },
                     "required": ["cmd"],
@@ -1575,12 +2257,18 @@ TOOL_REGISTRY = [
                     "type": "object",
                     "additionalProperties": False,
                     "properties": {
-                        "kind": {"type": "string", "enum": ["powershell_script", "pytest", "command"]},
+                        "kind": {
+                            "type": "string",
+                            "enum": ["powershell_script", "pytest", "command"],
+                        },
                         "script_path": {"type": "string"},
                         "script_args": {"type": "array", "items": {"type": "string"}},
                         "pytest_args": {"type": "array", "items": {"type": "string"}},
                         "cmd": {"type": "array", "items": {"type": "string"}},
-                        "cwd": {"type": "string", "description": "Absolute or repo-relative working directory."},
+                        "cwd": {
+                            "type": "string",
+                            "description": "Absolute or repo-relative working directory.",
+                        },
                         "env": {"type": "object", "additionalProperties": {"type": "string"}},
                         "timeout_ms": {"type": "integer", "minimum": 0},
                         "max_output_bytes": {"type": "integer", "minimum": 1},
@@ -1624,7 +2312,10 @@ TOOL_REGISTRY = [
                     "additionalProperties": False,
                     "properties": {
                         "tool": {"type": "string", "enum": ["mypy", "pyright", "tsc", "command"]},
-                        "cwd": {"type": "string", "description": "Absolute or repo-relative working directory."},
+                        "cwd": {
+                            "type": "string",
+                            "description": "Absolute or repo-relative working directory.",
+                        },
                         "args": {"type": "array", "items": {"type": "string"}},
                         "cmd": {"type": "array", "items": {"type": "string"}},
                         "timeout_ms": {
@@ -1651,7 +2342,10 @@ TOOL_REGISTRY = [
 
 for group in TOOL_REGISTRY:
     for tool in group.get("tools", []):
-        schema = deepcopy(tool.get("args_schema") or {"type": "object", "properties": {}, "additionalProperties": True})
+        schema = deepcopy(
+            tool.get("args_schema")
+            or {"type": "object", "properties": {}, "additionalProperties": True}
+        )
         required_parameters = list(tool.get("required_parameters") or schema.get("required") or [])
         tool["required_parameters"] = required_parameters
         tool["args_schema"] = schema
@@ -1662,7 +2356,11 @@ for group in TOOL_REGISTRY:
         )
         docs = f"{docs}{_TOOL_ADDITIONAL_DOCS.get(tool['name'], '')}"
         existing_schema_description = str(schema.get("description") or "").strip()
-        schema["description"] = f"{existing_schema_description}\n\n{docs}".strip() if existing_schema_description else docs
+        schema["description"] = (
+            f"{existing_schema_description}\n\n{docs}".strip()
+            if existing_schema_description
+            else docs
+        )
         examples = _TOOL_EXAMPLES.get(tool["name"])
         if examples is not None:
             if isinstance(examples, list):

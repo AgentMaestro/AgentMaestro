@@ -56,7 +56,9 @@ def run_fetch_url(_run_dir, args: FetchUrlArgs, _policy: dict | None = None):
 
     status_code = int(fetch_result["status_code"])
     if status_code >= 400:
-        return _error("HTTP_ERROR", f"fetch_url returned HTTP {status_code}", {"status_code": status_code})
+        return _error(
+            "HTTP_ERROR", f"fetch_url returned HTTP {status_code}", {"status_code": status_code}
+        )
 
     body = bytes(fetch_result["body"])
     content_type = str(fetch_result["content_type"])

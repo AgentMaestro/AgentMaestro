@@ -3,16 +3,15 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
-from typing import Dict, List
 
 from fastapi.responses import JSONResponse
 
-from ..config import PYTHON_INTERPRETER, PYTHON_INTERPRETER_SOURCE
+from ..config import PYTHON_INTERPRETER, PYTHON_INTERPRETER_SOURCE, resolve_policy_path
 from ..models import RunCommandArgs, TypecheckArgs
 from .python_runner_support import detect_missing_python_module, missing_python_module_response
 from .run_command import run_command
 
-TYPECHECK_DEFAULT_ARGS: Dict[str, List[str]] = {
+TYPECHECK_DEFAULT_ARGS: dict[str, list[str]] = {
     "pyright": ["--outputjson"],
     "mypy": ["--show-column-numbers", "--show-error-context"],
     "tsc": ["--pretty", "false"],
@@ -33,13 +32,13 @@ def _error_response(code: str, message: str, details: dict | None = None, status
     )
 
 
-def _ensure_pyright_output(args: List[str]) -> List[str]:
+def _ensure_pyright_output(args: list[str]) -> list[str]:
     if any(arg.startswith("--outputjson") or arg.startswith("--outputjson-format") for arg in args):
         return args
     return args + ["--outputjson"]
 
 
-def _build_command(run_dir: Path, args: TypecheckArgs) -> List[str]:
+def _build_command(run_dir: Path, args: TypecheckArgs) -> list[str]:
     if args.tool == "command":
         return list(args.cmd or [])
 
@@ -59,8 +58,8 @@ def _build_command(run_dir: Path, args: TypecheckArgs) -> List[str]:
     return command
 
 
-def _parse_pyright(stdout: str) -> List[Dict[str, object]]:
-    diagnostics: List[Dict[str, object]] = []
+def _parse_pyright(stdout: str) -> list[dict[str, object]]:
+    diagnostics: list[dict[str, object]] = []
     payload = json.loads(stdout)
     general = payload.get("generalDiagnostics", [])
     for item in general:
@@ -92,8 +91,8 @@ MYPY_PATTERN = re.compile(
 )
 
 
-def _parse_mypy(stdout: str) -> List[Dict[str, object]]:
-    diagnostics: List[Dict[str, object]] = []
+def _parse_mypy(stdout: str) -> list[dict[str, object]]:
+    diagnostics: list[dict[str, object]] = []
     for line in stdout.splitlines():
         match = MYPY_PATTERN.match(line.strip())
         if not match:
@@ -116,8 +115,8 @@ TSC_PATTERN = re.compile(
 )
 
 
-def _parse_tsc(stdout: str) -> List[Dict[str, object]]:
-    diagnostics: List[Dict[str, object]] = []
+def _parse_tsc(stdout: str) -> list[dict[str, object]]:
+    diagnostics: list[dict[str, object]] = []
     for line in stdout.splitlines():
         match = TSC_PATTERN.match(line.strip())
         if not match:
@@ -148,6 +147,7 @@ def _invoke_run_command(run_dir: Path, run_args: RunCommandArgs, policy: dict | 
 
 def run_typecheck(run_dir: Path, args: TypecheckArgs, policy: dict | None = None):
     try:
+        resolved_cwd = str(resolve_policy_path(run_dir, args.cwd or ".", policy))
         command = _build_command(run_dir, args)
     except ValueError as exc:
         return _error_response("PATH_OUTSIDE_WORKSPACE", str(exc))
@@ -181,7 +181,7 @@ def run_typecheck(run_dir: Path, args: TypecheckArgs, policy: dict | None = None
             )
     stdout = result.get("stdout", "")
     stderr = result.get("stderr", "")
-    diagnostics: List[Dict[str, object]] = []
+    diagnostics: list[dict[str, object]] = []
     parse_warning: str | None = None
     parse_source = "none"
     parse_mode = "none" if args.tool == "command" else args.parse
@@ -215,6 +215,8 @@ def run_typecheck(run_dir: Path, args: TypecheckArgs, policy: dict | None = None
         "exit_code": result.get("exit_code"),
         "duration_ms": result.get("duration_ms", 0),
         "timed_out": result.get("timed_out", False),
+        "requested_cwd": args.cwd,
+        "resolved_cwd": resolved_cwd,
         "diagnostics": diagnostics,
         "stdout": stdout,
         "stderr": stderr,
@@ -224,6 +226,8 @@ def run_typecheck(run_dir: Path, args: TypecheckArgs, policy: dict | None = None
         "parse_source": parse_source,
         "parse_warning": parse_warning,
         "python_interpreter": PYTHON_INTERPRETER if args.tool in {"pyright", "mypy"} else None,
-        "python_interpreter_source": PYTHON_INTERPRETER_SOURCE if args.tool in {"pyright", "mypy"} else None,
+        "python_interpreter_source": PYTHON_INTERPRETER_SOURCE
+        if args.tool in {"pyright", "mypy"}
+        else None,
     }
     return JSONResponse(status_code=200, content={"ok": True, "result": final})

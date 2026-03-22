@@ -60,6 +60,28 @@ def test_run_detail_page_displays_run(client):
 
 
 @pytest.mark.django_db
+def test_run_detail_page_allows_agent_owner_without_workspace_membership(client):
+    user = get_user_model().objects.create_user(username="ui-agent-owner", password="x")
+    workspace = Workspace.objects.create(name="Owner Access WS")
+    agent = Agent.objects.create(workspace=workspace, owner=user, name="Owner Agent", soul="Prompt")
+    run = AgentRun.objects.create(
+        workspace=workspace,
+        agent=agent,
+        started_by=user,
+        status=AgentRun.Status.PENDING,
+        input_text="Test",
+    )
+
+    client.force_login(user)
+    resp = client.get(reverse("ui:run_detail", kwargs={"run_id": run.id}))
+    assert resp.status_code == 200
+    content = resp.content.decode()
+    assert str(run.id) in content
+    assert workspace.name in content
+    assert agent.name in content
+
+
+@pytest.mark.django_db
 def test_run_snapshot_endpoint(client):
     workspace = Workspace.objects.create(name="Snapshot UI WS")
     agent = Agent.objects.create(workspace=workspace, name="Snapshot Agent", soul="Prompt")
@@ -87,3 +109,22 @@ def test_run_snapshot_endpoint(client):
     assert payload["run"]["id"] == str(run.id)
     assert payload["steps"][0]["kind"] == AgentStep.Kind.MODEL_CALL
     assert payload["events_since_seq"][-1]["event_type"] == "state_changed"
+
+
+@pytest.mark.django_db
+def test_run_snapshot_allows_agent_owner_without_workspace_membership(client):
+    user = get_user_model().objects.create_user(username="snapshot-owner", password="x")
+    workspace = Workspace.objects.create(name="Snapshot Owner WS")
+    agent = Agent.objects.create(workspace=workspace, owner=user, name="Snapshot Owner Agent", soul="Prompt")
+    run = AgentRun.objects.create(
+        workspace=workspace,
+        agent=agent,
+        status=AgentRun.Status.RUNNING,
+        input_text="Snapshot test",
+    )
+
+    client.force_login(user)
+    resp = client.get(reverse("ui:run_snapshot", kwargs={"run_id": run.id}))
+    assert resp.status_code == 200
+    payload = resp.json()
+    assert payload["run"]["id"] == str(run.id)

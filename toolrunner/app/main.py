@@ -38,7 +38,12 @@ from .models import (
     RunCommandSafeArgs,
     RunTestsArgs,
     RunnerTestArgs,
+    FindReferencesArgs,
+    FindSymbolArgs,
+    JumpToSymbolArgs,
+    ListSymbolsArgs,
     SearchCodeArgs,
+    SearchFilesArgs,
     ShellArgs,
     TypecheckArgs,
     WebSearchArgs,
@@ -47,36 +52,35 @@ from .run_manager import REPO_ROOT, RunContext, RunManager
 from .schemas import SchemaValidationError
 from .srs.readiness import compute_readiness, ensure_readiness, READINESS_SCORE_THRESHOLD
 from .sandbox import get_run_dir
-from .tools import (
-    apply_patch,
-    delete_file,
-    create_webhook,
-    run_coverage,
-    run_fetch_url,
-    run_formatter,
-    run_git_add,
-    run_git_apply,
-    run_git_branch_create,
-    run_git_checkout,
-    run_git_commit,
-    run_git_diff,
-    run_git_log,
-    run_git_push,
-    run_git_status,
-    run_web_search,
-    run_linters,
-    list_repo_tree,
-    list_search_code,
-    read_file,
-    run_command,
-    run_command_safe,
-    run_predefined_tests,
-    run_python,
-    run_shell,
-    run_tests,
-    run_typecheck,
-    write_file,
-)
+from .tools.file_patch import apply_patch
+from .tools.coverage_runner import run_coverage
+from .tools.fetch_url import run_fetch_url
+from .tools.file_delete import delete_file
+from .tools.file_read import read_file
+from .tools.file_write import write_file
+from .tools.format_runner import run_formatter
+from .tools.git_add import run_git_add
+from .tools.git_apply import run_git_apply
+from .tools.git_branch_create import run_git_branch_create
+from .tools.git_checkout import run_git_checkout
+from .tools.git_commit import run_git_commit
+from .tools.git_diff import run_git_diff
+from .tools.git_log import run_git_log
+from .tools.git_push import run_git_push
+from .tools.git_status import run_git_status
+from .tools.lint_runner import run_linters
+from .tools.python_exec import run_python
+from .tools.repo_tree import list_repo_tree
+from .tools.run_command import run_command
+from .tools.run_command_safe import run_command_safe
+from .tools.run_tests import run_predefined_tests
+from .tools.search_code import list_search_code
+from .tools.code_navigation import find_references, find_symbol, jump_to_symbol, list_symbols, search_files
+from .tools.shell_exec import run_shell
+from .tools.test_runner import run_tests
+from .tools.typecheck_runner import run_typecheck
+from .tools.web_search import run_web_search
+from .tools.webhook import create_webhook
 from .planning.plan_compiler import PlanCompilerError, compile_plan
 from .verify import read_run_metadata, run_post_run_verification
 
@@ -252,6 +256,11 @@ _TOOL_HANDLERS: dict[str, tuple[type[BaseModel], object]] = {
     "file_delete": (FileDeleteArgs, lambda run_dir, parsed_args, payload: delete_file(run_dir, parsed_args, payload.policy)),
     "file_patch": (FilePatchArgs, lambda run_dir, parsed_args, payload: apply_patch(run_dir, parsed_args, payload.policy)),
     "repo_tree": (RepoTreeArgs, lambda run_dir, parsed_args, payload: list_repo_tree(run_dir, parsed_args, payload.policy)),
+    "search_files": (SearchFilesArgs, lambda run_dir, parsed_args, payload: search_files(run_dir, parsed_args, payload.policy)),
+    "list_symbols": (ListSymbolsArgs, lambda run_dir, parsed_args, payload: list_symbols(run_dir, parsed_args, payload.policy)),
+    "find_symbol": (FindSymbolArgs, lambda run_dir, parsed_args, payload: find_symbol(run_dir, parsed_args, payload.policy)),
+    "find_references": (FindReferencesArgs, lambda run_dir, parsed_args, payload: find_references(run_dir, parsed_args, payload.policy)),
+    "jump_to_symbol": (JumpToSymbolArgs, lambda run_dir, parsed_args, payload: jump_to_symbol(run_dir, parsed_args, payload.policy)),
     "search_code": (SearchCodeArgs, lambda run_dir, parsed_args, payload: list_search_code(run_dir, parsed_args, payload.policy)),
     "web_search": (WebSearchArgs, lambda run_dir, parsed_args, payload: run_web_search(run_dir, parsed_args, payload.policy)),
     "fetch_url": (FetchUrlArgs, lambda run_dir, parsed_args, payload: run_fetch_url(run_dir, parsed_args, payload.policy)),
@@ -525,6 +534,11 @@ TRIVIAL_TRIAL_ALLOWED_TOOLS = {
         "file_write",
         "git_add",
         "git_commit",
+        "search_files",
+        "list_symbols",
+        "find_symbol",
+        "find_references",
+        "jump_to_symbol",
         "repo_tree",
         "format_runner",
         "lint_runner",

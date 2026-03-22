@@ -80,7 +80,9 @@ def _policy_rejection_response(decision: SafeCommandDecision, reason: str) -> JS
     )
 
 
-def _execution_error_response(decision: SafeCommandDecision, code: str, message: str) -> JSONResponse:
+def _execution_error_response(
+    decision: SafeCommandDecision, code: str, message: str
+) -> JSONResponse:
     logger.warning(
         "run_command_safe execution failed command=%s cwd=%s code=%s message=%s",
         decision.redacted_command,
@@ -130,13 +132,17 @@ def run_command_safe(
         policy=policy,
     )
     if not decision.allowed:
-        return _policy_rejection_response(decision, str(decision.policy_reason or "command rejected by policy"))
+        return _policy_rejection_response(
+            decision, str(decision.policy_reason or "command rejected by policy")
+        )
 
     resolved_cwd = decision.resolved_cwd
     if resolved_cwd is None:
         return _policy_rejection_response(decision, "working directory resolution failed")
     if not resolved_cwd.exists():
-        return _execution_error_response(decision, "NOT_FOUND", f"working directory '{args.cwd}' does not exist")
+        return _execution_error_response(
+            decision, "NOT_FOUND", f"working directory '{args.cwd}' does not exist"
+        )
 
     output_limit = min(max_output_bytes or SAFE_COMMAND_OUTPUT_LIMIT, SAFE_COMMAND_OUTPUT_LIMIT)
     logger.info(
@@ -162,8 +168,7 @@ def run_command_safe(
     stderr = completed.stderr
     if completed.timed_out and not stderr:
         stderr = (
-            f"command timed out after {args.timeout_seconds} seconds "
-            f"(source=args.timeout_seconds)"
+            f"command timed out after {args.timeout_seconds} seconds (source=args.timeout_seconds)"
         )
 
     logger.info(

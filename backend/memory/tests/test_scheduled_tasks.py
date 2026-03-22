@@ -2,6 +2,7 @@ from datetime import timedelta, time
 
 import pytest
 from django.contrib.auth import get_user_model
+from django.test import override_settings
 from django.utils import timezone
 
 from agents.models import Agent
@@ -70,6 +71,22 @@ def test_create_scheduled_task_creates_eposodic_memory_and_lists_it(scheduled_ta
 
     listed = list_scheduled_tasks(agent=agent, enabled_only=True, limit=5)
     assert [task.id for task in listed] == [scheduled_task.id]
+
+
+@override_settings(TIME_ZONE="Europe/London")
+def test_create_scheduled_task_defaults_timezone_to_local_setting(scheduled_task_agent):
+    user, _workspace, agent = scheduled_task_agent
+
+    scheduled_task = create_scheduled_task(
+        agent=agent,
+        owner=user,
+        task_type=ScheduledTask.TaskType.OTHER_TASK,
+        local_time_value="08:00",
+        execution_payload={"location": "London, UK", "source_domain": "weather.com"},
+    )
+
+    assert scheduled_task.recurrence_rule.timezone == "Europe/London"
+    assert scheduled_task.timezone == "Europe/London"
 
 
 

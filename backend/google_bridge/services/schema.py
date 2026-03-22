@@ -11,6 +11,7 @@ GOOGLE_BRIDGE_TOOL_DESCRIPTION = (
     "For Gmail, bare list operations default to unread messages. Gmail list rows include message IDs, sender, subject, date, and snippet so the agent can inspect mail without a follow-up read. Use include_read=true when you want all Gmail messages instead of unread-only mail. Gmail list/read query filters support exact sender, sender domain, subject, and top-level OR splitting across those clauses. Calendar list reads inspect all calendars on the connected account unless a specific calendar_id is supplied. "
     "Use the account_email or google_subject returned by the list step when you do the follow-up read. For trash/delete, do not use read as a lookup step. Use the latest list result's message_id directly when possible. For Gmail reads, use list with query filters such as from:info@airbnb.com for exact sender search, from:airbnb.com for sender-domain search, subject:(\"Airbnb\") for subject search, and label_ids or include_read for inbox/mailbox filtering. OR is supported for Gmail list/read searches and bulk trash/delete cleanup only at the top level, where it is split into separate Gmail clauses before merging or deleting. Nested OR inside parentheses is rejected as malformed. Trash is the safe default; set delete_mode=delete only when you explicitly want permanent deletion. When deleting many messages by query, use action_kind=delete with operation=trash (or omit operation and let it default) plus the appropriate Gmail query. If you need multiple cleanup targets in one call, you may join them with ` OR ` and the bridge will split them into separate Gmail delete clauses as long as each clause is a complete top-level search. The bridge caps Gmail OR fan-out at 10 top-level clauses by default; set `TOOLRUNNER_GMAIL_OR_CLAUSE_LIMIT` to adjust it. If the agent accidentally writes `from:@domain.com` or adds stray spaces after query tokens, the bridge normalizes that to the canonical Gmail form. Use account_scope=all when you want that query-based cleanup to fan out across every active connected account in the workspace. "
     "Calendar queries are local-time oriented: use the user's local time first, not GMT or Zulu, unless you convert from local time before querying. "
+    "If a timezone is omitted, the bridge assumes the local Tango timezone from `TIME_ZONE` / `settings.TIME_ZONE`. "
     "If the user's local time is unknown, assume Eastern Time (EST/EDT as appropriate for daylight savings). "
     "The contract is intentionally forward-compatible so future Google surfaces like People, Places, Drive, and Sheets can reuse the same bridge pattern."
 )
@@ -134,15 +135,15 @@ def _google_bridge_step_schema() -> dict[str, object]:
             },
             "start": {
                 "type": "string",
-                "description": "Calendar mutation field. Event start in local time unless an explicit offset is supplied. Use the user's local time zone when one is known; otherwise assume Eastern Time (EST/EDT as appropriate for daylight savings).",
+                "description": "Calendar mutation field. Event start in local time unless an explicit offset is supplied. Use the user's local time zone when one is known; otherwise the bridge assumes the local Tango timezone from `TIME_ZONE` / `settings.TIME_ZONE`.",
             },
             "end": {
                 "type": "string",
-                "description": "Calendar mutation field. Event end in local time unless an explicit offset is supplied. Use the user's local time zone when one is known; otherwise assume Eastern Time (EST/EDT as appropriate for daylight savings).",
+                "description": "Calendar mutation field. Event end in local time unless an explicit offset is supplied. Use the user's local time zone when one is known; otherwise the bridge assumes the local Tango timezone from `TIME_ZONE` / `settings.TIME_ZONE`.",
             },
             "time_zone": {
                 "type": "string",
-                "description": "Calendar mutation field. IANA time zone name for calendar writes. Use the user's local time zone; if unknown, default to America/New_York.",
+                "description": "Calendar mutation field. IANA time zone name for calendar writes. Use the user's local time zone; if unknown, default to the local Tango timezone from `TIME_ZONE` / `settings.TIME_ZONE`.",
             },
             "attendees": {
                 "type": "array",
@@ -155,11 +156,11 @@ def _google_bridge_step_schema() -> dict[str, object]:
             },
             "time_min": {
                 "type": "string",
-                "description": "Optional calendar lower bound timestamp in local time. Do not use GMT or Zulu unless you first convert to local time. If local time is unknown, assume Eastern Time (EST/EDT as appropriate for daylight savings).",
+                "description": "Optional calendar lower bound timestamp in local time. Do not use GMT or Zulu unless you first convert to local time. If local time is unknown, assume the local Tango timezone from `TIME_ZONE` / `settings.TIME_ZONE`.",
             },
             "time_max": {
                 "type": "string",
-                "description": "Optional calendar upper bound timestamp in local time. Do not use GMT or Zulu unless you first convert to local time. If local time is unknown, assume Eastern Time (EST/EDT as appropriate for daylight savings).",
+                "description": "Optional calendar upper bound timestamp in local time. Do not use GMT or Zulu unless you first convert to local time. If local time is unknown, assume the local Tango timezone from `TIME_ZONE` / `settings.TIME_ZONE`.",
             },
             "event_id": {
                 "type": "string",

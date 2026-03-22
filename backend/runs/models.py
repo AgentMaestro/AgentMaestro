@@ -114,6 +114,7 @@ class AgentRun(TimeStampedModel):
     ended_at = models.DateTimeField(null=True, blank=True, db_index=True)
     error_summary = models.TextField(blank=True, default="")
     previous_response_id = models.CharField(max_length=128, blank=True, default="")
+    agents_md_bootstrap_complete = models.BooleanField(default=False)
     current_task_id = models.CharField(max_length=64, blank=True, default="")
     correlation_id = models.UUIDField(default=uuid.uuid4, db_index=True)
     archived_at = models.DateTimeField(null=True, blank=True, db_index=True)

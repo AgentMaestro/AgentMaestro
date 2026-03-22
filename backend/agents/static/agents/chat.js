@@ -420,6 +420,29 @@
         runTimelineLink.classList.remove("hidden");
     };
 
+    const copyTextToClipboard = async (text) => {
+        const content = String(text || "");
+        if (!content) {
+            return false;
+        }
+        if (navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
+            await navigator.clipboard.writeText(content);
+            return true;
+        }
+        const fallback = document.createElement("textarea");
+        fallback.value = content;
+        fallback.setAttribute("readonly", "true");
+        fallback.style.position = "fixed";
+        fallback.style.opacity = "0";
+        fallback.style.pointerEvents = "none";
+        fallback.style.left = "-9999px";
+        document.body.appendChild(fallback);
+        fallback.select();
+        const copied = document.execCommand("copy");
+        fallback.remove();
+        return copied;
+    };
+
     const appendSystemMessage = (text, kind = "connection") => {
         appendMessage({
             role: "system",
@@ -561,7 +584,9 @@
         }
     };
 
-    updateRunTimelineLink(readStoredRunId());
+    // Prefer the server-reported dashboard run over any stale session-stored run.
+    // The stored value is still used later as a reconnect fallback when no current run exists.
+    updateRunTimelineLink(currentRunId || null);
 
     const ensureRunId = async ({fromRunId = "", rotationReason = ""} = {}) => {
         if (!activeRunId && currentRunId && !fromRunId) {
@@ -1024,6 +1049,35 @@
         setMessageBodyContent(body, payload.text || "", {
             markdown: !isCollapsibleTransportSystemMessage(payload),
         });
+
+        if (roleName === "assistant") {
+            const actions = document.createElement("div");
+            actions.className = "chat-message-actions";
+            const copyButton = document.createElement("button");
+            copyButton.type = "button";
+            copyButton.className = "chat-message-copy";
+            copyButton.title = "Copy response";
+            copyButton.setAttribute("aria-label", "Copy response");
+            copyButton.textContent = "⧉";
+            copyButton.addEventListener("click", async () => {
+                try {
+                    const copied = await copyTextToClipboard(body.innerText || body.textContent || payload.text || "");
+                    if (!copied) {
+                        return;
+                    }
+                    copyButton.classList.add("is-copied");
+                    copyButton.textContent = "✓";
+                    window.setTimeout(() => {
+                        copyButton.classList.remove("is-copied");
+                        copyButton.textContent = "⧉";
+                    }, 1200);
+                } catch (error) {
+                    console.warn("Unable to copy assistant response", error);
+                }
+            });
+            actions.append(copyButton);
+            article.append(actions);
+        }
 
         if (isCollapsibleTransportSystemMessage(payload)) {
             article.classList.add("chat-message-transport-log");

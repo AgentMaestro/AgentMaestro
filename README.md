@@ -12,7 +12,7 @@ and production-safe.
 
 ------------------------------------------------------------------------
 
-# Current Capabilities (Mar 20, 2026)
+# Current Capabilities (Mar 22, 2026)
 
 - Full agent runtime with event loop
 - ToolRunner execution system (async-ready)
@@ -21,7 +21,17 @@ and production-safe.
 - Provider/system transport logs now support condensed or raw JSON mode
 - Multi-agent switching capability
 - Full developer and researcher tool suite
-- Google Bridge Gmail and Calendar read/write support
+- Code navigation tools for fast workspace search and symbol lookup: `search_files`, `list_symbols`, `find_symbol`, `find_references`, and `jump_to_symbol`
+- `search_files` is path/name-only, not content search; use `search_code` for text or regex content searches. Search one path/name query at a time; use separate calls for unrelated targets, and use `|` only inside `is_regex=true` queries
+- Code navigation tools support `compact=true` for a smaller standardized `items` payload, and they should be used sequentially one call at a time when precision matters
+- `search_code` remains the content search tool, with regex alternation via `|` when `is_regex=true`
+- Google Bridge Gmail and Calendar read/write support, including top-level Gmail query OR splitting for list/read and bulk trash/delete, with a 10-clause default cap and account_scope=all fan-out
+- Native `google_bridge` tool for Gmail/Calendar reads, Gmail draft/send/trash/delete, and Calendar create/update/delete workflows
+- `get_current_datetime` utility for ISO 8601 local time in the Tango timezone
+- Initial system context seeds the current local datetime and timezone for relative-date resolution
+- Relative dates like "tomorrow" use the local Tango timezone from `TIME_ZONE` / `settings.TIME_ZONE` (an IANA timezone name such as `America/New_York`)
+- Scheduling and Calendar date arguments default to the same local Tango timezone when an explicit timezone is omitted
+- Run timeline debug page for AgentStep inspection
 - Safe bounded command execution and repo-scripted test runners
 - Telegram communication channel
 - Memory (STM + LTM)
@@ -165,7 +175,7 @@ Parent/child relationships are first-class, enabling:
 - **Workspace isolation:** each Agent, AgentRun, and ToolCall belongs to a workspace that owns ToolDefinitions. Only enabled ToolDefinitions may appear in the wizard or be granted to agents.
 - **Tool policy hierarchy:** workspace shelves control which tools are visible, released gating keeps unreleased functionality locked for non-superusers, and AgentToolGrant enforces explicit enablement (default-deny) before an AI can invoke a tool.
 - **Risk tiers & approvals:** tools are classified as SAFE, ELEVATED, or DANGEROUS. Elevated/Dangerous calls create ToolCalls with status PENDING_APPROVAL; manual approval (via the WS approval card) progresses them to QUEUED/RUNNING while denials emit audit-friendly observations back to the provider.
-- **Bounded developer execution:** `run_command_safe` is the no-approval path for tightly allowlisted developer commands inside the workspace. Git is excluded from that surface and must go through the dedicated `git_*` tools. `run_tests` is limited to the repo-owned PowerShell test entrypoints.
+- **Bounded developer execution:** `run_command_safe` is the no-approval path for tightly allowlisted developer commands inside the workspace. Allowed executables are limited to `python`, `pytest`, `ruff`, `mypy`, `uv`, and `django-admin`. Git is excluded from that surface and must go through the dedicated `git_*` tools. Common rejected examples include `git status`, `pip install`, `python manage.py runserver`, and chained shell commands. `run_tests` is limited to the repo-owned PowerShell test entrypoints.
 - **Async Celery execution:** approved tool calls enqueue `tools.execute_tool_call_async`, register `celery_task_id`, and persist the result or error payload. Completion events publish via the channel layer so the WebSocket consumer can resume the OpenAI session with the tool output without polling.
 - **Persisted observability:** every user/assistant/tool turn is stored as `LLMMessage` linked to `AgentRun` <-> `LLMRun`. The `/agents/<slug>/` page replays the last 50 turns, while RunEvents and ToolCalls provide a durable audit trail.
 - **Pairing & transport security:** pairing codes bind chat IDs to endpoints; Telegram adapters accept `/pair <code>` only from allowlisted users, and transports remain dormant until a valid pairing claims the conversation. Secrets (bot tokens, chat IDs, Celery credentials) stay in `.env` and are never logged.

@@ -285,6 +285,11 @@ def _set_run_previous_response_id(run_id: str, previous_response_id: str | None)
 
 
 @database_sync_to_async
+def _set_run_agents_md_bootstrap_complete(run_id: str, complete: bool = True) -> None:
+    AgentRun.objects.filter(id=run_id).update(agents_md_bootstrap_complete=bool(complete))
+
+
+@database_sync_to_async
 def _get_run_handoff(run_id: str) -> dict[str, object] | None:
     if not run_id:
         return None
@@ -432,6 +437,9 @@ def _payload_mentions_agents_md(value: object) -> bool:
 def _run_has_agents_md_bootstrap_complete(run_id: str) -> bool:
     if not run_id:
         return False
+    cached = AgentRun.objects.filter(id=run_id).values_list("agents_md_bootstrap_complete", flat=True).first()
+    if cached:
+        return True
     events = RunEvent.objects.filter(
         run_id=run_id,
         event_type__in=["tool_call_completed", AGENTS_MD_BOOTSTRAP_EVENT],
@@ -788,6 +796,7 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
         self.run_id = str(run.id)
         hydrated_previous_response_id = str(getattr(run, "previous_response_id", "") or "").strip() or None
         self._response_chain_previous_id = hydrated_previous_response_id
+        self._agents_md_bootstrap_complete = bool(getattr(run, "agents_md_bootstrap_complete", False))
         await self._hydrate_agents_md_bootstrap_state()
         layer = getattr(self, "channel_layer", None)
         logger.info(
@@ -1318,7 +1327,16 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
             self._pending_provider_call_ids.clear()
             self._awaiting_tool_output = False
             return set()
-        outstanding_provider_call_ids = set(await _get_outstanding_provider_call_ids(str(self.run_id)))
+        try:
+            outstanding_provider_call_ids = set(await _get_outstanding_provider_call_ids(str(self.run_id)))
+        except RuntimeError as exc:
+            if "Database access not allowed" in str(exc):
+                logger.debug(
+                    "Skipping outstanding provider call sync because database access is unavailable run=%s",
+                    self.run_id,
+                )
+                return set(self._pending_provider_call_ids)
+            raise
         self._pending_provider_call_ids = set(outstanding_provider_call_ids)
         self._awaiting_tool_output = bool(outstanding_provider_call_ids)
         if outstanding_provider_call_ids:
@@ -1986,6 +2004,10 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
             return
         self._agents_md_bootstrap_complete = await _run_has_agents_md_bootstrap_complete(self.run_id)
         if self._agents_md_bootstrap_complete:
+            try:
+                await _set_run_agents_md_bootstrap_complete(self.run_id, True)
+            except Exception:
+                logger.exception("Failed to persist AGENTS.md bootstrap completion run=%s", self.run_id)
             logger.info("Restored AGENTS.md bootstrap completion run=%s", self.run_id)
 
     def _ensure_system_context(self) -> None:
@@ -2141,6 +2163,15 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
                         except Exception:
                             logger.exception(
                                 "Failed to persist AGENTS.md bootstrap marker run=%s tool_call_id=%s path=%s",
+                                self.run_id,
+                                tool_call_id,
+                                path_value,
+                            )
+                        try:
+                            await _set_run_agents_md_bootstrap_complete(self.run_id, True)
+                        except Exception:
+                            logger.exception(
+                                "Failed to persist AGENTS.md bootstrap completion flag run=%s tool_call_id=%s path=%s",
                                 self.run_id,
                                 tool_call_id,
                                 path_value,

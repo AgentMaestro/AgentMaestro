@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Sequence
 
 from fastapi.responses import JSONResponse
 
@@ -79,7 +79,11 @@ def list_repo_tree(run_dir: Path, args: RepoTreeArgs, policy: dict | None = None
         try:
             root_path = resolve_policy_path(run_dir, requested_path, policy)
         except ValueError as exc:
-            error_code = "PATH_OUTSIDE_WORKSPACE" if "path traversal outside of workspace" in str(exc) else "PATH_NOT_ALLOWED"
+            error_code = (
+                "PATH_OUTSIDE_WORKSPACE"
+                if "path traversal outside of workspace" in str(exc)
+                else "PATH_NOT_ALLOWED"
+            )
             return _error(error_code, str(exc), extra_patterns=args.exclude_globs)
         if candidate.is_absolute():
             workspace_context = root_path
@@ -172,11 +176,17 @@ def list_repo_tree(run_dir: Path, args: RepoTreeArgs, policy: dict | None = None
         }
 
     if root_path.is_file():
-        if args.include_files and not _should_exclude(root_path, False) and _passes_include(root_path, False):
+        if (
+            args.include_files
+            and not _should_exclude(root_path, False)
+            and _passes_include(root_path, False)
+        ):
             depth = _depth_for_entry(root_path)
             _append_entry(root_path, "file", depth)
         result = {
             "root": args.path,
+            "requested_root": args.path,
+            "resolved_root": str(root_path),
             "max_depth": args.max_depth,
             "truncated": truncated,
             "entries": sorted(entries, key=lambda entry: entry["path"]),
@@ -193,7 +203,9 @@ def list_repo_tree(run_dir: Path, args: RepoTreeArgs, policy: dict | None = None
             break
         current_root_path = Path(current_root)
         try:
-            current_depth = len([part for part in current_root_path.relative_to(root_path).parts if part != "."])
+            current_depth = len(
+                [part for part in current_root_path.relative_to(root_path).parts if part != "."]
+            )
         except ValueError:
             current_depth = 0
         if args.max_depth >= 0 and current_depth >= args.max_depth:
@@ -235,13 +247,11 @@ def list_repo_tree(run_dir: Path, args: RepoTreeArgs, policy: dict | None = None
 
     result = {
         "root": args.path,
+        "requested_root": args.path,
+        "resolved_root": str(root_path),
         "max_depth": args.max_depth,
         "truncated": truncated,
         "entries": sorted(entries, key=lambda entry: entry["path"]),
         "stats": _build_stats(),
     }
-    policy_meta = policy_metadata(args.exclude_globs)
-    return JSONResponse(
-        status_code=200,
-        content={"ok": True, "result": result, "meta": {"policy": policy_meta}},
-    )
+    policy_meta = policy_me

@@ -10,6 +10,7 @@ from django.core.exceptions import ValidationError
 from django.db import transaction
 from django.utils import timezone
 
+from core.services.timezones import get_local_timezone_name
 from memory.models import MemoryRecord, RecurrenceRule, ScheduledTask
 from memory.recurrence import describe_recurrence_rule, get_next_occurrence, normalize_recurrence_rule_data
 from memory.services import remember
@@ -398,9 +399,10 @@ def _resolve_recurrence_rule(
             recurrence_rule.save()
         return recurrence_rule
 
+    timezone_name = timezone_name or get_local_timezone_name()
     if recurrence_config is None:
-        if local_time_value is None or timezone_name is None:
-            raise ScheduledTaskConfigurationError("timezone and local_time are required when no recurrence rule is supplied.")
+        if local_time_value is None:
+            raise ScheduledTaskConfigurationError("local_time is required when no recurrence rule is supplied.")
         normalized_timezone = _normalize_timezone_name(timezone_name)
         recurrence_config = {
             "name": title,
@@ -415,8 +417,7 @@ def _resolve_recurrence_rule(
     else:
         recurrence_config = dict(recurrence_config)
         recurrence_config.setdefault("name", title)
-        if timezone_name and "timezone" not in recurrence_config:
-            recurrence_config["timezone"] = _normalize_timezone_name(timezone_name)
+        recurrence_config.setdefault("timezone", timezone_name)
         if local_time_value is not None and "local_time" not in recurrence_config and "run_minute" not in recurrence_config:
             recurrence_config["local_time"] = _normalize_local_time(local_time_value)
         if recurrence_config.get("start_date") in (None, "") and recurrence_config.get("timezone"):

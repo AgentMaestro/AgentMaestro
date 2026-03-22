@@ -11,10 +11,11 @@ from django.conf import settings
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 
+from core.services.timezones import get_current_datetime_iso8601, get_local_timezone_name, get_tango_timezone_name
 from tools.models import ToolDefinition
 from tools.services.tool_validation import ToolArgumentValidationError, validate_required_tool_arguments
 
-_NATIVE_TOOL_NAMES = {"remember", "search_memory", "schedule_task", "list_scheduled_tasks", "edit_scheduled_task", "disable_scheduled_task", "enable_scheduled_task", "spawn_subrun", "google_bridge"}
+_NATIVE_TOOL_NAMES = {"remember", "search_memory", "get_current_datetime", "schedule_task", "list_scheduled_tasks", "edit_scheduled_task", "disable_scheduled_task", "enable_scheduled_task", "spawn_subrun", "google_bridge"}
 
 
 def _sign(body: bytes, secret: bytes) -> tuple[str, str]:
@@ -159,13 +160,20 @@ def _run_native_tool(tool_name: str, args: Dict[str, Any], orchestration_run_id:
         }
         return {"ok": True, "result": result, "meta": {"native": True}, "error": None}
 
+    if tool_name == "get_current_datetime":
+        result = {
+            "datetime": get_current_datetime_iso8601(),
+            "timezone": get_tango_timezone_name(),
+        }
+        return {"ok": True, "result": result, "meta": {"native": True}, "error": None}
+
     if tool_name == "schedule_task":
         scheduled_task = create_scheduled_task(
             agent=run.agent,
             owner=run.started_by or run.agent.owner,
             task_type="other_task",
             local_time_value=str(args.get("local_time") or "08:00"),
-            timezone_name=str(args.get("timezone") or "UTC"),
+            timezone_name=str(args.get("timezone") or get_local_timezone_name()),
             title=str(args.get("title") or ""),
             execution_payload=dict(args.get("execution_payload") or {}),
             execution_mode=str(args.get("execution_mode") or "headless_run"),

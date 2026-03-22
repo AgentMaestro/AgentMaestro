@@ -88,6 +88,8 @@ def test_run_command_safe_rejects_workspace_escape(tmp_path: Path):
     payload = _payload(response)
     assert not payload["ok"]
     assert "path traversal" in payload["result"]["policy_reason"]
+    assert "workspace_root=" in payload["result"]["policy_reason"]
+    assert "allowed_roots=" in payload["result"]["policy_reason"]
 
 
 def test_run_command_safe_timeout_sets_structured_result(tmp_path: Path, monkeypatch):

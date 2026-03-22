@@ -11,6 +11,7 @@ fix = false
 select = ["E", "F", "I", "B", "UP"]
 ignore = ["E501"]  # black handles line length
 
+[tool.pytest.ini_options]
 norecursedirs = [
   "pytest_*",
   ".pytest_*",

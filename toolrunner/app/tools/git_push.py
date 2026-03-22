@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import List
 
 from fastapi.responses import JSONResponse
 
@@ -29,10 +28,14 @@ def run_git_push(run_dir: Path, args: GitPushArgs, policy: dict | None = None):
     try:
         repo_path = resolve_policy_path(run_dir, args.repo_dir or ".", policy)
     except ValueError as exc:
-        error_code = "PATH_OUTSIDE_WORKSPACE" if "path traversal outside of workspace" in str(exc) else "PATH_NOT_ALLOWED"
+        error_code = (
+            "PATH_OUTSIDE_WORKSPACE"
+            if "path traversal outside of workspace" in str(exc)
+            else "PATH_NOT_ALLOWED"
+        )
         return _error_response(error_code, str(exc))
 
-    command: List[str] = ["git", "push"]
+    command: list[str] = ["git", "push"]
     if args.set_upstream:
         command.append("-u")
     command.append(args.remote)

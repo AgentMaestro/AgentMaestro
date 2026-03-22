@@ -86,6 +86,20 @@ def _assert_workspace_access(user, workspace_id: str):
         raise PermissionDenied("Workspace membership required")
 
 
+def _assert_run_access(user, run: AgentRun):
+    if not user or not user.is_authenticated:
+        raise PermissionDenied("Authentication required")
+    if run.agent.owner_id == user.id:
+        return
+    if WorkspaceMembership.objects.filter(
+        workspace_id=run.workspace_id,
+        user=user,
+        is_active=True,
+    ).exists():
+        return
+    raise PermissionDenied("Workspace access required")
+
+
 
 @require_http_methods(["GET", "POST"])
 def dev_start_run(request):
@@ -144,7 +158,7 @@ def dev_start_run(request):
 
 def run_detail(request, run_id: str):
     run = get_object_or_404(AgentRun.objects.select_related("workspace", "agent"), id=run_id)
-    _assert_workspace_access(request.user, run.workspace_id)
+    _assert_run_access(request.user, run)
     return render(
         request,
         "ui/run_detail.html",
@@ -157,14 +171,14 @@ def run_detail(request, run_id: str):
 
 def run_snapshot(request, run_id: str):
     run = get_object_or_404(AgentRun, id=run_id)
-    _assert_workspace_access(request.user, run.workspace_id)
+    _assert_run_access(request.user, run)
     snapshot = get_run_snapshot(run_id=run_id)
     return JsonResponse(snapshot)
 
 
 def download_run_archive(request, run_id: str, archive_id: str):
     run = get_object_or_404(AgentRun.objects.select_related("workspace"), id=run_id)
-    _assert_workspace_access(request.user, run.workspace_id)
+    _assert_run_access(request.user, run)
     archive = get_object_or_404(RunArchive, id=archive_id, run=run)
     archive_path = Path(archive.archive_path)
     if not archive_path.exists():

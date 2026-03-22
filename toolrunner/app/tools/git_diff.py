@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import List
 
 from fastapi.responses import JSONResponse
 
@@ -33,23 +32,31 @@ def run_git_diff(run_dir: Path, args: GitDiffArgs, policy: dict | None = None):
     try:
         repo_path = resolve_policy_path(run_dir, args.repo_dir or ".", policy)
     except ValueError as exc:
-        error_code = "PATH_OUTSIDE_WORKSPACE" if "path traversal outside of workspace" in str(exc) else "PATH_NOT_ALLOWED"
+        error_code = (
+            "PATH_OUTSIDE_WORKSPACE"
+            if "path traversal outside of workspace" in str(exc)
+            else "PATH_NOT_ALLOWED"
+        )
         return _error_response(error_code, str(exc))
 
-    command: List[str] = ["git", "diff"]
+    command: list[str] = ["git", "diff"]
     if args.staged:
         command = ["git", "diff", "--cached"]
     if args.detect_renames:
         command.append("--find-renames")
     if args.context_lines is not None:
         command.append(f"-U{args.context_lines}")
-    normalized_paths: List[str] = []
+    normalized_paths: list[str] = []
     if args.paths:
         for rel_path in args.paths:
             try:
                 target = resolve_path_from_base(repo_path, rel_path, policy)
             except ValueError as exc:
-                error_code = "PATH_OUTSIDE_WORKSPACE" if "path traversal outside of workspace" in str(exc) else "PATH_NOT_ALLOWED"
+                error_code = (
+                    "PATH_OUTSIDE_WORKSPACE"
+                    if "path traversal outside of workspace" in str(exc)
+                    else "PATH_NOT_ALLOWED"
+                )
                 return _error_response(error_code, str(exc))
             try:
                 rel = target.relative_to(repo_path).as_posix()

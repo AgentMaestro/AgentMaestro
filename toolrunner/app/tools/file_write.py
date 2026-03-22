@@ -1,10 +1,9 @@
-
 from __future__ import annotations
 
 import base64
-from hashlib import sha256
 import os
 import tempfile
+from hashlib import sha256
 from pathlib import Path
 from typing import Any
 
@@ -23,7 +22,6 @@ from ..config import (
 )
 from ..models import FileWriteArgs
 from .path_filters import first_matching_pattern, glob_candidates
-
 
 FILE_WRITE_POLICY_META = policy_metadata()
 
@@ -62,7 +60,11 @@ def write_file(run_dir: Path, args: FileWriteArgs, policy: dict[str, Any] | None
     try:
         target = resolve_policy_path(run_dir, args.path, policy)
     except ValueError as exc:
-        error_code = "PATH_OUTSIDE_WORKSPACE" if "path traversal outside of workspace" in str(exc) else "PATH_NOT_ALLOWED"
+        error_code = (
+            "PATH_OUTSIDE_WORKSPACE"
+            if "path traversal outside of workspace" in str(exc)
+            else "PATH_NOT_ALLOWED"
+        )
         return _error_response(error_code, str(exc))
 
     if not is_under_allowed_root(target, (allowed_context_root, *policy_roots)):
@@ -144,9 +146,12 @@ def write_file(run_dir: Path, args: FileWriteArgs, policy: dict[str, Any] | None
             "ok": True,
             "result": {
                 "path": args.path,
+                "requested_path": args.path,
+                "requested_root": args.absolute_root or None,
                 "bytes_written": bytes_written,
                 "sha256": sha,
                 "resolved_path": resolved_path,
+                "resolved_root": str(target.parent.resolve()),
                 "created": not existed,
                 "overwritten": existed,
             },

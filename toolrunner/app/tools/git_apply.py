@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import List
 
 from fastapi.responses import JSONResponse
 
@@ -77,10 +76,14 @@ def run_git_apply(run_dir: Path, args: GitApplyArgs, policy: dict | None = None)
         repo_dir = args.repo_dir or "."
         repo_path = resolve_policy_path(run_dir, repo_dir, policy)
     except ValueError as exc:
-        error_code = "PATH_OUTSIDE_WORKSPACE" if "path traversal outside of workspace" in str(exc) else "PATH_NOT_ALLOWED"
+        error_code = (
+            "PATH_OUTSIDE_WORKSPACE"
+            if "path traversal outside of workspace" in str(exc)
+            else "PATH_NOT_ALLOWED"
+        )
         return _error_response(error_code, str(exc))
 
-    command: List[str] = ["git", "apply"]
+    command: list[str] = ["git", "apply"]
     command.append(f"-p{args.strip_prefix}")
     if args.reject:
         command.append("--reject")

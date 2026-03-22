@@ -54,7 +54,7 @@ def _read_text(target: Path, args: FileReadArgs) -> dict:
     try:
         handle = target.open("r", encoding=args.encoding, errors="replace")
     except (LookupError, UnicodeError) as exc:
-        raise FileReadError("UNSUPPORTED_ENCODING", str(exc))
+        raise FileReadError("UNSUPPORTED_ENCODING", str(exc)) from exc
     with handle:
         for lineno, line in enumerate(handle, start=1):
             total_lines += 1
@@ -74,6 +74,10 @@ def _read_text(target: Path, args: FileReadArgs) -> dict:
             bytes_accum += len(encoded)
     return {
         "path": args.path,
+        "requested_path": args.path,
+        "resolved_path": str(target),
+        "requested_root": args.absolute_root or None,
+        "resolved_root": str(target.parent),
         "mode": "text",
         "encoding": args.encoding,
         "content": "".join(collected),
@@ -91,6 +95,10 @@ def _read_binary(target: Path, args: FileReadArgs) -> dict:
     data = payload[: args.max_bytes]
     return {
         "path": args.path,
+        "requested_path": args.path,
+        "resolved_path": str(target),
+        "requested_root": args.absolute_root or None,
+        "resolved_root": str(target.parent),
         "mode": "binary",
         "content_base64": base64.b64encode(data).decode("ascii"),
         "byte_length": len(data),
@@ -111,7 +119,11 @@ def read_file(run_dir: Path, args: FileReadArgs, policy: dict | None = None):
         try:
             target = resolve_path_from_base(base_dir, args.path, policy)
         except ValueError as exc:
-            error_code = "PATH_OUTSIDE_WORKSPACE" if "path traversal outside of workspace" in str(exc) else "PATH_NOT_ALLOWED"
+            error_code = (
+                "PATH_OUTSIDE_WORKSPACE"
+                if "path traversal outside of workspace" in str(exc)
+                else "PATH_NOT_ALLOWED"
+            )
             return _error_response(error_code, str(exc))
     else:
         base_dir = policy_runtime_root(policy, "repo_root") or run_dir.resolve()
@@ -119,7 +131,11 @@ def read_file(run_dir: Path, args: FileReadArgs, policy: dict | None = None):
         try:
             target = resolve_policy_path(run_dir, args.path, policy)
         except ValueError as exc:
-            error_code = "PATH_OUTSIDE_WORKSPACE" if "path traversal outside of workspace" in str(exc) else "PATH_NOT_ALLOWED"
+            error_code = (
+                "PATH_OUTSIDE_WORKSPACE"
+                if "path traversal outside of workspace" in str(exc)
+                else "PATH_NOT_ALLOWED"
+            )
             return _error_response(error_code, str(exc))
 
     if not is_under_allowed_root(target, (allowed_context_root, *policy_roots)):
@@ -139,7 +155,9 @@ def read_file(run_dir: Path, args: FileReadArgs, policy: dict | None = None):
     if args.end_line:
         start_line = args.start_line or 1
         if args.end_line - start_line + 1 > MAX_LINE_RANGE:
-            return _error_response("TOO_LARGE", "Requested line range exceeds maximum permitted number of lines")
+            return _error_response(
+                "TOO_LARGE", "Requested line range exceeds maximum permitted number of lines"
+            )
     if not args.start_line and not args.end_line and size > HARD_SIZE_LIMIT:
         return _error_response("TOO_LARGE", "File exceeds maximum permitted size")
     if args.mode == "text":

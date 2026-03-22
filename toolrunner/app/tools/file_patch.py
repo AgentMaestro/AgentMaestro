@@ -4,13 +4,12 @@ import hashlib
 import re
 import shutil
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-from fastapi.responses import JSONResponse
-
 import pypatch.patch as patch_parser
+from fastapi.responses import JSONResponse
 
 from ..config import (
     EXCLUDE_FROM_SEARCH_LIST,
@@ -73,7 +72,7 @@ def _sha256(path: Path) -> str:
 def _ensure_backup(target: Path, run_dir: Path) -> Path:
     backup_dir = run_dir / BACKUP_DIR / _storage_subdir(run_dir, target)
     backup_dir.mkdir(parents=True, exist_ok=True)
-    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    ts = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     backup_path = backup_dir / f"{target.name}.{ts}.bak"
     shutil.copy2(target, backup_path)
     return backup_path
@@ -82,7 +81,7 @@ def _ensure_backup(target: Path, run_dir: Path) -> Path:
 def _write_rejects(run_dir: Path, target: Path, patch_text: str) -> Path:
     rejects_dir = run_dir / REJECT_DIR / _storage_subdir(run_dir, target)
     rejects_dir.mkdir(parents=True, exist_ok=True)
-    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    ts = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     rejects_path = rejects_dir / f"{target.name}.{ts}.rej"
     rejects_path.write_text(patch_text)
     return rejects_path
@@ -128,11 +127,7 @@ def _split_path_suffix(value: str) -> tuple[str, str]:
 
 def _split_path_parts(path: str) -> list[str]:
     normalized = path.replace("\\", "/")
-    return [
-        part
-        for part in PurePosixPath(normalized).parts
-        if part and part != "."
-    ]
+    return [part for part in PurePosixPath(normalized).parts if part and part != "."]
 
 
 def _strip_path_components(path: str, strip_prefix: int) -> str:
@@ -200,12 +195,18 @@ def _detect_strip_prefix(target_path: str, patch_text: str) -> int:
         if not candidate or candidate == "/dev/null":
             continue
         candidate_parts = _split_path_parts(candidate)
-        if len(candidate_parts) >= len(target_parts) and candidate_parts[-len(target_parts) :] == target_parts:
+        if (
+            len(candidate_parts) >= len(target_parts)
+            and candidate_parts[-len(target_parts) :] == target_parts
+        ):
             prefix = len(candidate_parts) - len(target_parts)
             if prefix > 0:
                 return prefix
             return 0
-        if len(candidate_parts) < len(target_parts) and target_parts[-len(candidate_parts) :] == candidate_parts:
+        if (
+            len(candidate_parts) < len(target_parts)
+            and target_parts[-len(candidate_parts) :] == candidate_parts
+        ):
             return 0
     return 0
 
@@ -237,17 +238,19 @@ def _parse_patch_hunks(patch_text: str, path: str) -> list[PatchHunk]:
         raise ValueError("patch does not contain any files")
     hunks: list[PatchHunk] = []
     filtered_items = [
-        item
-        for item in patchset.items
-        if item.target and _paths_match(item.target, path)
+        item for item in patchset.items if item.target and _paths_match(item.target, path)
     ]
     if not filtered_items:
         raise ValueError("patch does not contain hunks for the requested file")
     for item in filtered_items:
         for hunk in item.hunks:
             lines = [line for line in hunk.text]
-            old_len = hunk.linessrc or sum(1 for line in lines if line.startswith(" ") or line.startswith("-"))
-            new_len = hunk.linestgt or sum(1 for line in lines if line.startswith(" ") or line.startswith("+"))
+            old_len = hunk.linessrc or sum(
+                1 for line in lines if line.startswith(" ") or line.startswith("-")
+            )
+            new_len = hunk.linestgt or sum(
+                1 for line in lines if line.startswith(" ") or line.startswith("+")
+            )
             hunks.append(
                 PatchHunk(
                     hunk.startsrc or 1,
@@ -270,8 +273,7 @@ def _validate_hunk_headers(patch_text: str) -> str | None:
         if _EXPLICIT_HUNK_HEADER_RE.match(line):
             continue
         return (
-            "invalid hunk header; use explicit ranges like "
-            "`@@ -1,3 +1,4 @@` or `@@ -0,0 +1,2 @@`"
+            "invalid hunk header; use explicit ranges like `@@ -1,3 +1,4 @@` or `@@ -0,0 +1,2 @@`"
         )
     if not saw_header:
         return "patch does not contain any @@ hunk headers"
@@ -333,7 +335,11 @@ def apply_patch(run_dir: Path, args: FilePatchArgs, policy: dict[str, Any] | Non
         run_dir = run_dir.resolve()
         target = resolve_policy_path(run_dir, args.path, policy)
     except ValueError as exc:
-        error_code = "PATH_OUTSIDE_WORKSPACE" if "path traversal outside of workspace" in str(exc) else "PATH_NOT_ALLOWED"
+        error_code = (
+            "PATH_OUTSIDE_WORKSPACE"
+            if "path traversal outside of workspace" in str(exc)
+            else "PATH_NOT_ALLOWED"
+        )
         return _error(error_code, str(exc))
 
     if not is_under_allowed_root(target, (allowed_context_root, *policy_roots)):

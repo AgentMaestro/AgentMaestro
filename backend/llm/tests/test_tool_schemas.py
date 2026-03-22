@@ -21,8 +21,12 @@ def test_scheduled_task_management_schema_advertises_edit_disable_enable():
     assert "enable_scheduled_task" in tool_names
 
     edit_tool = next(tool for tool in get_tool_schemas() if tool["name"] == "edit_scheduled_task")
-    disable_tool = next(tool for tool in get_tool_schemas() if tool["name"] == "disable_scheduled_task")
-    enable_tool = next(tool for tool in get_tool_schemas() if tool["name"] == "enable_scheduled_task")
+    disable_tool = next(
+        tool for tool in get_tool_schemas() if tool["name"] == "disable_scheduled_task"
+    )
+    enable_tool = next(
+        tool for tool in get_tool_schemas() if tool["name"] == "enable_scheduled_task"
+    )
 
     edit_description = edit_tool["parameters"]["description"]
     disable_description = disable_tool["parameters"]["description"]
@@ -32,7 +36,119 @@ def test_scheduled_task_management_schema_advertises_edit_disable_enable():
     assert "soft-delete" in disable_description
     assert "recomputes its next run time" in enable_description
     schedule_tool = next(tool for tool in get_tool_schemas() if tool["name"] == "schedule_task")
-    assert "list_scheduled_tasks already returns scheduled_task_id" in schedule_tool["parameters"]["description"]
+    assert (
+        "list_scheduled_tasks already returns scheduled_task_id"
+        in schedule_tool["parameters"]["description"]
+    )
+
+
+def test_get_current_datetime_schema_advertises_tango_timezone():
+    tool = next(tool for tool in get_tool_schemas() if tool["name"] == "get_current_datetime")
+
+    description = tool["parameters"]["description"]
+
+    assert "Tango timezone" in description
+    assert "takes no arguments" in description
+    assert "ISO 8601" in description
+    assert "datetime" in description
+
+
+def test_code_navigation_schemas_advertise_navigation_workflow():
+    tool_names = {tool["name"] for tool in get_tool_schemas()}
+
+    for tool_name in {
+        "search_files",
+        "list_symbols",
+        "find_symbol",
+        "find_references",
+        "jump_to_symbol",
+    }:
+        assert tool_name in tool_names
+
+    search_files = next(tool for tool in get_tool_schemas() if tool["name"] == "search_files")
+    list_symbols = next(tool for tool in get_tool_schemas() if tool["name"] == "list_symbols")
+    find_symbol = next(tool for tool in get_tool_schemas() if tool["name"] == "find_symbol")
+    find_references = next(tool for tool in get_tool_schemas() if tool["name"] == "find_references")
+
+    assert "does not search file contents" in search_files["parameters"]["description"]
+    assert "Use this when" in search_files["parameters"]["description"]
+    assert "Do not use it for content search" in search_files["parameters"]["description"]
+    assert "Search one path/name query at a time" in search_files["parameters"]["description"]
+    assert "scope may point to a file" in search_files["parameters"]["description"].lower()
+    assert (
+        "hidden files and directories are included"
+        in search_files["parameters"]["description"].lower()
+    )
+    assert "test paths are included by default" in search_files["parameters"]["description"].lower()
+    assert "symbols found in a single file" in list_symbols["parameters"]["description"]
+    assert "exact or fuzzy" in find_symbol["parameters"]["description"]
+    assert "impact analysis" in find_references["parameters"]["description"]
+    assert "short line-numbered excerpt" in find_references["response_fields"]["items"].lower()
+    assert "first hit" in find_references["parameters"]["description"].lower()
+    assert "symbol_name" in find_symbol["parameters"]["required"]
+    assert "context_lines" in find_references["parameters"]["properties"]
+    assert "compact" in search_files["parameters"]["properties"]
+    assert "compact=true" in search_files["parameters"]["description"]
+    assert "scope" in search_files["parameters"]["properties"]
+    assert "compact" in list_symbols["parameters"]["properties"]
+    assert "scope" in list_symbols["parameters"]["properties"]
+    assert "compact" in find_symbol["parameters"]["properties"]
+    assert "scope" in find_symbol["parameters"]["properties"]
+    assert "compact" in find_references["parameters"]["properties"]
+    assert "scope" in find_references["parameters"]["properties"]
+    assert (
+        "short line-numbered excerpt"
+        in next(tool for tool in get_tool_schemas() if tool["name"] == "jump_to_symbol")[
+            "response_fields"
+        ]["items"].lower()
+    )
+    assert (
+        "short line-numbered excerpt"
+        in next(tool for tool in get_tool_schemas() if tool["name"] == "jump_to_symbol")[
+            "response_fields"
+        ]["selection_excerpt"].lower()
+    )
+    assert (
+        "scope"
+        in next(tool for tool in get_tool_schemas() if tool["name"] == "jump_to_symbol")[
+            "parameters"
+        ]["properties"]
+    )
+    for response_fields in (
+        search_files["response_fields"],
+        list_symbols["response_fields"],
+        find_symbol["response_fields"],
+        find_references["response_fields"],
+        next(tool for tool in get_tool_schemas() if tool["name"] == "jump_to_symbol")[
+            "response_fields"
+        ],
+    ):
+        assert "tool" in response_fields
+        assert "compact" in response_fields
+        assert "query" in response_fields
+        assert "scope" in response_fields
+        assert "items" in response_fields
+        assert "returned_count" in response_fields
+        assert "max_results_used" in response_fields
+        assert "selection" in response_fields
+        assert "selection_excerpt" in response_fields
+        assert "stats" in response_fields
+        assert "truncated" in response_fields
+    assert "container/scope" in list_symbols["response_fields"]["items"]
+    assert "signature" in find_symbol["response_fields"]["items"]
+    assert "container/scope" in find_symbol["response_fields"]["selection"]
+    assert (
+        "signature"
+        in next(tool for tool in get_tool_schemas() if tool["name"] == "jump_to_symbol")[
+            "response_fields"
+        ]["items"]
+    )
+    assert (
+        "container/scope"
+        in next(tool for tool in get_tool_schemas() if tool["name"] == "jump_to_symbol")[
+            "response_fields"
+        ]["selection"]
+    )
 
 
 def test_google_bridge_schema_advertises_mutation_aware_payload_contract():
@@ -58,3 +174,32 @@ def test_google_bridge_schema_advertises_mutation_aware_payload_contract():
     assert "trash/delete workflows" in action_kind
     assert "Create, update, and delete are supported for Calendar writes" in action_kind
     assert "America/New_York" in calendar_time_zone
+
+
+def test_lint_and_format_schema_advertise_cmd_only_for_command():
+    lint_tool = next(tool for tool in get_tool_schemas() if tool["name"] == "lint_runner")
+    format_tool = next(tool for tool in get_tool_schemas() if tool["name"] == "format_runner")
+
+    lint_description = lint_tool["parameters"]["description"]
+    format_description = format_tool["parameters"]["description"]
+    lint_cmd_description = lint_tool["parameters"]["properties"]["cmd"]["description"]
+    format_cmd_description = format_tool["parameters"]["properties"]["cmd"]["description"]
+
+    assert "omit `cmd` entirely" in lint_description
+    assert "omit `cmd` entirely" in format_description
+    assert "Use `cmd` only when `tool=command`" in lint_description
+    assert "Use `cmd` only when `tool=command`" in format_description
+    assert "Only valid when tool=command" in lint_cmd_description
+    assert "Only valid when tool=command" in format_cmd_description
+    for response_fields in (lint_tool["response_fields"], format_tool["response_fields"]):
+        assert "requested_cwd" in response_fields
+        assert "resolved_cwd" in response_fields
+        assert "requested_paths" in response_fields
+        assert "resolved_paths" in response_fields
+        assert "command" in response_fields
+
+
+def test_coverage_runner_schema_advertises_file_summaries():
+    coverage_tool = next(tool for tool in get_tool_schemas() if tool["name"] == "coverage_runner")
+
+    assert "coverage summaries" in coverage_tool["response_fields"]["files"]

@@ -9,15 +9,13 @@ from zoneinfo import ZoneInfo
 from django.conf import settings
 from django.utils import timezone
 
+from core.services.timezones import get_local_timezone_name
 from google_bridge.models import GoogleAccount
 from google_bridge.services.client import GoogleBridgeClient
 
 
 class GoogleBridgeTaskError(RuntimeError):
     pass
-
-
-_DEFAULT_CALENDAR_TIMEZONE = ZoneInfo("America/New_York")
 
 
 def build_google_task_objective(payload: dict | None) -> tuple[str, str]:
@@ -794,14 +792,15 @@ def _normalize_calendar_timestamp(value: object) -> str:
             "Calendar list queries require ISO 8601 timestamps. Use local time or an offset-aware timestamp."
         ) from exc
     if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=_DEFAULT_CALENDAR_TIMEZONE)
-    return parsed.astimezone(_DEFAULT_CALENDAR_TIMEZONE).isoformat()
+        parsed = parsed.replace(tzinfo=ZoneInfo(get_local_timezone_name()))
+    local_zone = ZoneInfo(get_local_timezone_name())
+    return parsed.astimezone(local_zone).isoformat()
 
 
 def _normalize_calendar_timezone_name(value: object) -> str:
     text = str(value or "").strip()
     if not text:
-        return _DEFAULT_CALENDAR_TIMEZONE.key
+        return get_local_timezone_name()
     try:
         return ZoneInfo(text).key
     except Exception as exc:

@@ -1,13 +1,15 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Sequence
 
 from ...config import resolve_path_from_base, resolve_policy_path
 
 _ALLOWED_EXECUTABLES = {"python", "pytest", "ruff", "mypy", "uv", "django-admin"}
-_EXPLICIT_GIT_MESSAGE = "git commands are not allowed via run_command_safe. Use git_* tools instead."
+_EXPLICIT_GIT_MESSAGE = (
+    "git commands are not allowed via run_command_safe. Use git_* tools instead."
+)
 _SHELL_TOKENS = ("&&", "||", ";", "|", ">>", ">", "<")
 _SENSITIVE_ARG_NAMES = {
     "token",
@@ -137,7 +139,9 @@ def _redact_command(argv: Sequence[str]) -> list[str]:
         if "=" in arg:
             name, _, _ = arg.partition("=")
             normalized_name = name.lstrip("-/").lower()
-            if normalized_name in _SENSITIVE_ARG_NAMES or any(token in normalized_name for token in _SENSITIVE_ARG_NAMES):
+            if normalized_name in _SENSITIVE_ARG_NAMES or any(
+                token in normalized_name for token in _SENSITIVE_ARG_NAMES
+            ):
                 redacted.append(f"{name}=***")
                 continue
         normalized = lowered.lstrip("-/")
@@ -334,9 +338,13 @@ def evaluate_run_command_safe(
     if _contains_wrapper(normalized_command):
         return _reject(decision, "shell wrapper execution is not allowed via run_command_safe")
     if _contains_shell_composition(normalized_command):
-        return _reject(decision, "shell composition and redirection are not allowed via run_command_safe")
+        return _reject(
+            decision, "shell composition and redirection are not allowed via run_command_safe"
+        )
     if executable not in _ALLOWED_EXECUTABLES:
-        return _reject(decision, f"executable '{raw_executable}' is not allowed via run_command_safe")
+        return _reject(
+            decision, f"executable '{raw_executable}' is not allowed via run_command_safe"
+        )
     if _has_banned_tokens(normalized_command[1:]):
         return _reject(decision, "command arguments include a disallowed operation")
 
@@ -350,4 +358,3 @@ def evaluate_run_command_safe(
     if reason:
         return _reject(decision, reason)
     return decision
-

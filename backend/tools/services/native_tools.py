@@ -3,6 +3,7 @@ from __future__ import annotations
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 
+from core.services.timezones import get_current_datetime_iso8601, get_tango_timezone_name
 from memory.scheduled_approvals import INTERNAL_HEADLESS_APPROVAL_TOOL_NAME
 from memory.models import ScheduledTask
 from memory.scheduled_tasks import (
@@ -133,6 +134,19 @@ def execute_native_tool_call(tool_call: ToolCall) -> dict[str, object]:
                     }
                     for record in records
                 ],
+            },
+        }
+    if tool_call.tool_name == "get_current_datetime":
+        return {
+            "request_id": str(tool_call.id),
+            "status": "COMPLETED",
+            "exit_code": 0,
+            "stdout": "",
+            "stderr": "",
+            "duration_ms": 0,
+            "result": {
+                "datetime": get_current_datetime_iso8601(),
+                "timezone": get_tango_timezone_name(),
             },
         }
     if tool_call.tool_name == "schedule_task":

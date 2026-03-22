@@ -192,7 +192,11 @@ AUTH_PASSWORD_VALIDATORS = [
 
 LANGUAGE_CODE = 'en-us'
 
-TIME_ZONE = 'UTC'
+# Canonical local timezone for the app and agent prompt.
+# Use an IANA timezone name such as "America/New_York", not a UTC offset.
+LOCAL_TIME_ZONE = _env_value("TIME_ZONE") or _env_value("TANGO_TIME_ZONE") or "America/New_York"
+TIME_ZONE = LOCAL_TIME_ZONE
+TANGO_TIME_ZONE = LOCAL_TIME_ZONE
 
 USE_I18N = True
 

@@ -1,7 +1,9 @@
 import asyncio
+from datetime import datetime, timezone as dt_timezone
 import pytest
 import httpx
 from django.contrib.auth import get_user_model
+from django.test import override_settings
 
 from agents.models import Agent
 from core.models import Workspace, WorkspaceMembership
@@ -102,6 +104,59 @@ def test_run_tool_executes_native_schedule_task(orchestration_run):
     payload = result["result"]
     assert payload["execution_mode"] == ScheduledTask.ExecutionMode.HEADLESS_RUN
     assert ScheduledTask.objects.filter(id=payload["scheduled_task_id"]).exists()
+
+
+@override_settings(TIME_ZONE="Europe/London")
+def test_run_tool_executes_native_schedule_task_without_timezone_defaults_to_local(orchestration_run):
+    result = asyncio.run(
+        run_tool(
+            "schedule_task",
+            {
+                "title": "daily repo backup summary",
+                "task_type": "other_task",
+                "execution_mode": "headless_run",
+                "local_time": "05:00",
+                "execution_payload": {
+                    "objective": "Create a backup commit for the repository and summarize the last 24 hours of work.",
+                    "repo_dir": "C:/Dev/AgentMaestro",
+                },
+            },
+            orchestration_run_id=str(orchestration_run.id),
+        )
+    )
+
+    assert result["ok"] is True
+    payload = result["result"]
+    assert payload["timezone"] == "Europe/London"
+    assert ScheduledTask.objects.filter(
+        id=payload["scheduled_task_id"],
+        timezone="Europe/London",
+    ).exists()
+
+
+def test_run_tool_executes_native_current_datetime(orchestration_run, monkeypatch):
+    ToolDefinition.objects.create(
+        workspace=orchestration_run.workspace,
+        name="get_current_datetime",
+        enabled=True,
+        args_schema={"type": "object", "additionalProperties": False, "properties": {}},
+    )
+
+    fixed_now = datetime(2026, 3, 21, 19, 32, 5, tzinfo=dt_timezone.utc)
+    monkeypatch.setattr("core.services.timezones.timezone.now", lambda: fixed_now)
+
+    result = asyncio.run(
+        run_tool(
+            "get_current_datetime",
+            {},
+            orchestration_run_id=str(orchestration_run.id),
+        )
+    )
+
+    assert result["ok"] is True
+    payload = result["result"]
+    assert payload["timezone"] == "America/New_York"
+    assert payload["datetime"] == "2026-03-21T15:32:05-04:00"
 
 
 

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import List
 
 from fastapi.responses import JSONResponse
 
@@ -29,22 +28,30 @@ def run_git_add(run_dir: Path, args: GitAddArgs, policy: dict | None = None):
     try:
         repo_path = resolve_policy_path(run_dir, args.repo_dir or ".", policy)
     except ValueError as exc:
-        error_code = "PATH_OUTSIDE_WORKSPACE" if "path traversal outside of workspace" in str(exc) else "PATH_NOT_ALLOWED"
+        error_code = (
+            "PATH_OUTSIDE_WORKSPACE"
+            if "path traversal outside of workspace" in str(exc)
+            else "PATH_NOT_ALLOWED"
+        )
         return _error_response(error_code, str(exc))
 
-    command: List[str] = ["git", "add"]
+    command: list[str] = ["git", "add"]
     if args.all:
         command.append("-A")
     elif args.intent_to_add:
         command.append("-N")
 
-    normalized_paths: List[str] = []
+    normalized_paths: list[str] = []
     if args.paths:
         for rel_path in args.paths:
             try:
                 target = resolve_path_from_base(repo_path, rel_path, policy)
             except ValueError as exc:
-                error_code = "PATH_OUTSIDE_WORKSPACE" if "path traversal outside of workspace" in str(exc) else "PATH_NOT_ALLOWED"
+                error_code = (
+                    "PATH_OUTSIDE_WORKSPACE"
+                    if "path traversal outside of workspace" in str(exc)
+                    else "PATH_NOT_ALLOWED"
+                )
                 return _error_response(error_code, str(exc))
             try:
                 normalized = target.relative_to(repo_path).as_posix()

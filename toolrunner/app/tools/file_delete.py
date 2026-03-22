@@ -20,7 +20,6 @@ from ..config import (
 from ..models import FileDeleteArgs
 from .path_filters import first_matching_pattern, glob_candidates
 
-
 FILE_DELETE_POLICY_META = policy_metadata()
 
 
@@ -51,7 +50,11 @@ def delete_file(run_dir: Path, args: FileDeleteArgs, policy: dict[str, Any] | No
     try:
         target = resolve_policy_path(run_dir, args.path, policy)
     except ValueError as exc:
-        error_code = "PATH_OUTSIDE_WORKSPACE" if "path traversal outside of workspace" in str(exc) else "PATH_NOT_ALLOWED"
+        error_code = (
+            "PATH_OUTSIDE_WORKSPACE"
+            if "path traversal outside of workspace" in str(exc)
+            else "PATH_NOT_ALLOWED"
+        )
         return _error_response(error_code, str(exc))
 
     if not is_under_allowed_root(target, (allowed_context_root, *policy_roots)):
@@ -79,7 +82,10 @@ def delete_file(run_dir: Path, args: FileDeleteArgs, policy: dict[str, Any] | No
                     "ok": True,
                     "result": {
                         "path": args.path,
+                        "requested_path": args.path,
+                        "requested_root": args.absolute_root or None,
                         "resolved_path": str(target),
+                        "resolved_root": str(target.parent.resolve()),
                         "deleted": False,
                         "missing": True,
                         "deleted_type": None,
@@ -111,7 +117,10 @@ def delete_file(run_dir: Path, args: FileDeleteArgs, policy: dict[str, Any] | No
             "ok": True,
             "result": {
                 "path": args.path,
+                "requested_path": args.path,
+                "requested_root": args.absolute_root or None,
                 "resolved_path": str(target.resolve()),
+                "resolved_root": str(target.parent.resolve()),
                 "deleted": True,
                 "missing": False,
                 "deleted_type": target_type,

@@ -87,6 +87,16 @@ DEFAULT_REPO_TREE_EXCLUDES = tuple(EXCLUDE_FROM_SEARCH_LIST)
 DEFAULT_SEARCH_EXCLUDES = tuple(EXCLUDE_FROM_SEARCH_LIST)
 
 
+def _normalize_absolute_root(value: str | None) -> str | None:
+    normalized = str(value or "").strip()
+    if not normalized:
+        return None
+    candidate = Path(normalized)
+    if not candidate.is_absolute():
+        raise ValueError("absolute_root must be absolute")
+    return str(candidate)
+
+
 class FileReadArgs(BaseModel):
     path: str
     mode: Literal["text", "binary"] = "text"
@@ -105,12 +115,7 @@ class FileReadArgs(BaseModel):
 
     @field_validator("absolute_root")
     def normalize_absolute_root(cls, value: str | None) -> str | None:
-        if value is None:
-            return None
-        candidate = Path(value)
-        if not candidate.is_absolute():
-            raise ValueError("absolute_root must be absolute")
-        return str(candidate)
+        return _normalize_absolute_root(value)
 
     @field_validator("start_line", "end_line")
     def positive_line(cls, value: Optional[int]) -> Optional[int]:
@@ -204,12 +209,7 @@ class RepoTreeArgs(BaseModel):
 
     @field_validator("absolute_root")
     def normalize_absolute_root(cls, value: str | None) -> str | None:
-        if value is None:
-            return None
-        candidate = Path(value)
-        if not candidate.is_absolute():
-            raise ValueError("absolute_root must be absolute")
-        return str(candidate)
+        return _normalize_absolute_root(value)
 
     @field_validator("exclude_globs", "include_globs", mode="before")
     def normalize_globs(cls, value: List[str] | None) -> List[str] | None:
@@ -242,12 +242,174 @@ class SearchCodeArgs(BaseModel):
 
     @field_validator("absolute_root")
     def normalize_absolute_root(cls, value: str | None) -> str | None:
+        return _normalize_absolute_root(value)
+
+    @field_validator("include_globs", "exclude_globs", mode="before")
+    def normalize_globs(cls, value: List[str] | None) -> List[str] | None:
         if value is None:
             return None
-        candidate = Path(value)
-        if not candidate.is_absolute():
-            raise ValueError("absolute_root must be absolute")
-        return str(candidate)
+        return [pattern.replace("\\", "/") for pattern in value]
+
+
+class SearchFilesArgs(BaseModel):
+    query: str = Field(..., min_length=1)
+    scope: str = "."
+    absolute_root: str | None = None
+    compact: bool = False
+    include_files: bool = True
+    include_dirs: bool = True
+    is_regex: bool = False
+    case_sensitive: bool = False
+    include_tests: bool = True
+    include_globs: List[str] | None = None
+    exclude_globs: List[str] = Field(default_factory=lambda: list(DEFAULT_SEARCH_EXCLUDES))
+    max_results: int = Field(default=100, ge=1)
+    max_depth: int = Field(default=8, ge=0)
+    timeout_ms: int = Field(default=3000, ge=0)
+
+    @field_validator("scope")
+    def normalize_scope(cls, value: str) -> str:
+        normalized = value.replace("\\", "/") or "."
+        return Path(normalized).as_posix() or "."
+
+    @field_validator("absolute_root")
+    def normalize_absolute_root(cls, value: str | None) -> str | None:
+        return _normalize_absolute_root(value)
+
+    @field_validator("include_globs", "exclude_globs", mode="before")
+    def normalize_globs(cls, value: List[str] | None) -> List[str] | None:
+        if value is None:
+            return None
+        return [pattern.replace("\\", "/") for pattern in value]
+
+
+class ListSymbolsArgs(BaseModel):
+    scope: str = "."
+    absolute_root: str | None = None
+    compact: bool = False
+    include_private: bool = False
+    include_docstrings: bool = False
+    include_tests: bool = True
+    language: str | None = None
+    include_globs: List[str] | None = None
+    exclude_globs: List[str] = Field(default_factory=lambda: list(DEFAULT_SEARCH_EXCLUDES))
+    max_results: int = Field(default=100, ge=1)
+    max_depth: int = Field(default=8, ge=0)
+    timeout_ms: int = Field(default=3000, ge=0)
+
+    @field_validator("scope")
+    def normalize_scope(cls, value: str) -> str:
+        normalized = value.replace("\\", "/") or "."
+        return Path(normalized).as_posix() or "."
+
+    @field_validator("absolute_root")
+    def normalize_absolute_root(cls, value: str | None) -> str | None:
+        return _normalize_absolute_root(value)
+
+    @field_validator("include_globs", "exclude_globs", mode="before")
+    def normalize_globs(cls, value: List[str] | None) -> List[str] | None:
+        if value is None:
+            return None
+        return [pattern.replace("\\", "/") for pattern in value]
+
+
+class FindSymbolArgs(BaseModel):
+    symbol_name: str = Field(..., min_length=1)
+    scope: str = "."
+    absolute_root: str | None = None
+    compact: bool = False
+    kind: str | None = None
+    language: str | None = None
+    fuzzy: bool = False
+    include_private: bool = False
+    include_tests: bool = True
+    include_globs: List[str] | None = None
+    exclude_globs: List[str] = Field(default_factory=lambda: list(DEFAULT_SEARCH_EXCLUDES))
+    max_results: int = Field(default=20, ge=1)
+    max_depth: int = Field(default=8, ge=0)
+    timeout_ms: int = Field(default=3000, ge=0)
+
+    @model_validator(mode="before")
+    def normalize_legacy_name(cls, value: object) -> object:
+        if isinstance(value, dict) and "symbol_name" not in value and "name" in value:
+            updated = dict(value)
+            updated["symbol_name"] = updated.pop("name")
+            return updated
+        return value
+
+    @field_validator("scope")
+    def normalize_scope(cls, value: str) -> str:
+        normalized = value.replace("\\", "/") or "."
+        return Path(normalized).as_posix() or "."
+
+    @field_validator("absolute_root")
+    def normalize_absolute_root(cls, value: str | None) -> str | None:
+        return _normalize_absolute_root(value)
+
+    @field_validator("include_globs", "exclude_globs", mode="before")
+    def normalize_globs(cls, value: List[str] | None) -> List[str] | None:
+        if value is None:
+            return None
+        return [pattern.replace("\\", "/") for pattern in value]
+
+
+class FindReferencesArgs(BaseModel):
+    symbol: str = Field(..., min_length=1)
+    scope: str = "."
+    absolute_root: str | None = None
+    compact: bool = False
+    kind: str | None = None
+    include_declarations: bool = True
+    include_comments: bool = False
+    include_strings: bool = False
+    include_tests: bool = True
+    include_globs: List[str] | None = None
+    exclude_globs: List[str] = Field(default_factory=lambda: list(DEFAULT_SEARCH_EXCLUDES))
+    max_results: int = Field(default=50, ge=1)
+    max_depth: int = Field(default=8, ge=0)
+    context_lines: int = Field(default=8, ge=0)
+    timeout_ms: int = Field(default=3000, ge=0)
+
+    @field_validator("scope")
+    def normalize_scope(cls, value: str) -> str:
+        normalized = value.replace("\\", "/") or "."
+        return Path(normalized).as_posix() or "."
+
+    @field_validator("absolute_root")
+    def normalize_absolute_root(cls, value: str | None) -> str | None:
+        return _normalize_absolute_root(value)
+
+    @field_validator("include_globs", "exclude_globs", mode="before")
+    def normalize_globs(cls, value: List[str] | None) -> List[str] | None:
+        if value is None:
+            return None
+        return [pattern.replace("\\", "/") for pattern in value]
+
+
+class JumpToSymbolArgs(BaseModel):
+    symbol: str = Field(..., min_length=1)
+    scope: str = "."
+    absolute_root: str | None = None
+    compact: bool = False
+    kind: str | None = None
+    fuzzy: bool = False
+    include_private: bool = False
+    include_tests: bool = True
+    include_globs: List[str] | None = None
+    exclude_globs: List[str] = Field(default_factory=lambda: list(DEFAULT_SEARCH_EXCLUDES))
+    max_results: int = Field(default=5, ge=1)
+    max_depth: int = Field(default=8, ge=0)
+    context_lines: int = Field(default=8, ge=0)
+    timeout_ms: int = Field(default=3000, ge=0)
+
+    @field_validator("scope")
+    def normalize_scope(cls, value: str) -> str:
+        normalized = value.replace("\\", "/") or "."
+        return Path(normalized).as_posix() or "."
+
+    @field_validator("absolute_root")
+    def normalize_absolute_root(cls, value: str | None) -> str | None:
+        return _normalize_absolute_root(value)
 
     @field_validator("include_globs", "exclude_globs", mode="before")
     def normalize_globs(cls, value: List[str] | None) -> List[str] | None:
@@ -359,7 +521,10 @@ class LintArgs(BaseModel):
     cwd: str = "."
     paths: List[str] | None = None
     args: List[str] | None = None
-    cmd: List[str] | None = None
+    cmd: List[str] | None = Field(
+        default=None,
+        description="Only valid when tool=command. Omit for ruff, flake8, eslint, and prettier runs.",
+    )
     timeout_ms: int = Field(default=180_000, ge=0)
     max_output_bytes: int = Field(default=262_144, ge=1)
     parse: Literal["ruff", "flake8", "eslint", "none"] | None = None
@@ -383,7 +548,7 @@ class LintArgs(BaseModel):
         if self.tool == "command" and not self.cmd:
             raise ValueError("cmd is required when tool=command")
         if self.tool != "command" and self.cmd:
-            raise ValueError("cmd may only be specified when tool=command")
+            raise ValueError("cmd may only be specified when tool=command; omit cmd for Ruff-style runs")
         if self.parse is None:
             if self.tool in ("ruff", "flake8", "eslint"):
                 self.parse = self.tool
@@ -428,7 +593,10 @@ class FormatArgs(BaseModel):
     cwd: str = "."
     paths: List[str] | None = None
     args: List[str] | None = None
-    cmd: List[str] | None = None
+    cmd: List[str] | None = Field(
+        default=None,
+        description="Only valid when tool=command. Omit for ruff_format, black, and prettier runs.",
+    )
     timeout_ms: int = Field(default=180_000, ge=0)
     max_output_bytes: int = Field(default=262_144, ge=1)
 
@@ -451,7 +619,7 @@ class FormatArgs(BaseModel):
         if self.tool == "command" and not self.cmd:
             raise ValueError("cmd is required when tool=command")
         if self.tool != "command" and self.cmd:
-            raise ValueError("cmd may only be specified when tool=command")
+            raise ValueError("cmd may only be specified when tool=command; omit cmd for Ruff-style runs")
         return self
 
 

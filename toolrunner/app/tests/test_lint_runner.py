@@ -58,6 +58,7 @@ def test_lint_runner_ruff_parses_json(monkeypatch, tmp_path: Path):
     cmd = captured["cmd"]
     assert cmd == [
         PYTHON_INTERPRETER,
+        "-I",
         "-m",
         "ruff",
         "check",

@@ -121,7 +121,11 @@ def run_git_status(run_dir: Path, args: GitStatusArgs, policy: dict | None = Non
     try:
         repo_path = resolve_policy_path(run_dir, repo_dir, policy)
     except ValueError as exc:
-        error_code = "PATH_OUTSIDE_WORKSPACE" if "path traversal outside of workspace" in str(exc) else "PATH_NOT_ALLOWED"
+        error_code = (
+            "PATH_OUTSIDE_WORKSPACE"
+            if "path traversal outside of workspace" in str(exc)
+            else "PATH_NOT_ALLOWED"
+        )
         return _error_response(error_code, str(exc))
 
     command = ["git", "status", f"--porcelain={args.porcelain}", "--branch"]

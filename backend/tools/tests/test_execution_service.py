@@ -1,6 +1,7 @@
 import httpx
 import pytest
 import uuid
+from datetime import datetime, timezone as dt_timezone
 
 from django.contrib.auth import get_user_model
 from django.test import override_settings
@@ -434,6 +435,37 @@ def test_execute_native_schedule_task_skips_toolrunner_http(monkeypatch, fake_re
     assert tool_call.result["task_type"] == "other_task"
     assert tool_call.result["execution_mode"] == "headless_run"
     assert tool_call.result["scheduled_task_id"]
+
+
+@override_settings(
+    TANGO_TIME_ZONE="America/New_York",
+    TOOLRUNNER_URL="http://example/v1/execute",
+    TOOLRUNNER_SECRET="test-secret",
+    TOOLRUNNER_TIMEOUT=5,
+    TOOLRUNNER_OUTPUT_LIMIT=128,
+    TOOLRUNNER_HTTP_TIMEOUT=10,
+)
+def test_execute_native_current_datetime_skips_toolrunner_http(monkeypatch, fake_result_bus):
+    tool_call = _build_test_run("native-current-datetime")
+    tool_call.tool_name = "get_current_datetime"
+    tool_call.args = {}
+    tool_call.save(update_fields=["tool_name", "args", "updated_at"])
+    ToolDefinition.objects.create(workspace=tool_call.run.workspace, name="get_current_datetime", enabled=True)
+
+    fixed_now = datetime(2026, 3, 21, 19, 32, 5, tzinfo=dt_timezone.utc)
+    monkeypatch.setattr("core.services.timezones.timezone.now", lambda: fixed_now)
+
+    def _fail_client(*args, **kwargs):
+        raise AssertionError("http client should not be used for native datetime tools")
+
+    monkeypatch.setattr("tools.services.execution.httpx.Client", _fail_client)
+
+    execute_tool_call(str(tool_call.id))
+
+    tool_call.refresh_from_db()
+    assert tool_call.status == ToolCall.Status.COMPLETED
+    assert tool_call.result["timezone"] == "America/New_York"
+    assert tool_call.result["datetime"] == "2026-03-21T15:32:05-04:00"
 
 
 @override_settings(

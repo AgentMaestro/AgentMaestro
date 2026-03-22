@@ -14,4 +14,9 @@ $env:SHOW_CONDENSED_SYSTEM_LOGS = "1"
 
 Write-Host "Starting Daphne using $Transport at 127.0.0.1:$Port with OPENAI_WS_DEBUG=$Debug, OPENAI_TRANSPORT=$Transport, OPENAI_HTTP_MODE=$Mode"
 Set-Location "C:\Dev\AgentMaestro\backend"
+
+# this ensures all tools and schemas are up-to-date
+python manage.py seed_dev_tools
+
+# run the server
 python -m daphne -b 127.0.0.1 -p $Port agentmaestro.asgi:application

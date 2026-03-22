@@ -119,6 +119,7 @@ body {
   max-width: 70%;
   align-self: stretch;
   background: rgba(15, 23, 42, 0.05);
+  position: relative;
 }
 
 .chat-message-in {
@@ -166,6 +167,46 @@ body {
 
 .chat-message-author {
   font-weight: 600;
+}
+
+.chat-message-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 0.35rem;
+  position: sticky;
+  top: 0.5rem;
+  z-index: 2;
+}
+
+.chat-message-copy {
+  border: 1px solid rgba(15, 23, 42, 0.12);
+  background: rgba(255, 255, 255, 0.72);
+  color: #0f172a;
+  border-radius: 999px;
+  min-width: 32px;
+  min-height: 32px;
+  padding: 0 0.5rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  font: inherit;
+  line-height: 1;
+}
+
+.chat-message-copy:hover {
+  background: #ffffff;
+}
+
+.chat-message-copy:focus-visible {
+  outline: 2px solid rgba(15, 23, 42, 0.45);
+  outline-offset: 2px;
+}
+
+.chat-message-copy.is-copied {
+  background: rgba(16, 185, 129, 0.18);
+  border-color: rgba(16, 185, 129, 0.4);
+  color: #065f46;
 }
 
 .chat-message-text {

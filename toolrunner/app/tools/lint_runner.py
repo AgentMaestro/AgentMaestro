@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Dict, List
 
 from fastapi.responses import JSONResponse
 
@@ -11,7 +10,7 @@ from ..models import LintArgs, RunCommandArgs
 from .python_runner_support import detect_missing_python_module, missing_python_module_response
 from .run_command import run_command
 
-TOOL_DEFAULT_ARGS: Dict[str, List[str]] = {
+TOOL_DEFAULT_ARGS: dict[str, list[str]] = {
     "ruff": ["check"],
     "flake8": ["."],
     "eslint": ["."],
@@ -33,18 +32,26 @@ def _error_response(code: str, message: str, details: dict | None = None, status
     )
 
 
-def _ensure_output_format(args: List[str]) -> List[str]:
+def _ensure_output_format(args: list[str]) -> list[str]:
     if any(arg.startswith("--output-format") for arg in args):
         return args
     return args + ["--output-format=json"]
 
 
-def _build_command(run_dir: Path, args: LintArgs, policy: dict | None = None) -> List[str]:
+def _resolve_requested_paths(
+    run_dir: Path, paths: list[str] | None, policy: dict | None = None
+) -> list[str]:
+    if not paths:
+        return []
+    return [str(resolve_policy_path(run_dir, rel_path, policy)) for rel_path in paths]
+
+
+def _build_command(run_dir: Path, args: LintArgs, policy: dict | None = None) -> list[str]:
     if args.tool == "command":
         return list(args.cmd or [])
 
     if args.tool == "ruff":
-        command: List[str] = [PYTHON_INTERPRETER, "-m", "ruff"]
+        command: list[str] = [PYTHON_INTERPRETER, "-I", "-m", "ruff"]
     else:
         command = [args.tool]
 
@@ -60,8 +67,8 @@ def _build_command(run_dir: Path, args: LintArgs, policy: dict | None = None) ->
     return command
 
 
-def _parse_ruff_issues(stdout: str) -> List[Dict[str, object]]:
-    issues: List[Dict[str, object]] = []
+def _parse_ruff_issues(stdout: str) -> list[dict[str, object]]:
+    issues: list[dict[str, object]] = []
     data = json.loads(stdout)
 
     entries = data if isinstance(data, list) else [data]
@@ -105,9 +112,15 @@ def _invoke_run_command(run_dir: Path, run_args: RunCommandArgs, policy: dict | 
 
 def run_linters(run_dir: Path, args: LintArgs, policy: dict | None = None):
     try:
+        resolved_cwd = str(resolve_policy_path(run_dir, args.cwd or ".", policy))
+        resolved_paths = _resolve_requested_paths(run_dir, args.paths, policy)
         command = _build_command(run_dir, args, policy)
     except ValueError as exc:
-        error_code = "PATH_OUTSIDE_WORKSPACE" if "path traversal outside of workspace" in str(exc) else "PATH_NOT_ALLOWED"
+        error_code = (
+            "PATH_OUTSIDE_WORKSPACE"
+            if "path traversal outside of workspace" in str(exc)
+            else "PATH_NOT_ALLOWED"
+        )
         return _error_response(error_code, str(exc))
 
     run_args = RunCommandArgs(
@@ -137,7 +150,7 @@ def run_linters(run_dir: Path, args: LintArgs, policy: dict | None = None):
             )
     stdout = result.get("stdout", "")
     stderr = result.get("stderr", "")
-    issues: List[Dict[str, object]] = []
+    issues: list[dict[str, object]] = []
     parse_warning: str | None = None
     parse_source = "none"
     stdout_truncated = result.get("stdout_truncated", False)
@@ -162,6 +175,11 @@ def run_linters(run_dir: Path, args: LintArgs, policy: dict | None = None):
         "exit_code": result.get("exit_code"),
         "duration_ms": result.get("duration_ms", 0),
         "timed_out": result.get("timed_out", False),
+        "requested_cwd": args.cwd,
+        "resolved_cwd": resolved_cwd,
+        "requested_paths": args.paths or [],
+        "resolved_paths": resolved_paths,
+        "command": command,
         "issues": issues,
         "stdout": stdout,
         "stderr": stderr,

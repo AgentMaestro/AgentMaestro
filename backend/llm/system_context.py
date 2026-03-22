@@ -6,6 +6,8 @@ from typing import Any, Iterable
 
 from django.conf import settings
 
+from core.services.timezones import get_current_datetime_iso8601, get_tango_timezone_name
+
 ROLE_OVERLAYS = {
     "planning": """
 Role: planning
@@ -52,6 +54,10 @@ Operating rules:
 
 Context:
 - You may be given tool access and runtime constraints. Stay within them.
+- Interpret relative dates and times like "today", "tomorrow", "yesterday", and local clock times using the local Tango timezone from the `TIME_ZONE` env setting, mirrored by Django `settings.TIME_ZONE`. Treat that value as the canonical IANA timezone name such as `America/New_York`, not UTC/GMT/Zulu, unless the user explicitly asks for UTC.
+- When the user says things like "tomorrow morning", "next Friday", or "in two hours", resolve them against that local Tango timezone rather than UTC.
+- For scheduling and calendar tools, if a timezone argument is omitted, assume the local Tango timezone rather than UTC.
+- If a scheduling decision depends on the current local date or time and you have not already established it in context, call `get_current_datetime` first and use that local timestamp as the anchor.
 - If the user explicitly says 'remember that', 'note that', or states a stable preference and the `remember` tool is available, prefer persisting it instead of only acknowledging it conversationally.
 - When a tool is available, invoke the real tool directly. Do not output code-like stand-ins such as `default_api.remember(...)` or `tool_code` blocks as if they were executed tools.
 - If the user asks what tools are available or how many tools you have, answer directly with the exact tool names and count; do not default to a greeting.
@@ -145,6 +151,27 @@ def _build_capability_notices(tool_names: Iterable[str]) -> list[str]:
             "- Reserve `FAIL_FAST` for critical safety or security situations only.\n"
             "- Tool-invoked child runs may execute inline and return child summary text before the current planner turn ends."
         )
+    if any(name in names for name in {"search_files", "list_symbols", "find_symbol", "find_references", "jump_to_symbol", "search_code"}):
+        sections.append(
+            "Capability: Workspace Navigation\n"
+            "- Use `search_files` to find files by name or path, `list_symbols` to outline files or directories, `find_symbol` to locate definitions, `find_references` to assess impact, and `jump_to_symbol` to jump to the best definition with nearby context.\n"
+            "- Use `search_files` only for file and path discovery; do not use it for content search. Use `search_code` for content search instead.\n"
+            "- Search one path/name query at a time. For unrelated targets, make separate `search_files` calls; if you need alternation in a regex search, use `is_regex=true` with `|` rather than the word `OR`, for example `code_navigation.py|run_command_safe`.\n"
+            "- In regex mode, exact path/name hits still sort ahead of fuzzy or partial matches.\n"
+            "- Navigation scopes may be a file, directory, or repo root. `scope` is the canonical input name for navigation roots. Repo-relative scopes are preferred. Absolute paths are allowed only when the tool explicitly permits them and the path stays inside allowed roots.\n"
+            "- Hidden files and directories are included unless the default ignore rules exclude them. Test paths are included by default unless a tool explicitly disables them.\n"
+            "- Prefer these tools over manual broad file reads when you need to locate code quickly.\n"
+            "- Use `search_code` for text or regex content searches; use the navigation tools when you need file- and symbol-level awareness.\n"
+            "- Navigation tools use repo-relative paths by default. Only use an absolute path when you genuinely need to override the repo root, and do not pass empty strings for optional absolute-root fields.\n"
+            "- Run navigation tools sequentially when precision matters: wait for each result before issuing the next tool call.\n"
+            "- Use `compact=true` when you only need a quick standardized summary instead of the fuller legacy payload.\n"
+            "- In compact mode, expect the standardized envelope with `tool`, `compact`, `query`, `scope`, `items`, `returned_count`, `max_results_used`, `selection`, `selection_excerpt`, `stats`, and `truncated`; legacy top-level fields are not included.\n"
+            "- For symbol-oriented compact results, `items` and `selection` include structured metadata such as defining file, line, column, container/scope, and signature when available.\n"
+            "- For `find_references` and `jump_to_symbol`, compact mode includes a short line-numbered excerpt by default, and `find_references` also surfaces the first hit in `selection` for quick triage.\n"
+            "- Compact ordering is stable: search files ranks by score then path, symbol lookup ranks exact before fuzzy, and jump-to-symbol returns the best match first.\n"
+            "- Ranking is exact matches first, then fuzzy, then partial or secondary matches.\n"
+            "- A typical workflow is `search_files` -> `list_symbols` -> `find_symbol` -> `find_references` -> `file_read`."
+        )
     if "schedule_task" in names:
         sections.append(
             "Capability: Scheduling\n"
@@ -210,6 +237,8 @@ Runtime:
 - Model: {model_name}
 - Transport: {transport}
 - Tools available: {_format_tool_hint(tool_names)}
+- Current local datetime: {get_current_datetime_iso8601()}
+- Timezone: {get_tango_timezone_name()}
 """.strip()
 
     description_text = (getattr(agent, "description", "") or "").strip()
