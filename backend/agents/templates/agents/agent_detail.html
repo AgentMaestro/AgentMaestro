@@ -126,85 +126,6 @@
       border: 1px solid rgba(255, 255, 255, 0.1);
     }
 
-    .approval-grants-card {
-      background: rgba(255, 255, 255, 0.04);
-      border-radius: 12px;
-      padding: 1rem;
-      border: 1px solid rgba(255, 255, 255, 0.1);
-      margin-top: 1rem;
-    }
-    .approval-grants-header {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      gap: 0.75rem;
-      margin-bottom: 0.75rem;
-    }
-    .approval-grants-header strong {
-      color: #f8fafc;
-    }
-    .approval-grants-clear {
-      border: 1px solid rgba(248, 250, 252, 0.2);
-      background: rgba(248, 250, 252, 0.06);
-      color: #f8fafc;
-      border-radius: 8px;
-      padding: 0.35rem 0.7rem;
-      cursor: pointer;
-      font-size: 0.85rem;
-    }
-    .approval-grants-clear:disabled {
-      opacity: 0.55;
-      cursor: default;
-    }
-    .approval-grants-empty {
-      color: rgba(248, 250, 252, 0.68);
-      font-size: 0.92rem;
-      margin: 0;
-    }
-    .approval-grants-list {
-      display: flex;
-      flex-direction: column;
-      gap: 0.55rem;
-    }
-    .approval-grant-item {
-      border: 1px solid rgba(255, 255, 255, 0.08);
-      border-radius: 10px;
-      padding: 0.65rem 0.75rem;
-      background: rgba(15, 23, 42, 0.45);
-    }
-    .approval-grant-item-header {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      gap: 0.5rem;
-      margin-bottom: 0.25rem;
-    }
-    .approval-grant-tool {
-      font-weight: 600;
-      color: #f8fafc;
-    }
-    .approval-grant-scope {
-      color: rgba(248, 250, 252, 0.72);
-      font-size: 0.88rem;
-      line-height: 1.35;
-      word-break: break-word;
-    }
-    .approval-grant-revoke {
-      border: none;
-      background: #7f1d1d;
-      color: #fff;
-      border-radius: 8px;
-      padding: 0.3rem 0.65rem;
-      cursor: pointer;
-      font-size: 0.8rem;
-      font-weight: 600;
-    }
-    .approval-grant-meta {
-      color: rgba(248, 250, 252, 0.52);
-      font-size: 0.76rem;
-      margin-top: 0.25rem;
-    }
-
     .agent-tools-summary {
       font-size: 0.95rem;
       color: rgba(248, 250, 252, 0.8);
@@ -321,6 +242,11 @@
       color: #fff;
       border-color: #059669;
     }
+    .status-action.info {
+      background: #38bdf8;
+      color: #0f172a;
+      border-color: #0ea5e9;
+    }
     .status-action.danger {
       background: #dc2626;
       color: #fff;
@@ -415,6 +341,11 @@
     .chat-form button.secondary {
       background: #f8fafc;
       color: #0f172a;
+    }
+
+    .chat-form textarea {
+      font-size: 1.08rem;
+      line-height: 1.5;
     }
 
     .chat-form .chat-form-actions {
@@ -901,7 +832,7 @@
               </div>
             {% endif %}
 
-            <details class="agent-tools" open>
+            <details class="agent-tools">
               <summary class="agent-tools-summary">
                 Tools available ({{ tool_count }})
               </summary>
@@ -920,15 +851,6 @@
                 <p class="chat-empty-state">No tools granted yet.</p>
               {% endif %}
             </details>
-
-            <section class="approval-grants-card" data-approval-grants-shell>
-              <div class="approval-grants-header">
-                <strong>Run approvals</strong>
-                <button type="button" class="approval-grants-clear" data-clear-approval-grants disabled>Clear all</button>
-              </div>
-              <div class="approval-grants-list" data-approval-grants-list></div>
-              <p class="approval-grants-empty" data-approval-grants-empty>No temporary approvals for this run.</p>
-            </section>
           </section>
         </div>
       </div>
@@ -938,11 +860,13 @@
       class="chat-stream"
       data-agent-chat
       data-agent-slug="{{ agent.slug }}"
-      data-agent-url="{{ request.path }}"
-      data-agent-name="{{ agent.name }}"
-      data-user-name="{{ user_name }}"
-      data-ws-url="{{ websocket_url }}"
-      data-run-prealloc-url="{% url 'agents:agent_run_preallocate' slug=agent.slug %}"
+    data-agent-url="{{ request.path }}"
+    data-agent-name="{{ agent.name }}"
+    data-user-name="{{ user_name }}"
+    data-run-timeline-base-url="/ui/run/"
+    data-ws-url="{{ websocket_url }}"
+    data-run-prealloc-url="{% url 'agents:agent_run_preallocate' slug=agent.slug %}"
+    data-current-run-id="{{ current_run_id }}"
       data-llm-provider="{{ llm_provider }}"
       data-llm-provider-label="{{ llm_provider_label }}"
       data-llm-model="{{ llm_model }}"
@@ -961,6 +885,7 @@
         <div class="chat-status-actions">
           <span class="status-pill" data-connection-status>Connecting?</span>
           <button type="button" class="status-action hidden" data-connection-action>Connect</button>
+          <a class="status-action info hidden" data-run-timeline-link target="_blank" rel="noopener">Run timeline</a>
           <span class="status-pill run-status" data-run-status>RUNNING</span>
         </div>
       </header>
@@ -975,7 +900,7 @@
     </section>
   </div>
 
-  <script src="{% static 'agents/chat.js' %}?v=20260319-telegram-mirror-ui" defer></script>
+  <script src="{% static 'agents/chat.js' %}?v=20260320-chat-timeline-fix" defer></script>
 </body>
 
 </html>

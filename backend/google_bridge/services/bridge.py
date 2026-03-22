@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Iterable
 from datetime import datetime
+from email.utils import parsedate_to_datetime
 from zoneinfo import ZoneInfo
+from django.conf import settings
 from django.utils import timezone
 
 from google_bridge.models import GoogleAccount
@@ -141,10 +144,18 @@ def _execute_google_task_for_account(
     if resource_kind == "gmail":
         if operation == "read":
             message_id = str(normalized.get("message_id") or "").strip()
-            if not message_id:
-                raise GoogleBridgeTaskError("gmail read tasks require message_id.")
-            data = client.get_gmail_message(message_id)
-            summary_text = _summarize_gmail_message(data)
+            if message_id:
+                data = client.get_gmail_message(message_id)
+                summary_text = _summarize_gmail_message(data)
+            else:
+                include_read = bool(normalized.get("_gmail_list_include_read"))
+                unread_only = not include_read
+                data = _execute_gmail_list_for_account(
+                    client=client,
+                    normalized=normalized,
+                    unread_only=unread_only,
+                )
+                summary_text = _summarize_gmail_list(data, unread_only=unread_only)
         elif operation == "create":
             recipients = _normalize_string_list(normalized.get("to"))
             if not recipients:
@@ -177,39 +188,61 @@ def _execute_google_task_for_account(
             summary_text = _summarize_gmail_send(data)
         elif operation in {"trash", "delete"}:
             message_id = str(normalized.get("message_id") or "").strip()
+            deleted_ids: list[str] = []
             if not message_id:
                 query = str(normalized.get("query") or "").strip()
+                queries = _expand_gmail_query_clauses(query)
                 if not query:
-                    raise GoogleBridgeTaskError("gmail delete tasks require message_id or a unique Gmail query.")
-                matches = list(
-                    client.list_gmail_messages(
-                        query=query,
-                        label_ids=list(normalized.get("label_ids") or []),
-                        max_results=2,
-                    ).get("messages") or []
+                    raise GoogleBridgeTaskError(
+                        "gmail delete tasks require message_id or a Gmail query. "
+                        "For bulk cleanup, use a sender-domain query like from:airbnb.com and the bridge will trash or delete every matching message."
+                    )
+                matches = _collect_gmail_messages_for_queries(
+                    client,
+                    queries=queries,
+                    label_ids=list(normalized.get("label_ids") or []),
                 )
-                if len(matches) != 1:
-                    raise GoogleBridgeTaskError(
-                        "gmail delete tasks require message_id or a Gmail query that matches exactly one message."
+                for match in matches:
+                    resolved_id = str(match.get("id") or "").strip()
+                    if not resolved_id:
+                        continue
+                    deleted_ids.append(resolved_id)
+                    if operation == "trash":
+                        client.trash_gmail_message(resolved_id)
+                    else:
+                        client.delete_gmail_message(resolved_id)
+                if deleted_ids:
+                    data = {"deleted_message_ids": deleted_ids, "matched_queries": queries}
+                    summary_text = (
+                        _summarize_gmail_bulk_trash(deleted_ids)
+                        if operation == "trash"
+                        else _summarize_gmail_bulk_delete(deleted_ids)
                     )
-                message_id = str(matches[0].get("id") or "").strip()
-                if not message_id:
-                    raise GoogleBridgeTaskError(
-                        "gmail delete tasks could not resolve a message_id from the Gmail query."
+                else:
+                    data = {"deleted_message_ids": [], "matched_queries": queries}
+                    summary_text = _summarize_gmail_no_matches_for_cleanup(
+                        queries=queries,
+                        accounts=[{
+                            "google_subject": normalized.get("google_subject") or "",
+                            "email": normalized.get("email") or "",
+                        }],
                     )
-            if operation == "trash":
-                data = client.trash_gmail_message(message_id)
-                summary_text = _summarize_gmail_trash(data, message_id=message_id)
             else:
-                data = client.delete_gmail_message(message_id)
-                summary_text = _summarize_gmail_delete(data, message_id=message_id)
+                if operation == "trash":
+                    data = client.trash_gmail_message(message_id)
+                    summary_text = _summarize_gmail_trash(data, message_id=message_id)
+                else:
+                    data = client.delete_gmail_message(message_id)
+                    summary_text = _summarize_gmail_delete(data, message_id=message_id)
         else:
-            data = client.list_gmail_messages(
-                query=str(normalized.get("query") or "").strip(),
-                label_ids=list(normalized.get("label_ids") or []),
-                max_results=int(normalized.get("max_results") or 10),
+            include_read = bool(normalized.get("_gmail_list_include_read"))
+            unread_only = not include_read
+            data = _execute_gmail_list_for_account(
+                client=client,
+                normalized=normalized,
+                unread_only=unread_only,
             )
-            summary_text = _summarize_gmail_list(data)
+            summary_text = _summarize_gmail_list(data, unread_only=unread_only)
     elif resource_kind == "calendar":
         if operation == "read":
             event_id = str(normalized.get("event_id") or "").strip()
@@ -221,13 +254,12 @@ def _execute_google_task_for_account(
         elif operation == "list":
             time_min = _normalize_calendar_timestamp(normalized.get("time_min"))
             time_max = _normalize_calendar_timestamp(normalized.get("time_max"))
-            data = client.list_calendar_events(
-                calendar_id=str(normalized.get("calendar_id") or "primary").strip() or "primary",
+            data, summary_text = _execute_calendar_list_for_account(
+                client=client,
+                normalized=normalized,
                 time_min=time_min,
                 time_max=time_max,
-                max_results=int(normalized.get("max_results") or 10),
             )
-            summary_text = _summarize_calendar_list(data)
         elif operation == "create":
             calendar_id = str(normalized.get("calendar_id") or "primary").strip() or "primary"
             summary = str(normalized.get("summary") or "").strip()
@@ -292,6 +324,90 @@ def _execute_google_task_for_account(
     else:
         raise GoogleBridgeTaskError(f"Unsupported Google resource kind '{resource_kind}'.")
     return data, summary_text
+
+
+def _execute_calendar_list_for_account(
+    *,
+    client: GoogleBridgeClient,
+    normalized: dict[str, object],
+    time_min: str,
+    time_max: str,
+) -> tuple[dict[str, object], str]:
+    max_results = int(normalized.get("max_results") or 20)
+    calendar_id = str(normalized.get("calendar_id") or "").strip()
+    explicit_calendar_id = bool(normalized.get("_calendar_id_explicit"))
+    if calendar_id and calendar_id != "all" and (explicit_calendar_id or calendar_id != "primary"):
+        data = client.list_calendar_events(
+            calendar_id=calendar_id,
+            time_min=time_min,
+            time_max=time_max,
+            max_results=max_results,
+        )
+        items = [
+            {
+                **dict(item),
+                "calendar_id": calendar_id,
+            }
+            for item in list(data.get("items") or [])
+        ]
+        data = dict(data)
+        data["items"] = items
+        data["calendars"] = [
+            {
+                "id": calendar_id,
+                "summary": calendar_id,
+                "selected": True,
+            }
+        ]
+        return data, _summarize_calendar_list(data)
+
+    calendar_list = client.list_calendar_list()
+    calendars = [
+        dict(item)
+        for item in list(calendar_list.get("items") or [])
+        if not bool(item.get("deleted"))
+    ]
+    if not calendars:
+        calendars = [{"id": "primary", "summary": "primary", "selected": True}]
+
+    merged_items: list[dict[str, object]] = []
+    calendar_summaries: list[dict[str, object]] = []
+    for calendar in calendars:
+        calendar_id_value = str(calendar.get("id") or "").strip()
+        if not calendar_id_value:
+            continue
+        events = client.list_calendar_events(
+            calendar_id=calendar_id_value,
+            time_min=time_min,
+            time_max=time_max,
+            max_results=max_results,
+        )
+        calendar_summary = str(calendar.get("summary") or calendar_id_value).strip() or calendar_id_value
+        calendar_summaries.append(
+            {
+                "id": calendar_id_value,
+                "summary": calendar_summary,
+                "primary": bool(calendar.get("primary")),
+                "selected": bool(calendar.get("selected")),
+            }
+        )
+        for item in list(events.get("items") or []):
+            merged_items.append(
+                {
+                    **dict(item),
+                    "calendar_id": calendar_id_value,
+                    "calendar_summary": calendar_summary,
+                }
+            )
+
+    merged_items.sort(key=_calendar_event_sort_key)
+    data = {
+        "kind": "calendar#events",
+        "items": merged_items,
+        "calendars": calendar_summaries,
+        "resultSizeEstimate": len(merged_items),
+    }
+    return data, _summarize_calendar_list(data)
 
 
 def _execute_google_step(
@@ -363,24 +479,19 @@ def _execute_google_step(
                 raise GoogleBridgeTaskError(
                     "Calendar write tasks require a specific connected account. Use email or google_subject to target the account explicitly."
                 )
-    if account is None and resource_kind == "gmail" and operation in {"trash", "delete"}:
-        if not str(normalized.get("email") or "").strip() and not str(normalized.get("google_subject") or "").strip():
-            candidate_count = GoogleAccount.objects.filter(is_active=True)
-            if workspace is not None:
-                candidate_count = candidate_count.filter(workspace=workspace)
-            if owner is not None:
-                candidate_count = candidate_count.filter(owner=owner)
-            if candidate_count.count() != 1:
-                raise GoogleBridgeTaskError(
-                    "Gmail delete tasks require a specific connected account. Use email or google_subject to target the account explicitly."
-                )
-    if normalized.get("account_scope") == "all" and len(selected_accounts) > 1 and operation == "list":
+    if normalized.get("account_scope") == "all" and len(selected_accounts) > 1 and operation in {"list", "read"} and not str(normalized.get("message_id") or "").strip():
         result, summary_text = _execute_merged_list_task(selected_accounts, normalized, resource_kind)
-    elif normalized.get("account_scope") == "all" and len(selected_accounts) > 1 and operation in {"read", "trash", "delete"}:
+    elif normalized.get("account_scope") == "all" and len(selected_accounts) > 1 and operation == "read":
         raise GoogleBridgeTaskError(
-            "Google bridge read/delete-by-id tasks require the specific account from the list result. "
+            "Google bridge read tasks require the specific account from the list result. "
             "Use the returned account_email or google_subject together with message_id or event_id."
         )
+    elif normalized.get("account_scope") == "all" and len(selected_accounts) > 1 and resource_kind == "gmail" and operation in {"trash", "delete"}:
+        if str(normalized.get("message_id") or "").strip():
+            raise GoogleBridgeTaskError(
+                "Gmail delete-by-id tasks require a specific connected account. Use email or google_subject to target the account explicitly."
+            )
+        result, summary_text = _execute_merged_delete_task(selected_accounts, normalized, operation)
     else:
         connection = selected_accounts[0]
         result, summary_text = _execute_google_task_for_account(connection, normalized, resource_kind, operation)
@@ -416,7 +527,8 @@ def _execute_merged_list_task(
 ) -> tuple[dict[str, object], str]:
     merged_items: list[dict[str, object]] = []
     account_summaries: list[dict[str, object]] = []
-    total_count = 0
+    merged_calendars: list[dict[str, object]] = []
+    unread_only = bool(normalized.get("_gmail_list_default_unread"))
     for connection in accounts:
         data, summary_text = _execute_google_task_for_account(connection, normalized, resource_kind, "list")
         account_summaries.append(
@@ -428,7 +540,6 @@ def _execute_merged_list_task(
         )
         if resource_kind == "gmail":
             items = list(data.get("messages") or [])
-            total_count += int(data.get("resultSizeEstimate") or len(items) or 0)
             for item in items:
                 merged_items.append(
                     {
@@ -439,7 +550,14 @@ def _execute_merged_list_task(
                 )
         else:
             items = list(data.get("items") or [])
-            total_count += len(items)
+            for calendar_item in list(data.get("calendars") or []):
+                merged_calendars.append(
+                    {
+                        **dict(calendar_item),
+                        "account_email": connection.email,
+                        "account_google_subject": connection.google_subject,
+                    }
+                )
             for item in items:
                 merged_items.append(
                     {
@@ -450,21 +568,107 @@ def _execute_merged_list_task(
                 )
 
     if resource_kind == "gmail":
+        max_results = int(normalized.get("max_results") or 20)
+        merged_items.sort(key=_gmail_message_sort_key)
+        merged_items = merged_items[:max_results]
+        count_label = "unread Gmail messages" if unread_only else "Gmail messages"
         return (
-            {"messages": merged_items, "resultSizeEstimate": total_count, "accounts": account_summaries},
-            f"Found {total_count} Gmail messages across {len(accounts)} accounts.",
+            {"messages": merged_items, "resultSizeEstimate": len(merged_items), "accounts": account_summaries},
+            f"Returned {len(merged_items)} {count_label} across {len(accounts)} accounts.",
         )
 
     return (
-        {"items": merged_items, "accounts": account_summaries},
-        f"Found {len(merged_items)} calendar events across {len(accounts)} accounts.",
+        {"items": merged_items, "calendars": merged_calendars, "accounts": account_summaries},
+        f"Found {len(merged_items)} calendar events across {len(accounts)} accounts and {len(merged_calendars)} calendars.",
     )
+
+
+def _execute_merged_delete_task(
+    accounts: list[GoogleAccount],
+    normalized: dict[str, object],
+    operation: str,
+) -> tuple[dict[str, object], str]:
+    account_summaries: list[dict[str, object]] = []
+    deleted_message_ids: list[str] = []
+    queries = _expand_gmail_query_clauses(str(normalized.get("query") or "").strip())
+    for connection in accounts:
+        data, summary_text = _execute_google_task_for_account(
+            connection,
+            normalized,
+            "gmail",
+            operation,
+        )
+        if not list(data.get("deleted_message_ids") or []):
+            account_summaries.append(
+                {
+                    "google_subject": connection.google_subject,
+                    "email": connection.email,
+                    "summary_text": "No Gmail messages matched this cleanup query.",
+                }
+            )
+            continue
+
+        account_summaries.append(
+            {
+                "google_subject": connection.google_subject,
+                "email": connection.email,
+                "summary_text": summary_text,
+            }
+        )
+        deleted_message_ids.extend(list(data.get("deleted_message_ids") or []))
+
+    if not deleted_message_ids:
+        data = {
+            "deleted_message_ids": [],
+            "matched_queries": queries,
+            "accounts": account_summaries,
+        }
+        summary_text = _summarize_gmail_no_matches_for_cleanup(queries=queries, accounts=account_summaries)
+    else:
+        if operation == "trash":
+            summary_text = f"Trashed {len(deleted_message_ids)} Gmail messages across {len(accounts)} accounts."
+        else:
+            summary_text = f"Permanently deleted {len(deleted_message_ids)} Gmail messages across {len(accounts)} accounts."
+    return (
+        {
+            "deleted_message_ids": deleted_message_ids,
+            "matched_queries": queries,
+            "accounts": account_summaries,
+        },
+        summary_text,
+    )
+
+
+def _execute_gmail_list_for_account(
+    *,
+    client: GoogleBridgeClient,
+    normalized: dict[str, object],
+    unread_only: bool,
+) -> dict[str, object]:
+    max_results = int(normalized.get("max_results") or 20)
+    queries = _expand_gmail_query_clauses(str(normalized.get("query") or "").strip())
+    raw_messages = _collect_gmail_messages_for_queries(
+        client,
+        queries=queries,
+        label_ids=list(normalized.get("label_ids") or []),
+        max_results_per_query=max_results,
+    )
+    data = {"messages": raw_messages, "resultSizeEstimate": len(raw_messages)}
+    data = _enrich_gmail_list_messages(client, data)
+    enriched_messages = list(data.get("messages") or [])
+    enriched_messages.sort(key=_gmail_message_sort_key)
+    enriched_messages = enriched_messages[:max_results]
+    data = dict(data)
+    data["messages"] = enriched_messages
+    data["resultSizeEstimate"] = len(enriched_messages)
+    return data
 
 
 def _normalize_google_step(step: dict | None, *, defaults: dict[str, object] | None = None, step_index: int = 1) -> dict[str, object]:
     base = dict(defaults or {})
     raw = dict(base)
-    raw.update(dict(step or {}))
+    step_data = dict(step or {})
+    raw.update(step_data)
     integration_kind = str(raw.get("integration_kind") or "google").strip().lower()
     resource_kind = str(raw.get("resource_kind") or "").strip().lower()
     action_kind = str(raw.get("action_kind") or "read").strip().lower()
@@ -479,7 +683,9 @@ def _normalize_google_step(step: dict | None, *, defaults: dict[str, object] | N
     raw["integration_kind"] = integration_kind
     raw["resource_kind"] = resource_kind
     raw["account_scope"] = account_scope
-    raw["max_results"] = int(raw.get("max_results") or 10)
+    raw["_calendar_id_explicit"] = "calendar_id" in step_data and bool(str(step_data.get("calendar_id") or "").strip())
+    raw["_gmail_list_include_read"] = _normalize_bool(raw.get("include_read"))
+    raw["max_results"] = int(raw.get("max_results") or 20)
     raw["label_ids"] = _normalize_string_list(raw.get("label_ids"))
     raw["query"] = str(raw.get("query") or "").strip()
     raw["calendar_id"] = str(raw.get("calendar_id") or "primary").strip() or "primary"
@@ -501,10 +707,16 @@ def _normalize_google_step(step: dict | None, *, defaults: dict[str, object] | N
     raw["email"] = str(raw.get("email") or "").strip()
     raw["delete_mode"] = str(raw.get("delete_mode") or "").strip().lower()
     if resource_kind == "gmail":
+        query_text = str(raw.get("query") or "").strip()
         if action_kind == "list":
             action_kind = "read"
         if action_kind not in {"read", "draft", "send", "delete"}:
             raise GoogleBridgeTaskError(f"Google step {step_index} currently supports read, draft, send, and delete actions for Gmail.")
+        if operation == "list" and not raw["_gmail_list_include_read"] and not str(raw.get("query") or "").strip() and not list(raw.get("label_ids") or []):
+            raw["query"] = "is:unread"
+            raw["_gmail_list_default_unread"] = True
+        if action_kind in {"read", "delete"} and query_text:
+            _expand_gmail_query_clauses(query_text)
         if operation == "list" and action_kind == "draft":
             operation = "create"
         if operation == "list" and action_kind == "send":
@@ -671,14 +883,42 @@ def _normalize_string_list(value: object) -> list[str]:
     return [text] if text else []
 
 
-def _summarize_gmail_list(data: dict) -> str:
+def _normalize_bool(value: object) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value in (None, ""):
+        return False
+    text = str(value).strip().lower()
+    return text in {"1", "true", "yes", "on"}
+
+
+def _summarize_gmail_list(data: dict, *, unread_only: bool = False) -> str:
     messages = list(data.get("messages") or [])
-    total = int(data.get("resultSizeEstimate") or len(messages) or 0)
     if not messages:
-        return "No Gmail messages were returned."
-    preview_ids = ", ".join(str(item.get("id") or "").strip() for item in messages[:5] if str(item.get("id") or "").strip())
+        return "No unread Gmail messages were returned." if unread_only else "No Gmail messages were returned."
+    previews: list[str] = []
+    for item in messages[:5]:
+        message_id = str(item.get("id") or "").strip()
+        subject = str(item.get("subject") or "").strip()
+        sender = str(item.get("from") or "").strip()
+        date = str(item.get("date") or "").strip()
+        snippet = str(item.get("snippet") or "").strip()
+        parts = []
+        if message_id:
+            parts.append(message_id)
+        if subject:
+            parts.append(f"subject={subject}")
+        if sender:
+            parts.append(f"from={sender}")
+        if date:
+            parts.append(f"date={date}")
+        if snippet:
+            parts.append(f"snippet={snippet[:80]}")
+        if parts:
+            previews.append(" | ".join(parts))
+    count_label = "unread Gmail messages" if unread_only else "Gmail messages"
     return (
-        f"Found {total} Gmail messages. Message IDs: {preview_ids}. "
+        f"Returned {len(messages)} {count_label}. Messages: {'; '.join(previews)}. "
         "Use google_bridge with operation=read and a message_id to fetch subject, sender, snippet, and metadata for each message."
     )
 
@@ -746,6 +986,195 @@ def _summarize_gmail_delete(data: dict, *, message_id: str) -> str:
     return " ".join(parts)
 
 
+def _summarize_gmail_bulk_trash(message_ids: list[str]) -> str:
+    ids = ", ".join(item for item in message_ids if item)
+    return f"Gmail messages moved to trash. Count: {len(message_ids)}. Message IDs: {ids}."
+
+
+def _summarize_gmail_bulk_delete(message_ids: list[str]) -> str:
+    ids = ", ".join(item for item in message_ids if item)
+    return f"Gmail messages permanently deleted. Count: {len(message_ids)}. Message IDs: {ids}."
+
+
+def _summarize_gmail_no_matches_for_cleanup(*, queries: list[str], accounts: list[dict[str, object]]) -> str:
+    query_text = ", ".join(query for query in queries if query.strip())
+    account_text = ", ".join(
+        str(item.get("email") or item.get("google_subject") or "").strip()
+        for item in accounts
+        if str(item.get("email") or item.get("google_subject") or "").strip()
+    )
+    if not account_text:
+        account_text = "unknown accounts"
+    if not query_text:
+        query_text = "no query"
+    return f"No Gmail messages matched this cleanup query. Checked accounts: {account_text}. Queries: {query_text}."
+
+
+def _gmail_or_clause_limit() -> int:
+    try:
+        return max(1, int(getattr(settings, "GMAIL_OR_CLAUSE_LIMIT", 10) or 10))
+    except Exception:
+        return 10
+
+
+def _expand_gmail_query_clauses(query: str) -> list[str]:
+    text = str(query or "").strip()
+    if not text:
+        return [""]
+    clauses: list[str] = []
+    buffer: list[str] = []
+    depth = 0
+    in_quotes = False
+    index = 0
+    while index < len(text):
+        if not in_quotes and text.startswith(" OR ", index):
+            if depth > 0:
+                raise GoogleBridgeTaskError(
+                    "Malformed Gmail query: OR inside parentheses is not supported. "
+                    "Use OR only between complete top-level clauses."
+                )
+            clause = _normalize_gmail_query_clause("".join(buffer).strip())
+            if not clause:
+                raise GoogleBridgeTaskError("Malformed Gmail query: empty OR clause.")
+            clauses.append(clause)
+            buffer = []
+            index += 4
+            continue
+        ch = text[index]
+        if ch == '"' and (index == 0 or text[index - 1] != "\\"):
+            in_quotes = not in_quotes
+        elif not in_quotes:
+            if ch == "(":
+                depth += 1
+            elif ch == ")":
+                if depth == 0:
+                    raise GoogleBridgeTaskError("Malformed Gmail query: unmatched closing parenthesis.")
+                depth -= 1
+        buffer.append(ch)
+        index += 1
+    if in_quotes:
+        raise GoogleBridgeTaskError("Malformed Gmail query: unmatched quote.")
+    if depth != 0:
+        raise GoogleBridgeTaskError("Malformed Gmail query: unmatched opening parenthesis.")
+    final_clause = _normalize_gmail_query_clause("".join(buffer).strip())
+    if not final_clause:
+        if clauses:
+            raise GoogleBridgeTaskError("Malformed Gmail query: empty OR clause.")
+        return [""]
+    clauses.append(final_clause)
+    clause_limit = _gmail_or_clause_limit()
+    if len(clauses) > clause_limit:
+        raise GoogleBridgeTaskError(
+            f"Malformed Gmail query: OR clauses are limited to {clause_limit} top-level clauses."
+        )
+    return clauses
+
+
+def _normalize_gmail_query_clause(query: str) -> str:
+    text = str(query or "").strip()
+    if not text:
+        return ""
+    text = re.sub(r"(?i)\bfrom:\s*@\s*", "from:", text)
+    text = re.sub(r"(?i)\bfrom:\s+", "from:", text)
+    text = re.sub(r"(?i)\bsubject:\s+", "subject:", text)
+    text = re.sub(r"(?i)\blabel_ids:\s+", "label_ids:", text)
+    text = re.sub(r"(?i)\bin:\s+", "in:", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _expand_gmail_delete_queries(query: str) -> list[str]:
+    return _expand_gmail_query_clauses(query)
+
+
+def _collect_gmail_messages_for_queries(
+    client: GoogleBridgeClient,
+    *,
+    queries: list[str],
+    label_ids: list[str],
+    max_results_per_query: int | None = None,
+) -> list[dict[str, object]]:
+    matches: list[dict[str, object]] = []
+    seen_message_ids: set[str] = set()
+    for query in queries:
+        page_token = ""
+        collected_for_query = 0
+        seen_page_tokens: set[str] = set()
+        while True:
+            if max_results_per_query is not None and collected_for_query >= max_results_per_query:
+                break
+            if page_token in seen_page_tokens:
+                break
+            seen_page_tokens.add(page_token)
+            request_max_results = 100
+            if max_results_per_query is not None:
+                request_max_results = min(request_max_results, max(1, max_results_per_query - collected_for_query))
+            page = client.list_gmail_messages(
+                query=query,
+                label_ids=label_ids,
+                max_results=request_max_results,
+                page_token=page_token,
+            )
+            for item in list(page.get("messages") or []):
+                message = dict(item)
+                message_id = str(message.get("id") or "").strip()
+                if message_id and message_id in seen_message_ids:
+                    continue
+                if message_id:
+                    seen_message_ids.add(message_id)
+                matches.append(message)
+                collected_for_query += 1
+                if max_results_per_query is not None and collected_for_query >= max_results_per_query:
+                    break
+            page_token = str(page.get("nextPageToken") or "").strip()
+            if not page_token:
+                break
+    return matches
+
+
+def _gmail_message_sort_key(item: dict[str, object]) -> tuple[float, str, str]:
+    date_text = str(item.get("date") or "").strip()
+    parsed = None
+    if date_text:
+        try:
+            parsed = parsedate_to_datetime(date_text)
+        except Exception:
+            parsed = None
+    timestamp = parsed.timestamp() if parsed is not None else 0.0
+    subject = str(item.get("subject") or "").strip()
+    message_id = str(item.get("id") or "").strip()
+    return (-timestamp, subject, message_id)
+
+
+def _enrich_gmail_list_messages(client: GoogleBridgeClient, data: dict) -> dict:
+    messages = [dict(item) for item in list(data.get("messages") or [])]
+    if not messages:
+        return data
+    enriched_messages: list[dict[str, object]] = []
+    for message in messages:
+        message_id = str(message.get("id") or "").strip()
+        if not message_id:
+            enriched_messages.append(message)
+            continue
+        try:
+            message_data = client.get_gmail_message(message_id)
+        except Exception:
+            enriched_messages.append(message)
+            continue
+        headers = {str(header.get("name") or "").lower(): str(header.get("value") or "").strip() for header in message_data.get("payload", {}).get("headers", [])}
+        enriched_messages.append(
+            {
+                **message,
+                "subject": headers.get("subject", ""),
+                "from": headers.get("from", ""),
+                "date": headers.get("date", ""),
+                "snippet": str(message_data.get("snippet") or "").strip(),
+            }
+        )
+    enriched = dict(data)
+    enriched["messages"] = enriched_messages
+    return enriched
+
+
 def _summarize_calendar_list(data: dict) -> str:
     events = list(data.get("items") or [])
     total = len(events)
@@ -753,6 +1182,14 @@ def _summarize_calendar_list(data: dict) -> str:
         return "No calendar events were returned."
     preview = ", ".join(str(item.get("summary") or item.get("id") or "").strip() for item in events[:5] if str(item.get("summary") or item.get("id") or "").strip())
     return f"Found {total} calendar events. Event summaries: {preview}."
+
+
+def _calendar_event_sort_key(item: dict[str, object]) -> tuple[str, str, str]:
+    start = dict(item.get("start") or {})
+    start_value = str(start.get("dateTime") or start.get("date") or "").strip()
+    calendar_id = str(item.get("calendar_id") or "").strip()
+    summary = str(item.get("summary") or item.get("id") or "").strip()
+    return start_value, calendar_id, summary
 
 
 def _summarize_calendar_event(data: dict) -> str:

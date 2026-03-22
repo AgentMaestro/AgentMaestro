@@ -381,6 +381,9 @@ _TOOL_ADDITIONAL_DOCS = {
     "- Repo-relative `root` values resolve from the repository root when one is provided in policy context.\n"
     "- Absolute `root` values are permitted only when they fall under the allowed roots for the run.\n"
     "- `include_globs` are evaluated relative to the provided `root`.\n\n"
+    "QUERY NOTES:\n"
+    "- When `is_regex=true`, use regex syntax for alternatives. Prefer `|` between options instead of the word `OR`.\n"
+    "- Example: `sprint|roadmap|milestone|next sprint|planning`.\n\n"
     "RESULT NOTES:\n"
     "- Match snippets include `line`, `col`, and `line_text` when the tool can derive them from the scanned text.",
     "web_search": "\n\nRESEARCH NOTES:\n"
@@ -406,7 +409,8 @@ _TOOL_ADDITIONAL_DOCS = {
     "- Scheduled work runs headlessly. Use `other_task` for the task label and put structured intent in `execution_payload`.\n"
     "- Scheduled runs inherit the agent's backup models and retry policy, so backup failover applies automatically.\n"
     "- Prefer `recurrence` for anything more complex than a single daily wall-clock time.\n"
-    "- Use `title` and `execution_payload` to describe the recurring job clearly so the future headless run has enough context.\n",
+    "- Use `title` and `execution_payload` to describe the recurring job clearly so the future headless run has enough context.\n"
+    "- list_scheduled_tasks already returns scheduled_task_id, so use that identifier for future edit, disable, or enable operations.\n",
     "search_memory": "\n\nMEMORY NOTES:\n"
     "- `search_memory` performs simple text lookup over durable memory records.\n"
     "- Narrow by `scope_type`, `scope_id`, and `memory_kind` when the target scope is known.\n"
@@ -1329,7 +1333,7 @@ TOOL_REGISTRY = [
     },
     {
         "name": GOOGLE_BRIDGE_TOOL_GROUP_NAME,
-        "description": "Google bridge for Gmail and Calendar reads plus Gmail draft/send/trash/delete workflows and Calendar read/create/update/delete workflows. For Gmail trash/delete, never use read as a lookup step. Use the latest list result's message_id or a Gmail query that uniquely matches one message. The payload contract stays JSON-in / JSON-out so future Google surfaces can reuse the same shape.",
+        "description": "Google bridge for Gmail and Calendar reads plus Gmail draft/send/trash/delete workflows and Calendar read/create/update/delete workflows. Bare Gmail list reads default to unread messages. Use include_read=true when you want all Gmail messages, or provide a query/label filter for a narrower mailbox view. Gmail list/read query filters support exact sender, sender domain, subject, and top-level OR splitting across those clauses. Use account_scope=all when you want the bridge to fan out across every active connected account and merge the results. For Gmail trash/delete queries, use account_scope=all when you want the same query to apply across every connected account. Calendar list reads can omit calendar_id or use all to inspect every calendar on the connected account, while primary stays available when you explicitly want one calendar. For Gmail reads, use query filters such as from:info@airbnb.com for exact sender, from:airbnb.com for sender-domain, subject:(\"Airbnb\") for subject search, plus label_ids or include_read for mailbox filtering. For Gmail trash/delete, never use read as a lookup step. OR is supported for Gmail list/read searches and bulk trash/delete cleanup only at the top level, where it is split into separate Gmail clauses before merging or deleting. Nested OR inside parentheses is rejected as malformed. For bulk cleanup, choose the Gmail query shape that matches your intent: subject:(\"Airbnb\") for subject-based cleanup, from:info@airbnb.com for exact sender cleanup, and from:airbnb.com for sender-domain cleanup. If you need multiple cleanup targets in one call, join them with OR and the bridge will split them into separate Gmail clauses as long as each clause is complete. For Gmail writes, create a draft first and then send it when ready. The preferred delete pattern in each case is action_kind=delete with operation=trash (or omit operation and let it default) plus the matching Gmail query. Keep delete_mode at trash unless you explicitly want permanent deletion. Gmail OR fan-out is capped at 10 top-level clauses by default; set TOOLRUNNER_GMAIL_OR_CLAUSE_LIMIT to adjust it. If the agent accidentally writes `from:@domain.com` or adds stray spaces after query tokens, the bridge normalizes that to the canonical Gmail form. The payload contract stays JSON-in / JSON-out so future Google surfaces can reuse the same shape.",
         "tools": [
             {
                 "name": GOOGLE_BRIDGE_TOOL_NAME,
@@ -1519,14 +1523,20 @@ TOOL_REGISTRY = [
             },
             {
                 "name": "search_code",
-                "description": "Search codebase for text patterns/regex.",
+                "description": "Search codebase for text patterns/regex. When using regex mode, use `|` for alternatives instead of the word `OR`.",
                 "risk": ToolRisk.ELEVATED,
                 "args_schema": {
                     "type": "object",
                     "properties": {
-                        "query": {"type": "string"},
+                        "query": {
+                            "type": "string",
+                            "description": "Search pattern. Use literal text when is_regex=false, or regex syntax when is_regex=true. Prefer `|` for alternatives instead of the word `OR`.",
+                        },
                         "root": {"type": "string", "description": "Optional absolute or repo-relative search root."},
-                        "is_regex": {"type": "boolean"},
+                        "is_regex": {
+                            "type": "boolean",
+                            "description": "Set true to interpret query as a regex. Use regex alternation (`|`) for alternatives, not the word `OR`.",
+                        },
                         "case_sensitive": {"type": "boolean"},
                         "include_globs": {"type": "array", "items": {"type": "string"}},
                         "exclude_globs": {"type": "array", "items": {"type": "string"}},

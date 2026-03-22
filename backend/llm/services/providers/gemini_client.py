@@ -57,6 +57,7 @@ class GeminiClient(BaseLLMClient):
             max_output_tokens: Optional[int] = None,
             previous_response_id: Optional[str] = None,
             outstanding_provider_call_id: Optional[str] = None,
+            outstanding_provider_call_ids: Optional[Sequence[str]] = None,
             extra: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         return await self.http_service.complete(
@@ -67,6 +68,7 @@ class GeminiClient(BaseLLMClient):
             max_output_tokens=max_output_tokens,
             previous_response_id=previous_response_id,
             outstanding_provider_call_id=outstanding_provider_call_id,
+            outstanding_provider_call_ids=outstanding_provider_call_ids,
             extra=extra,
         )
 

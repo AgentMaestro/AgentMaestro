@@ -178,3 +178,4 @@ def test_pairing_status_claimed_redirects():
     payload = response.json()
     assert payload["status"] == PendingPairing.STATUS_CLAIMED
     assert "redirect_url" in payload
+    assert payload["redirect_url"] == reverse("agents:agent_detail", kwargs={"slug": agent.slug})

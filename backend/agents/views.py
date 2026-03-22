@@ -544,6 +544,25 @@ def _resolve_transport_for_provider(provider: str) -> str:
         return "http"
 
 
+def _current_dashboard_run(agent: Agent) -> AgentRun | None:
+    return (
+        AgentRun.objects.filter(
+            agent=agent,
+            channel=AgentRun.Channel.DASHBOARD,
+            status__in={
+                AgentRun.Status.RUNNING,
+                AgentRun.Status.PAUSED,
+                AgentRun.Status.WAITING_FOR_USER,
+                AgentRun.Status.WAITING_FOR_APPROVAL,
+                AgentRun.Status.WAITING_FOR_TOOL,
+                AgentRun.Status.WAITING_FOR_SUBRUN,
+            },
+        )
+        .order_by("-started_at", "-created_at")
+        .first()
+    )
+
+
 @login_required
 def agent_detail(request, slug: str):
     agent = get_object_or_404(Agent.objects.select_related("workspace", "owner"), slug=slug)
@@ -569,6 +588,7 @@ def agent_detail(request, slug: str):
     provider_label = format_provider_display(normalized_provider)
     transport = _resolve_transport_for_provider(normalized_provider)
     transport_label = "WS" if transport.lower() == "ws" else "HTTP"
+    current_run = _current_dashboard_run(agent)
 
     effective_tools = get_effective_tools(agent, request.user)
     telegram_endpoint = find_agent_telegram_endpoint(agent)
@@ -588,6 +608,7 @@ def agent_detail(request, slug: str):
         "llm_model": model_name,
         "llm_transport": transport,
         "llm_transport_label": transport_label,
+        "current_run_id": str(current_run.id) if current_run else "",
     }
     return render(request, "agents/agent_detail.html", context)
 

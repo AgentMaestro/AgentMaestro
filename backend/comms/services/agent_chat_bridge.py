@@ -6,6 +6,7 @@ from typing import Optional
 
 import httpx
 
+from agents.models import Agent
 from comms.models import CommsConversation, PendingPairing
 from comms.services.outbound import send_conversation_message
 from runs.models import AgentRun
@@ -98,11 +99,29 @@ def paired_agent_for_conversation(conversation: CommsConversation):
         .first()
     )
     if pairing is None:
+        control_conversation = getattr(conversation, "control_conversation", None)
+        if control_conversation is not None:
+            return (
+                Agent.objects.filter(default_conversation=control_conversation)
+                .select_related("default_conversation")
+                .order_by("-created_at")
+                .first()
+            )
         return None
     return pairing.agent
 
 
 def paired_conversation_for_agent(agent) -> CommsConversation | None:
+    default_conversation = getattr(agent, "default_conversation", None)
+    if default_conversation is not None:
+        comms_conversation = getattr(default_conversation, "comms_conversation", None)
+        if (
+            comms_conversation is not None
+            and getattr(getattr(comms_conversation, "transport", None), "key", "") == "telegram"
+            and comms_conversation.transport_id
+            and comms_conversation.endpoint_id
+        ):
+            return comms_conversation
     pairing = (
         PendingPairing.objects.filter(
             agent=agent,
@@ -128,6 +147,17 @@ def paired_conversation_for_agent(agent) -> CommsConversation | None:
 
 
 def active_run_for_agent(agent) -> AgentRun | None:
+    dashboard_run = (
+        AgentRun.objects.filter(
+            agent=agent,
+            channel=AgentRun.Channel.DASHBOARD,
+            status__in=ACTIVE_TRANSPORT_RUN_STATUSES,
+        )
+        .order_by("-started_at", "-created_at")
+        .first()
+    )
+    if dashboard_run is not None:
+        return dashboard_run
     return (
         AgentRun.objects.filter(agent=agent, status__in=ACTIVE_TRANSPORT_RUN_STATUSES)
         .order_by("-started_at", "-created_at")

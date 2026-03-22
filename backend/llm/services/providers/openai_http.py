@@ -12,7 +12,6 @@ from .common import (
     collect_openai_compatible_text,
     collect_responses_tool_calls,
     format_openai_compatible_responses_tools,
-    messages_to_responses_input,
     normalize_openai_compatible_tools,
     responses_usage_to_chat_usage,
 )
@@ -67,6 +66,7 @@ class OpenAIHTTPService:
         max_output_tokens: Optional[int] = None,
         previous_response_id: Optional[str] = None,
         outstanding_provider_call_id: Optional[str] = None,
+        outstanding_provider_call_ids: Optional[List[str]] = None,
         extra: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         http_mode = os.getenv("OPENAI_HTTP_MODE", "responses").lower()
@@ -87,6 +87,7 @@ class OpenAIHTTPService:
             max_output_tokens=max_output_tokens,
             previous_response_id=previous_response_id,
             outstanding_provider_call_id=outstanding_provider_call_id,
+            outstanding_provider_call_ids=outstanding_provider_call_ids,
             extra=extra,
         )
 
@@ -163,12 +164,14 @@ class OpenAIHTTPService:
         max_output_tokens: Optional[int] = None,
         previous_response_id: Optional[str] = None,
         outstanding_provider_call_id: Optional[str] = None,
+        outstanding_provider_call_ids: Optional[List[str]] = None,
         extra: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         input_items = self._messages_to_responses_input(
             messages,
             previous_response_id=previous_response_id,
             outstanding_provider_call_id=outstanding_provider_call_id,
+            outstanding_provider_call_ids=outstanding_provider_call_ids,
         )
         responses_tools = self.format_tool_definitions_for_responses(tools)
 
@@ -243,11 +246,17 @@ class OpenAIHTTPService:
         *,
         previous_response_id: Optional[str] = None,
         outstanding_provider_call_id: Optional[str] = None,
+        outstanding_provider_call_ids: Optional[List[str]] = None,
     ) -> List[Dict[str, Any]]:
         previous_response_id = str(previous_response_id or "").strip() or None
         outstanding_provider_call_id = str(outstanding_provider_call_id or "").strip() or None
+        normalized_ids = [
+            str(value or "").strip()
+            for value in (outstanding_provider_call_ids or [])
+            if str(value or "").strip()
+        ]
         if previous_response_id:
-            if outstanding_provider_call_id:
+            if outstanding_provider_call_id or normalized_ids:
                 tool_messages: List[Dict[str, Any]] = []
                 for message in reversed(messages):
                     if message.get("role") != "tool":
@@ -260,13 +269,13 @@ class OpenAIHTTPService:
                     return build_input_items(
                         tool_messages,
                         previous_response_id=previous_response_id,
-                        outstanding_provider_call_id=outstanding_provider_call_id,
+                        outstanding_provider_call_id=outstanding_provider_call_id or None,
+                        outstanding_provider_call_ids=normalized_ids or None,
                     )
-
             for message in reversed(messages):
                 if message.get("role") != "user":
                     continue
-                return messages_to_responses_input([message])
+                return build_input_items([message])
             return []
         return build_input_items(list(messages))
 

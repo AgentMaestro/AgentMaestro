@@ -109,9 +109,9 @@ LIMIT_CONFIGS: Dict[str, LimitConfig] = {
         key=LimitKey.CONCURRENT_TOOL_CALLS_RUN,
         name="concurrent tool calls (run)",
         limit_type=LimitType.CONCURRENCY,
-        concurrency_limit=getattr(settings, "MAX_CONCURRENT_TOOL_CALLS_PER_RUN", 1),
+        concurrency_limit=getattr(settings, "MAX_CONCURRENT_TOOL_CALLS_PER_RUN", 6),
         window_seconds=60,
-        description="Max pending tool calls within a single run.",
+        description="Legacy per-run cap retained for config compatibility; approval flow uses workspace-level gating only.",
     ),
     LimitKey.WS_CONNECTIONS_WORKSPACE: LimitConfig(
         key=LimitKey.WS_CONNECTIONS_WORKSPACE,

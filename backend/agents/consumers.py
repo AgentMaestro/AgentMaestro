@@ -228,6 +228,24 @@ def _get_tool_call_details(tool_call_id: str) -> dict[str, object] | None:
 
 
 @database_sync_to_async
+def _get_outstanding_provider_call_ids(run_id: str) -> list[str]:
+    if not run_id:
+        return []
+    outstanding_statuses = [
+        ToolCall.Status.REQUESTED,
+        ToolCall.Status.PENDING_APPROVAL,
+        ToolCall.Status.QUEUED,
+        ToolCall.Status.RUNNING,
+    ]
+    return list(
+        ToolCall.objects.filter(run_id=run_id, status__in=outstanding_statuses)
+        .exclude(provider_call_id="")
+        .order_by("created_at")
+        .values_list("provider_call_id", flat=True)
+    )
+
+
+@database_sync_to_async
 def _assert_tool_allowed(agent: Agent, user, tool_name: str):
     return assert_tool_allowed(agent, user, tool_name)
 
@@ -1005,6 +1023,7 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
                 "transport_label": transport_runtime,
             }
         )
+        await self._sync_outstanding_provider_call_state()
         await self._flush_pending_tool_results()
 
     async def disconnect(self, close_code):
@@ -1294,6 +1313,25 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
             else:
                 await self._dispatch_to_provider_http()
 
+    async def _sync_outstanding_provider_call_state(self) -> set[str]:
+        if not self.run_id:
+            self._pending_provider_call_ids.clear()
+            self._awaiting_tool_output = False
+            return set()
+        outstanding_provider_call_ids = set(await _get_outstanding_provider_call_ids(str(self.run_id)))
+        self._pending_provider_call_ids = set(outstanding_provider_call_ids)
+        self._awaiting_tool_output = bool(outstanding_provider_call_ids)
+        if outstanding_provider_call_ids:
+            self._tool_result_event.clear()
+        elif not self._tool_result_event.is_set():
+            self._tool_result_event.set()
+        logger.info(
+            "Synced outstanding provider call ids run=%s provider_call_ids=%s",
+            self.run_id,
+            sorted(outstanding_provider_call_ids),
+        )
+        return outstanding_provider_call_ids
+
     async def _dispatch_to_provider_ws(self):
         if await self._dispatch_blocked_by_run_status():
             return
@@ -1312,6 +1350,7 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
         while True:
             if await self._dispatch_blocked_by_run_status():
                 return
+            await self._sync_outstanding_provider_call_state()
             if not self._tool_result_event.is_set():
                 logger.info(
                     "Transport dispatch waiting for tool output run=%s transport=%s pending_tool_call_id=%s provider_call_id=%s ts=%s",
@@ -1545,6 +1584,7 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
             while True:
                 if await self._dispatch_blocked_by_run_status():
                     return
+                await self._sync_outstanding_provider_call_state()
                 if not self._tool_result_event.is_set():
                     logger.info(
                         "HTTP dispatch waiting for tool output run=%s transport=%s pending_tool_call_id=%s provider_call_id=%s ts=%s",
@@ -1571,8 +1611,8 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
                                 model=model,
                                 tools=tools_to_send,
                                 previous_response_id=self._current_previous_response_id(),
-                                outstanding_provider_call_id=(
-                                    self._tool_output_provider_call_ids[-1]
+                                outstanding_provider_call_ids=(
+                                    list(self._tool_output_provider_call_ids)
                                     if self._tool_output_provider_call_ids
                                     else None
                                 ),
@@ -1972,6 +2012,7 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
     async def _flush_pending_tool_results(self, limit: int = 20) -> None:
         if not self.run_id:
             return
+        await self._sync_outstanding_provider_call_state()
         ts = timezone.now().isoformat()
         logger.info(
             "flushing pending tool results run=%s limit=%s ts=%s",

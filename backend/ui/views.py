@@ -144,6 +144,7 @@ def dev_start_run(request):
 
 def run_detail(request, run_id: str):
     run = get_object_or_404(AgentRun.objects.select_related("workspace", "agent"), id=run_id)
+    _assert_workspace_access(request.user, run.workspace_id)
     return render(
         request,
         "ui/run_detail.html",

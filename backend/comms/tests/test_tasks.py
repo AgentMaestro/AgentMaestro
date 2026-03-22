@@ -1,7 +1,7 @@
 import pytest
 
 from comms.models import CommsConversation, CommsMessage, Transport, TransportEndpoint
-from comms.tasks import _acquire_redis_lock, telegram_poll_once
+from comms.tasks import _acquire_redis_lock, _canonical_telegram_endpoint_ids, telegram_poll_once
 from comms.transports.base import NormalizedEvent
 from control.models import ControlMessage
 from django.conf import settings
@@ -114,3 +114,27 @@ def test_telegram_poll_once_ingests_updates(monkeypatch):
     assert ControlMessage.objects.count() == 2
     assert CommsConversation.objects.filter(external_conversation_id="chat-1").exists()
     assert CommsMessage.objects.filter(conversation__external_conversation_id="chat-1").count() == 2
+
+
+@pytest.mark.django_db
+def test_canonical_telegram_endpoint_ids_skips_disabled_endpoints():
+    transport = Transport.objects.create(key="telegram", display_name="Telegram")
+    enabled = TransportEndpoint.objects.create(
+        transport=transport,
+        kind="bot",
+        config={"bot_username": "live_bot"},
+    )
+    disabled = TransportEndpoint.objects.create(
+        transport=transport,
+        kind="bot",
+        config={
+            "bot_username": "live_bot",
+            "telegram_polling_disabled": True,
+            "telegram_polling_disabled_reason": "telegram_http_401",
+        },
+    )
+
+    ids = _canonical_telegram_endpoint_ids()
+
+    assert enabled.id in ids
+    assert disabled.id not in ids

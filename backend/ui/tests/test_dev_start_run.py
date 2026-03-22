@@ -38,20 +38,25 @@ def test_dev_start_run_post_creates_run(mock_delay, client):
 
 @pytest.mark.django_db
 def test_run_detail_page_displays_run(client):
+    user = get_user_model().objects.create_user(username="ui-run-owner", password="x")
     workspace = Workspace.objects.create(name="UI Test WS")
-    agent = Agent.objects.create(workspace=workspace, name="UI Agent", soul="Prompt")
+    WorkspaceMembership.objects.create(workspace=workspace, user=user, role=WorkspaceMembership.Role.OWNER)
+    agent = Agent.objects.create(workspace=workspace, owner=user, name="UI Agent", soul="Prompt")
     run = AgentRun.objects.create(
         workspace=workspace,
         agent=agent,
+        started_by=user,
         status=AgentRun.Status.PENDING,
         input_text="Test",
     )
 
+    client.force_login(user)
     resp = client.get(reverse("ui:run_detail", kwargs={"run_id": run.id}))
     content = resp.content.decode()
     assert str(run.id) in content
     assert workspace.name in content
     assert agent.name in content
+    assert "Run timeline debug" in content
 
 
 @pytest.mark.django_db

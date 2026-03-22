@@ -1,5 +1,7 @@
 import pytest
 
+from django.contrib.auth import get_user_model
+
 from agents.models import Agent
 from core.models import Workspace
 from comms.models import (
@@ -12,6 +14,7 @@ from comms.models import (
 from comms.services.ingest import ingest_normalized_event
 from comms.transports.base import NormalizedEvent
 from control.models import ApprovalRequest, ControlConversation, ControlMessage
+from comms.services.agent_chat_bridge import paired_agent_for_conversation
 
 
 def make_event(**overrides):
@@ -193,3 +196,39 @@ def test_pairing_invalid_code_reports_failure(monkeypatch):
     assert control_message.direction == "system"
     assert "Invalid or expired pairing code" in control_message.text
     assert sent
+
+
+@pytest.mark.django_db
+def test_paired_agent_for_conversation_falls_back_to_default_conversation():
+    workspace = Workspace.objects.create(name="pairing-fallback-ws")
+    owner = get_user_model().objects.create_user(username="pairing-fallback-owner")
+    agent = Agent.objects.create(
+        workspace=workspace,
+        owner=owner,
+        name="fallback-agent",
+        description="test fallback",
+        default_model="gpt-5",
+        temperature=0.70,
+        soul="You are an agent.",
+        policy_name="react",
+        tool_policy_json={},
+    )
+    transport = Transport.objects.create(key="telegram", display_name="Telegram")
+    endpoint = TransportEndpoint.objects.create(
+        transport=transport,
+        kind="bot",
+        config={"allow_user_ids": ["42"], "agent_id": str(agent.id)},
+    )
+    control_conversation = ControlConversation.objects.create(kind="comms_mirror", title="Fallback")
+    agent.default_conversation = control_conversation
+    agent.save(update_fields=["default_conversation"])
+    conversation = CommsConversation.objects.create(
+        transport=transport,
+        endpoint=endpoint,
+        external_conversation_id="chat-fallback",
+        control_conversation=control_conversation,
+    )
+
+    resolved = paired_agent_for_conversation(conversation)
+
+    assert resolved == agent

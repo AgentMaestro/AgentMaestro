@@ -64,12 +64,21 @@ class GoogleBridgeClient:
                 return {}
             raise GoogleApiError(text) from None
 
-    def list_gmail_messages(self, *, query: str = "", label_ids: list[str] | None = None, max_results: int = 10) -> dict:
-        params: dict[str, object] = {"maxResults": max(1, min(int(max_results or 10), 100))}
+    def list_gmail_messages(
+        self,
+        *,
+        query: str = "",
+        label_ids: list[str] | None = None,
+        max_results: int = 20,
+        page_token: str = "",
+    ) -> dict:
+        params: dict[str, object] = {"maxResults": max(1, min(int(max_results or 20), 100))}
         if query.strip():
             params["q"] = query.strip()
         if label_ids:
             params["labelIds"] = label_ids
+        if page_token.strip():
+            params["pageToken"] = page_token.strip()
         return self._request("GET", "https://gmail.googleapis.com/gmail/v1/users/me/messages", params=params)
 
     def get_gmail_message(self, message_id: str) -> dict:
@@ -132,10 +141,10 @@ class GoogleBridgeClient:
         calendar_id: str = "primary",
         time_min: str = "",
         time_max: str = "",
-        max_results: int = 10,
+        max_results: int = 20,
     ) -> dict:
         params: dict[str, object] = {
-            "maxResults": max(1, min(int(max_results or 10), 100)),
+            "maxResults": max(1, min(int(max_results or 20), 100)),
             "singleEvents": "true",
             "orderBy": "startTime",
         }
@@ -144,6 +153,9 @@ class GoogleBridgeClient:
         if time_max.strip():
             params["timeMax"] = time_max.strip()
         return self._request("GET", f"https://www.googleapis.com/calendar/v3/calendars/{calendar_id}/events", params=params)
+
+    def list_calendar_list(self) -> dict:
+        return self._request("GET", "https://www.googleapis.com/calendar/v3/users/me/calendarList")
 
     def get_calendar_event(self, *, calendar_id: str = "primary", event_id: str) -> dict:
         return self._request(

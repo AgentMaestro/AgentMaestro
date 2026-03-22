@@ -284,13 +284,15 @@ def test_execute_tool_call_respects_quota(monkeypatch):
     tool_call = _build_test_run("quota")
     workspace_id = str(tool_call.run.workspace_id)
     run_id = str(tool_call.run_id)
-    blocker = "blocker"
+    blockers = [f"blocker-{index}" for index in range(6)]
     try:
-        acquire_tool_call_slots(workspace_id, run_id, blocker)
+        for blocker in blockers:
+            acquire_tool_call_slots(workspace_id, run_id, blocker)
         with pytest.raises(LimitExceeded):
             execute_tool_call(str(tool_call.id))
     finally:
-        release_tool_call_slots(workspace_id, run_id, blocker)
+        for blocker in blockers:
+            release_tool_call_slots(workspace_id, run_id, blocker)
 
 
 @override_settings(

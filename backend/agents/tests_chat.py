@@ -14,7 +14,7 @@ from agents.models import Agent
 from core.models import Workspace, WorkspaceMembership
 from runs.models import AgentRun, RunEvent
 from runs.services.events import append_event
-from tools.models import AgentToolGrant, Tool, ToolDefinition, ToolGroup, ToolRisk
+from tools.models import AgentToolGrant, Tool, ToolCall, ToolDefinition, ToolGroup, ToolRisk
 
 
 def _session_cookie_for_user(user):
@@ -354,6 +354,48 @@ async def test_build_ws_input_items_resends_system_context_on_first_turn_after_c
     assert "Always announce reconnect readiness." in items[0]["content"][0]["text"]
     assert items[-1]["role"] == "user"
     assert items[-1]["content"][0]["text"] == "who are you?"
+
+
+@pytest.mark.asyncio
+@pytest.mark.django_db(transaction=True)
+async def test_sync_outstanding_provider_call_state_restores_pending_tool_calls():
+    user = get_user_model().objects.create_user(username="ws-pending-user")
+    workspace = Workspace.objects.create(name="ws-pending-ws")
+    agent = Agent.objects.create(workspace=workspace, owner=user, name="Pending Agent", soul="Prompt")
+    run = AgentRun.objects.create(
+        workspace=workspace,
+        agent=agent,
+        started_by=user,
+        status=AgentRun.Status.RUNNING,
+        input_text="prompt",
+    )
+    step = run.steps.create(
+        step_index=1,
+        kind="TOOL_CALL",
+        payload={"tool_name": "file_read", "args": {"path": "AGENTS.md"}},
+    )
+    ToolCall.objects.create(
+        run=run,
+        step=step,
+        tool_name="file_read",
+        args={"path": "AGENTS.md"},
+        status=ToolCall.Status.PENDING_APPROVAL,
+        provider_call_id="call-123",
+        requires_approval=True,
+        correlation_id=step.correlation_id,
+    )
+    consumer = AgentChatConsumer(
+        scope={"type": "websocket", "user": user, "url_route": {"kwargs": {"slug": agent.slug}}}
+    )
+    consumer.run_id = str(run.id)
+    consumer._tool_result_event.set()
+
+    outstanding = await consumer._sync_outstanding_provider_call_state()
+
+    assert outstanding == {"call-123"}
+    assert consumer._pending_provider_call_ids == {"call-123"}
+    assert consumer._awaiting_tool_output is True
+    assert consumer._tool_result_event.is_set() is False
 
 @pytest.mark.django_db(transaction=True)
 def test_ensure_system_context_switches_to_bootstrap_complete_after_agents_md_read():

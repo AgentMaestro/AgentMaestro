@@ -245,8 +245,12 @@ ARCHIVE_COMPACT_EVENTS = os.getenv("ARCHIVE_COMPACT_EVENTS", "true").lower() in 
 
 RECONCILE_INTERVAL = int(os.getenv("RECONCILE_INTERVAL", "30"))
 # Tool-call concurrency is intentionally configured via the toolrunner-prefixed env var
-# so the worker-side limit is obvious in deployment configs.
-MAX_CONCURRENT_TOOL_CALLS_PER_RUN = int(_env_value("TOOLRUNNER_MAX_CONCURRENT_TOOL_CALLS_PER_RUN") or "1")
+# so the worker-side limit is obvious in deployment configs. The approval flow no
+# longer enforces a per-run gate, but we keep this setting for compatibility.
+MAX_CONCURRENT_TOOL_CALLS_PER_RUN = int(_env_value("TOOLRUNNER_MAX_CONCURRENT_TOOL_CALLS_PER_RUN") or "6")
+# Gmail OR clauses are capped to keep fan-out bounded. The bridge rejects nested OR
+# inside parentheses instead of guessing the user's intent.
+GMAIL_OR_CLAUSE_LIMIT = int(_env_value("TOOLRUNNER_GMAIL_OR_CLAUSE_LIMIT") or "10")
 
 TELEGRAM_ENABLE_POLLING = (_env_value("TELEGRAM_ENABLE_POLLING") or "0").lower() in {
     "1",

@@ -243,9 +243,8 @@ def pairing_status(request, pairing_uuid):
         and pairing.agent
         and pairing.agent.default_conversation
     ):
-        control_uuid = pairing.agent.default_conversation.uuid
-        data["control_conversation_uuid"] = str(control_uuid)
-        data["redirect_url"] = f"/ui/chat/{control_uuid}/"
+        data["agent_slug"] = pairing.agent.slug
+        data["redirect_url"] = reverse("agents:agent_detail", kwargs={"slug": pairing.agent.slug})
     return JsonResponse(data)
 
 

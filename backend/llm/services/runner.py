@@ -183,6 +183,16 @@ class LLMRunner:
                     try:
                         for attempt in range(max_same_model_retries + 1):
                             try:
+                                outstanding_provider_call_ids: list[str] = []
+                                for message in reversed(history):
+                                    if message.get("role") != "tool":
+                                        if outstanding_provider_call_ids:
+                                            break
+                                        continue
+                                    call_id = _call_id_value(message)
+                                    if call_id:
+                                        outstanding_provider_call_ids.append(call_id)
+                                outstanding_provider_call_ids.reverse()
                                 response = await client.complete(
                                     history,
                                     model=model_name,
@@ -190,6 +200,9 @@ class LLMRunner:
                                     temperature=temperature,
                                     max_output_tokens=max_output_tokens,
                                     extra=extra,
+                                    outstanding_provider_call_ids=(
+                                        outstanding_provider_call_ids or None
+                                    ),
                                 )
                                 break
                             except Exception as exc:

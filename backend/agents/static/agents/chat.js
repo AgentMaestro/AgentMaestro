@@ -10,9 +10,11 @@
     const form = shell.querySelector("[data-chat-form]");
     const textarea = shell.querySelector("[data-chat-input]");
     const connectionActionBtn = shell.querySelector("[data-connection-action]");
+    const runTimelineLink = shell.querySelector("[data-run-timeline-link]");
     const runStatusEl = shell.querySelector("[data-run-status]");
     const telegramMirrorToggle = shell.querySelector("[data-telegram-mirror-toggle]");
     const telegramMirrorToggleUrl = shell.dataset.telegramToggleUrl || "";
+    const runTimelineBaseUrl = (shell.dataset.runTimelineBaseUrl || "/ui/run/").trim() || "/ui/run/";
     const approvalGrantsListEl = shell.querySelector("[data-approval-grants-list]");
     const approvalGrantsEmptyEl = shell.querySelector("[data-approval-grants-empty]");
     const clearApprovalGrantsBtn = shell.querySelector("[data-clear-approval-grants]");
@@ -401,6 +403,23 @@
         }
     };
 
+    const updateRunTimelineLink = (runId) => {
+        if (!runTimelineLink) {
+            return;
+        }
+        const normalizedRunId = String(runId || "").trim();
+        if (!normalizedRunId) {
+            runTimelineLink.classList.add("hidden");
+            runTimelineLink.removeAttribute("href");
+            runTimelineLink.setAttribute("aria-disabled", "true");
+            return;
+        }
+        const baseUrl = runTimelineBaseUrl.endsWith("/") ? runTimelineBaseUrl : `${runTimelineBaseUrl}/`;
+        runTimelineLink.href = `${baseUrl}${encodeURIComponent(normalizedRunId)}/`;
+        runTimelineLink.removeAttribute("aria-disabled");
+        runTimelineLink.classList.remove("hidden");
+    };
+
     const appendSystemMessage = (text, kind = "connection") => {
         appendMessage({
             role: "system",
@@ -493,13 +512,26 @@
     };
 
     const runIdStorageKey = agentSlug ? `${RUN_ID_STORAGE_KEY_BASE}:${agentSlug}` : RUN_ID_STORAGE_KEY_BASE;
+    const currentRunId = String(shell.dataset.currentRunId || "").trim();
+
+    const syncCurrentRunId = () => {
+        if (!currentRunId) {
+            return;
+        }
+        activeRunId = currentRunId;
+        storeRunId(activeRunId);
+        updateRunTimelineLink(activeRunId);
+        log("syncCurrentRunId: using server current run_id =", activeRunId);
+    };
 
     const storeRunId = (runId) => {
         if (!sessionRunStorage || !runId) {
+            updateRunTimelineLink(runId);
             return;
         }
         try {
             sessionRunStorage.setItem(runIdStorageKey, runId);
+            updateRunTimelineLink(runId);
         } catch (error) {
             console.warn("Unable to persist run_id", error);
         }
@@ -518,23 +550,32 @@
 
     const clearStoredRunId = () => {
         if (!sessionRunStorage) {
+            updateRunTimelineLink(null);
             return;
         }
         try {
             sessionRunStorage.removeItem(runIdStorageKey);
+            updateRunTimelineLink(null);
         } catch (error) {
             console.warn("Unable to clear stored run_id", error);
         }
     };
 
+    updateRunTimelineLink(readStoredRunId());
+
     const ensureRunId = async ({fromRunId = "", rotationReason = ""} = {}) => {
+        if (!activeRunId && currentRunId && !fromRunId) {
+            syncCurrentRunId();
+            return activeRunId;
+        }
         if (activeRunId) {
             log("ensureRunId: already have activeRunId =", activeRunId);
             return activeRunId;
         }
         const storedRun = readStoredRunId();
-        if (storedRun && !fromRunId) {
+        if (storedRun && !fromRunId && !currentRunId) {
             activeRunId = storedRun;
+            updateRunTimelineLink(activeRunId);
             log("ensureRunId: restored run_id from sessionStorage =", activeRunId);
             return activeRunId;
         }
@@ -547,6 +588,7 @@
         if (preallocated) {
             activeRunId = preallocated.run_id || preallocated;
             storeRunId(activeRunId);
+            updateRunTimelineLink(activeRunId);
             log("ensureRunId: obtained preallocated run_id =", activeRunId);
         }
         return activeRunId;
@@ -1470,6 +1512,7 @@
                 log("Connected with run_id:", activeRunId);
                 if (activeRunId) {
                     storeRunId(activeRunId);
+                    updateRunTimelineLink(activeRunId);
                 }
                 setApprovalGrants(payload.approval_grants || []);
                 setRunStatus(payload.run_status || activeRunStatus);
@@ -1736,6 +1779,7 @@
     };
 
     const initializeRunAndConnect = async () => {
+        syncCurrentRunId();
         await ensureRunId();
         connect();
     };

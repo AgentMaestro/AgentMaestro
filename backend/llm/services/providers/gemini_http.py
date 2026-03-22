@@ -77,12 +77,14 @@ class GeminiHTTPService:
             max_output_tokens: Optional[int] = None,
             previous_response_id: Optional[str] = None,
             outstanding_provider_call_id: Optional[str] = None,
+            outstanding_provider_call_ids: Optional[Sequence[str]] = None,
             extra: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         contents, system_instruction = self._build_contents(
             messages,
             previous_response_id=previous_response_id,
             outstanding_provider_call_id=outstanding_provider_call_id,
+            outstanding_provider_call_ids=outstanding_provider_call_ids,
         )
         normalized_tools = normalize_openai_compatible_tools(tools or [])
         payload: Dict[str, Any] = {"model": model, "contents": contents}
@@ -168,6 +170,7 @@ class GeminiHTTPService:
             *,
             previous_response_id: str | None = None,
             outstanding_provider_call_id: str | None = None,
+            outstanding_provider_call_ids: Sequence[str] | None = None,
     ) -> tuple[List[Dict[str, Any]], str | None]:
         system_texts: List[str] = []
         for msg in messages:

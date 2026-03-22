@@ -1,275 +1,264 @@
 {% load static %}
 <!DOCTYPE html>
 <html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <title>AgentMaestro Run {{ run.id }}</title>
-    <style>
-      body {
-        font-family: "Inter", system-ui, sans-serif;
-        background: #050816;
-        color: #f8fafc;
-        margin: 0;
-        padding: 32px;
-      }
+<head>
+  <meta charset="utf-8">
+  <title>Run {{ run.id }} · Timeline Debug</title>
+  <link rel="icon" type="image/x-icon" href="{% static 'img/favicon.ico' %}">
+  <style>
+    :root {
+      --bg: #030712;
+      --panel: #0f172a;
+      --border: rgba(148, 163, 184, 0.18);
+      --text: #f8fafc;
+      --muted: rgba(248, 250, 252, 0.68);
+      --user: #dbeafe;
+      --user-border: #93c5fd;
+      --user-text: #1e3a8a;
+      --system: #fef3c7;
+      --system-border: #fde68a;
+      --system-text: #92400e;
+      --assistant: #e2e8f0;
+      --assistant-border: #94a3b8;
+      --assistant-text: #0f172a;
+      --success: #dcfce7;
+      --success-border: #86efac;
+      --success-text: #166534;
+      --failure: #fee2e2;
+      --failure-border: #fca5a5;
+      --failure-text: #7f1d1d;
+      --info: #e0f2fe;
+      --info-border: #7dd3fc;
+      --info-text: #0c4a6e;
+    }
 
-      .card {
-        max-width: 960px;
-        margin: 0 auto;
-        border-radius: 20px;
-        background: radial-gradient(circle at top, rgba(14, 165, 233, 0.15), transparent 60%),
-          #0f172a;
-        padding: 32px;
-        box-shadow: 0 20px 50px rgba(2, 6, 23, 0.6);
-      }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background:
+        radial-gradient(circle at top left, rgba(59, 130, 246, 0.18), transparent 36%),
+        radial-gradient(circle at top right, rgba(16, 185, 129, 0.12), transparent 30%),
+        var(--bg);
+      color: var(--text);
+      font-family: "Segoe UI", system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+    }
+    a { color: inherit; }
 
-      h1 {
-        margin-bottom: 10px;
-      }
+    .page { max-width: 1680px; margin: 0 auto; padding: 24px; }
+    .shell {
+      border: 1px solid var(--border);
+      border-radius: 24px;
+      background: linear-gradient(180deg, rgba(15, 23, 42, 0.96), rgba(2, 6, 23, 0.98));
+      box-shadow: 0 28px 80px rgba(2, 6, 23, 0.55);
+      overflow: hidden;
+    }
 
-      .meta {
-        display: inline-flex;
-        align-items: center;
-        gap: 8px;
-        flex-wrap: wrap;
-      }
-      .run-controls {
-        margin-top: 16px;
-        display: flex;
-        gap: 10px;
-        flex-wrap: wrap;
-      }
+    .hero, .summary-grid, .timeline-panel, .detail-panel, .archives-panel {
+      border-bottom: 1px solid var(--border);
+    }
 
-      .spawn-control {
-        margin-top: 12px;
-        display: flex;
-        gap: 10px;
-        flex-wrap: wrap;
-        align-items: center;
-      }
+    .hero {
+      display: flex;
+      justify-content: space-between;
+      gap: 20px;
+      align-items: flex-start;
+      padding: 24px;
+    }
+    .eyebrow {
+      margin: 0 0 8px;
+      text-transform: uppercase;
+      letter-spacing: 0.16em;
+      font-size: 0.72rem;
+      font-weight: 800;
+      color: rgba(125, 211, 252, 0.92);
+    }
+    .hero h1 { margin: 0; font-size: clamp(1.6rem, 2vw, 2.25rem); line-height: 1.1; }
+    .hero-subtitle { margin: 10px 0 0; color: var(--muted); line-height: 1.45; }
+    .hero-actions { display: flex; gap: 10px; flex-wrap: wrap; justify-content: flex-end; }
+    .hero-link {
+      display: inline-flex; align-items: center; justify-content: center; min-height: 42px;
+      padding: 0.55rem 0.95rem; border-radius: 12px; border: 1px solid rgba(125, 211, 252, 0.3);
+      background: rgba(14, 165, 233, 0.12); text-decoration: none; font-weight: 700; color: #e0f2fe;
+    }
+    .hero-link.alt { border-color: rgba(148, 163, 184, 0.22); background: rgba(148, 163, 184, 0.08); color: #e2e8f0; }
 
-      .spawn-control input {
-        flex: 1;
-        min-width: 220px;
-        border-radius: 10px;
-        border: 1px solid #334155;
-        background: #0f172a;
-        color: #f8fafc;
-        padding: 8px 12px;
-        font-size: 13px;
-      }
+    .summary-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 12px;
+      padding: 18px 24px 24px;
+    }
+    .summary-card {
+      border-radius: 16px; border: 1px solid rgba(255, 255, 255, 0.08); background: rgba(255, 255, 255, 0.03);
+      padding: 14px 16px; min-height: 92px;
+    }
+    .summary-label {
+      display: block; margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.12em;
+      font-size: 0.7rem; font-weight: 800; color: rgba(248, 250, 252, 0.56);
+    }
+    .summary-value { font-size: 0.98rem; line-height: 1.45; color: #f8fafc; word-break: break-word; }
+    .summary-value code { color: #bae6fd; font-size: 0.9rem; white-space: break-spaces; }
 
-      .subrun-list {
-        margin-top: 12px;
-        border-radius: 14px;
-        border: 1px solid rgba(148, 163, 184, 0.3);
-        background: rgba(148, 163, 184, 0.06);
-        padding: 16px;
-        font-family: "JetBrains Mono", "Space Mono", monospace;
-        font-size: 13px;
-      }
+    .timeline-panel, .detail-panel, .archives-panel { padding: 22px 24px; }
+    .panel-head {
+      display: flex; justify-content: space-between; gap: 16px; align-items: flex-end;
+      margin-bottom: 14px; flex-wrap: wrap;
+    }
+    .panel-head h2 { margin: 0; font-size: 1.15rem; }
+    .panel-head p { margin: 5px 0 0; color: var(--muted); line-height: 1.45; }
+    .timeline-position { color: #cbd5e1; font-size: 0.9rem; text-align: right; }
 
-      .subrun-entry {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        padding: 8px 0;
-        border-bottom: 1px solid rgba(148, 163, 184, 0.2);
-      }
+    .timeline-strip {
+      display: flex; gap: 10px; overflow-x: auto; padding: 8px 4px 14px; scroll-snap-type: x mandatory;
+    }
+    .timeline-step {
+      flex: 0 0 auto; min-width: 108px; max-width: 160px; border-radius: 16px;
+      border: 1px solid var(--assistant-border); background: rgba(226, 232, 240, 0.08);
+      color: var(--assistant-text); padding: 10px 12px; cursor: pointer; text-align: left;
+      scroll-snap-align: center; transition: transform 0.14s ease, box-shadow 0.14s ease, border-color 0.14s ease;
+    }
+    .timeline-step:hover { transform: translateY(-1px); box-shadow: 0 10px 24px rgba(15, 23, 42, 0.22); }
+    .timeline-step.is-active { outline: 2px solid rgba(56, 189, 248, 0.92); box-shadow: 0 0 0 6px rgba(56, 189, 248, 0.08); }
+    .timeline-step[data-tone="user"] { background: rgba(219, 234, 254, 0.92); border-color: var(--user-border); color: var(--user-text); }
+    .timeline-step[data-tone="system"] { background: rgba(254, 243, 199, 0.96); border-color: var(--system-border); color: var(--system-text); }
+    .timeline-step[data-tone="assistant"] { background: rgba(226, 232, 240, 0.9); border-color: var(--assistant-border); color: var(--assistant-text); }
+    .timeline-step[data-tone="success"] { background: rgba(220, 252, 231, 0.94); border-color: var(--success-border); color: var(--success-text); }
+    .timeline-step[data-tone="failure"] { background: rgba(254, 226, 226, 0.96); border-color: var(--failure-border); color: var(--failure-text); }
+    .timeline-step[data-tone="info"] { background: rgba(224, 242, 254, 0.95); border-color: var(--info-border); color: var(--info-text); }
+    .timeline-step-label { display: block; font-size: 0.72rem; letter-spacing: 0.12em; text-transform: uppercase; font-weight: 800; opacity: 0.8; }
+    .timeline-step-kind { display: block; margin-top: 8px; font-size: 0.95rem; font-weight: 800; line-height: 1.2; word-break: break-word; }
 
-      .subrun-entry:last-child {
-        border-bottom: none;
-      }
+    .slider-row { margin: 6px 0 14px; }
+    .slider-row input[type="range"] { width: 100%; accent-color: #38bdf8; }
+    .legend { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+    .legend-chip {
+      display: inline-flex; align-items: center; min-height: 28px; border-radius: 999px; padding: 0.2rem 0.7rem;
+      font-size: 0.8rem; font-weight: 700; border: 1px solid rgba(255, 255, 255, 0.08);
+    }
+    .legend-chip.user { background: rgba(219, 234, 254, 0.9); color: var(--user-text); border-color: var(--user-border); }
+    .legend-chip.system { background: rgba(254, 243, 199, 0.96); color: var(--system-text); border-color: var(--system-border); }
+    .legend-chip.assistant { background: rgba(226, 232, 240, 0.92); color: var(--assistant-text); border-color: var(--assistant-border); }
+    .legend-chip.success { background: rgba(220, 252, 231, 0.96); color: var(--success-text); border-color: var(--success-border); }
+    .legend-chip.failure { background: rgba(254, 226, 226, 0.96); color: var(--failure-text); border-color: var(--failure-border); }
 
-      .archive-list {
-        margin-top: 16px;
-        border-radius: 14px;
-        border: 1px solid rgba(148, 163, 184, 0.3);
-        background: rgba(16, 185, 129, 0.08);
-        padding: 16px;
-        font-family: "JetBrains Mono", "Space Mono", monospace;
-        font-size: 13px;
-      }
+    .detail-rail {
+      display: grid; grid-template-columns: repeat(7, minmax(240px, 1fr)); gap: 12px; overflow-x: auto; padding: 8px 2px 4px;
+    }
+    .detail-card {
+      min-width: 240px; border-radius: 18px; border: 1px solid var(--assistant-border); background: rgba(15, 23, 42, 0.72);
+      padding: 14px 15px; box-shadow: 0 10px 24px rgba(2, 6, 23, 0.18);
+    }
+    .detail-card.current { outline: 2px solid rgba(56, 189, 248, 0.92); box-shadow: 0 0 0 6px rgba(56, 189, 248, 0.08); }
+    .detail-card[data-tone="user"] { background: rgba(219, 234, 254, 0.95); border-color: var(--user-border); color: var(--user-text); }
+    .detail-card[data-tone="system"] { background: rgba(254, 243, 199, 0.97); border-color: var(--system-border); color: var(--system-text); }
+    .detail-card[data-tone="assistant"] { background: rgba(226, 232, 240, 0.94); border-color: var(--assistant-border); color: var(--assistant-text); }
+    .detail-card[data-tone="success"] { background: rgba(220, 252, 231, 0.97); border-color: var(--success-border); color: var(--success-text); }
+    .detail-card[data-tone="failure"] { background: rgba(254, 226, 226, 0.97); border-color: var(--failure-border); color: var(--failure-text); }
+    .detail-card[data-tone="info"] { background: rgba(224, 242, 254, 0.96); border-color: var(--info-border); color: var(--info-text); }
+    .detail-card.empty { background: rgba(255, 255, 255, 0.03); color: rgba(248, 250, 252, 0.6); border-style: dashed; }
+    .detail-card-header { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; }
+    .detail-card-title { font-size: 0.94rem; font-weight: 800; line-height: 1.25; }
+    .detail-card-subtitle { margin-top: 4px; color: inherit; opacity: 0.82; font-size: 0.82rem; line-height: 1.35; }
+    .detail-card-status {
+      display: inline-flex; align-items: center; justify-content: center; min-height: 28px; padding: 0.1rem 0.6rem;
+      border-radius: 999px; font-size: 0.72rem; font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase;
+      white-space: nowrap; background: rgba(15, 23, 42, 0.1); color: inherit; border: 1px solid rgba(15, 23, 42, 0.1);
+    }
+    .detail-card-body { margin-top: 12px; display: grid; gap: 10px; }
+    .detail-card-summary { margin: 0; font-size: 0.92rem; line-height: 1.45; white-space: pre-wrap; word-break: break-word; }
+    .detail-meta { display: grid; gap: 6px; }
+    .detail-meta-row { display: flex; gap: 8px; align-items: flex-start; font-size: 0.82rem; line-height: 1.35; word-break: break-word; }
+    .detail-meta-key { flex: 0 0 auto; font-weight: 800; opacity: 0.75; min-width: 84px; }
+    .detail-meta-value { flex: 1 1 auto; }
+    .payload-details { border-top: 1px solid rgba(15, 23, 42, 0.12); padding-top: 10px; }
+    .payload-details summary { cursor: pointer; font-size: 0.82rem; font-weight: 800; list-style: none; }
+    .payload-details summary::-webkit-details-marker { display: none; }
+    .payload-details pre {
+      margin: 10px 0 0; white-space: pre-wrap; word-break: break-word; font-size: 0.8rem; line-height: 1.4;
+      max-height: 340px; overflow: auto; padding: 10px; border-radius: 12px; background: rgba(2, 6, 23, 0.14); color: inherit;
+    }
+    .archives-panel .archive-list { display: grid; gap: 10px; margin-top: 12px; }
+    .archive-entry {
+      display: flex; justify-content: space-between; gap: 14px; align-items: center; flex-wrap: wrap;
+      border-radius: 14px; border: 1px solid rgba(255, 255, 255, 0.08); background: rgba(255, 255, 255, 0.03); padding: 12px 14px;
+    }
+    .archive-meta { display: grid; gap: 4px; }
+    .archive-link { color: #7dd3fc; font-weight: 700; text-decoration: none; }
+    .loading-state, .error-state, .empty-state {
+      border-radius: 16px; border: 1px solid rgba(255, 255, 255, 0.08); background: rgba(255, 255, 255, 0.03); padding: 14px 16px;
+      color: rgba(248, 250, 252, 0.74);
+    }
+    .error-state { border-color: rgba(248, 113, 113, 0.4); background: rgba(127, 29, 29, 0.18); color: #fecaca; }
+    @media (max-width: 960px) { .hero { flex-direction: column; } }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <main class="shell" data-run-timeline-page>
+      <header class="hero">
+        <div>
+          <div class="eyebrow">Run timeline debug</div>
+          <h1>Run {{ run.id }}</h1>
+          <p class="hero-subtitle">
+            Agent <strong>{{ run.agent.name }}</strong> · Workspace <strong>{{ run.workspace.name }}</strong>
+            · Use the slider to inspect the focused AgentStep and the three steps on either side.
+          </p>
+        </div>
+        <div class="hero-actions">
+          <a class="hero-link alt" href="{% url 'agents:agent_detail' slug=run.agent.slug %}">Back to agent</a>
+          <a class="hero-link" href="{% url 'ui:run_snapshot' run_id=run.id %}" target="_blank" rel="noopener">Raw snapshot JSON</a>
+        </div>
+      </header>
 
-      .archive-entry {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        padding: 10px 0;
-        border-bottom: 1px solid rgba(148, 163, 184, 0.3);
-      }
+      <section class="summary-grid" aria-label="Run summary">
+        <div class="summary-card"><span class="summary-label">Status</span><div class="summary-value"><code>{{ run.status }}</code></div></div>
+        <div class="summary-card"><span class="summary-label">Execution</span><div class="summary-value"><code>{{ run.execution_mode }}</code> · <code>{{ run.channel }}</code></div></div>
+        <div class="summary-card"><span class="summary-label">Trigger</span><div class="summary-value"><code>{{ run.trigger_kind }}</code>{% if run.trigger_ref %} · <code>{{ run.trigger_ref }}</code>{% endif %}</div></div>
+        <div class="summary-card"><span class="summary-label">Current Step</span><div class="summary-value"><code>{{ run.current_step_index }}</code> / max <code>{{ run.max_steps }}</code></div></div>
+        <div class="summary-card"><span class="summary-label">Started</span><div class="summary-value">{{ run.started_at|default:"Not started" }}</div></div>
+        <div class="summary-card"><span class="summary-label">Ended</span><div class="summary-value">{{ run.ended_at|default:"Still active" }}</div></div>
+        <div class="summary-card"><span class="summary-label">Correlation</span><div class="summary-value"><code>{{ run.correlation_id }}</code></div></div>
+        <div class="summary-card"><span class="summary-label">Prompt</span><div class="summary-value">{{ run.input_text|default:"No prompt captured."|linebreaksbr }}</div></div>
+      </section>
 
-      .archive-entry:last-child {
-        border-bottom: none;
-      }
-
-      .archive-meta {
-        display: flex;
-        flex-direction: column;
-        gap: 3px;
-      }
-
-      .subrun-meta {
-        display: flex;
-        flex-direction: column;
-        gap: 3px;
-      }
-
-      .subrun-status {
-        font-size: 12px;
-        text-transform: uppercase;
-        letter-spacing: 0.08em;
-        color: #38bdf8;
-      }
-
-      .control-btn {
-        border: none;
-        padding: 8px 14px;
-        border-radius: 10px;
-        font-size: 13px;
-        font-weight: 600;
-        color: #0f172a;
-        background: #38bdf8;
-        cursor: pointer;
-        transition: transform 0.15s, box-shadow 0.15s;
-      }
-
-      .control-btn--danger {
-        background: #f87171;
-        color: #fff;
-      }
-
-      .control-btn:active {
-        transform: translateY(1px);
-        box-shadow: inset 0 0 5px rgba(15, 23, 42, 0.4);
-      }
-
-      .badge {
-        padding: 6px 12px;
-        border-radius: 999px;
-        background: #1d4ed8;
-        font-size: 13px;
-        text-transform: uppercase;
-        letter-spacing: 0.08em;
-      }
-
-      .link {
-        text-decoration: none;
-        color: #38bdf8;
-        font-weight: 600;
-      }
-
-      section {
-        margin-top: 24px;
-      }
-
-      .table-wrapper {
-        overflow-x: auto;
-      }
-
-      .steps-table {
-        width: 100%;
-        border-collapse: collapse;
-        font-family: "JetBrains Mono", "Space Mono", monospace;
-        font-size: 13px;
-      }
-
-      .steps-table th,
-      .steps-table td {
-        border-bottom: 1px solid rgba(148, 163, 184, 0.3);
-        padding: 8px 12px;
-        text-align: left;
-      }
-
-      .steps-table th {
-        text-transform: uppercase;
-        font-size: 11px;
-        letter-spacing: 0.1em;
-        color: #94a3b8;
-      }
-
-      .log {
-        margin-top: 16px;
-        background: rgba(148, 163, 184, 0.08);
-        border: 1px solid rgba(148, 163, 184, 0.3);
-        padding: 16px;
-        border-radius: 14px;
-        height: 320px;
-        overflow-y: auto;
-        font-family: "JetBrains Mono", "Space Mono", monospace;
-        font-size: 13px;
-        line-height: 1.5;
-        white-space: pre-wrap;
-      }
-
-      .log-entry {
-        margin-bottom: 6px;
-      }
-      .log-filter {
-        display: flex;
-        gap: 8px;
-        align-items: center;
-        margin-top: 12px;
-      }
-
-      .log-filter input {
-        flex: 1;
-        min-width: 200px;
-        border-radius: 10px;
-        border: 1px solid #334155;
-        background: #0f172a;
-        color: #f8fafc;
-        padding: 8px 12px;
-        font-size: 13px;
-      }
-
-      .corr-pill {
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        margin-left: 6px;
-        padding: 2px 8px;
-        border-radius: 999px;
-        background: rgba(14, 116, 144, 0.35);
-        color: #38bdf8;
-        font-size: 11px;
-        cursor: pointer;
-      }
-
-      .corr-pill:hover {
-        background: rgba(14, 116, 144, 0.6);
-      }
-    </style>
-  </head>
-  <body>
-    <div class="card">
-      <div class="meta">
-        <h1 style="margin: 0;">Run {{ run.id }}</h1>
-        <span class="badge" id="statusBadge">{{ run.status }}</span>
-        <span>Connected to <code>{{ run.workspace.name }}</code> · Agent <code>{{ run.agent.name }}</code></span>
-        <a class="link" href="{% url 'ui:dev_start_run' %}">Start another dev run</a>
-      </div>
-
-      <div class="run-controls">
-        <button id="pauseRunBtn" class="control-btn">Pause Run</button>
-        <button id="resumeRunBtn" class="control-btn">Resume Run</button>
-        <button id="cancelRunBtn" class="control-btn control-btn--danger">Cancel Run</button>
-      </div>
-
-      <div class="spawn-control">
-        <input id="childPrompt" placeholder="Child run prompt (optional)" />
-        <button id="spawnSubrunBtn" class="control-btn">Spawn Subrun</button>
-      </div>
-
-      <section>
-        <h2>Subruns</h2>
-        <div id="subrunTree" class="subrun-list">
-          <p>No subruns yet.</p>
+      <section class="timeline-panel">
+        <div class="panel-head">
+          <div>
+            <h2>Timeline strip</h2>
+            <p>Left-to-right AgentSteps. Click a marker or drag the slider to shift the focused window.</p>
+          </div>
+          <div id="timelinePosition" class="timeline-position">Loading timeline…</div>
+        </div>
+        <div id="timelineStrip" class="timeline-strip"></div>
+        <div class="slider-row"><input id="stepSlider" type="range" min="1" max="1" value="1" disabled></div>
+        <div class="legend" aria-label="Timeline legend">
+          <span class="legend-chip user">User prompt</span>
+          <span class="legend-chip system">System info</span>
+          <span class="legend-chip assistant">Assistant / agent</span>
+          <span class="legend-chip success">Tool success</span>
+          <span class="legend-chip failure">Tool failure</span>
         </div>
       </section>
 
-      <section>
-        <h2>Run Archives</h2>
+      <section class="detail-panel">
+        <div class="panel-head">
+          <div>
+            <h2>Focused window</h2>
+            <p>The current step is centered, with three prior steps and three following steps shown for context.</p>
+          </div>
+          <div id="windowLabel" class="timeline-position">No steps loaded.</div>
+        </div>
+        <div id="detailRail" class="detail-rail"><div class="loading-state">Loading AgentSteps from the snapshot…</div></div>
+      </section>
+
+      <section class="archives-panel">
+        <div class="panel-head">
+          <div>
+            <h2>Run archives</h2>
+            <p>Completed runs may have bundles available for download.</p>
+          </div>
+        </div>
         <div class="archive-list">
           {% if run_archives %}
             {% for archive in run_archives %}
@@ -277,339 +266,26 @@
                 <div class="archive-meta">
                   <strong>{{ archive.created_at }}</strong>
                   <span>{{ archive.summary.steps }} steps · {{ archive.summary.events }} events</span>
-                  {% if archive.notes %}
-                    <em>{{ archive.notes }}</em>
-                  {% endif %}
+                  {% if archive.notes %}<em>{{ archive.notes }}</em>{% endif %}
                 </div>
-                <a
-                  class="link"
-                  href="{% url 'ui:run_archive_download' run_id=run.id archive_id=archive.id %}"
-                  >Download bundle</a
-                >
+                <a class="archive-link" href="{% url 'ui:run_archive_download' run_id=run.id archive_id=archive.id %}">Download bundle</a>
               </div>
             {% endfor %}
           {% else %}
-            <p>No archives yet.</p>
+            <div class="empty-state">No archives have been generated for this run yet.</div>
           {% endif %}
         </div>
       </section>
+    </main>
+  </div>
 
-      <section>
-        <h2>Steps</h2>
-        <div class="table-wrapper">
-          <table class="steps-table">
-            <thead>
-              <tr>
-                <th>Index</th>
-                <th>Kind</th>
-                <th>Payload</th>
-                <th>Created</th>
-              </tr>
-            </thead>
-            <tbody id="stepsBody"></tbody>
-          </table>
-        </div>
-      </section>
-
-      <section>
-        <h2>Event Log</h2>
-        <div class="log-filter">
-          <input id="eventCorrelationFilter" placeholder="Filter by correlation ID" />
-          <button id="clearCorrelationFilter" class="control-btn">Show all</button>
-        </div>
-        <div id="eventLog" class="log"></div>
-      </section>
-    </div>
-
-    <script src="{% static 'ui/js/run_ws.js' %}"></script>
-    <script>
-      const runId = "{{ run.id }}";
-      const snapshotUrl = "{% url 'ui:run_snapshot' run_id=run.id %}";
-      const stepsBody = document.getElementById("stepsBody");
-      const eventLog = document.getElementById("eventLog");
-      const statusBadge = document.getElementById("statusBadge");
-      const pauseBtn = document.getElementById("pauseRunBtn");
-      const resumeBtn = document.getElementById("resumeRunBtn");
-      const cancelBtn = document.getElementById("cancelRunBtn");
-      const childTree = document.getElementById("subrunTree");
-      const childPrompt = document.getElementById("childPrompt");
-      const spawnSubrunBtn = document.getElementById("spawnSubrunBtn");
-      const correlationFilterInput = document.getElementById("eventCorrelationFilter");
-      const clearCorrelationFilterBtn = document.getElementById("clearCorrelationFilter");
-      const eventEntries = [];
-      let eventCorrelationFilter = "";
-      let runWS = null;
-      const childRuns = new Map();
-
-      const CONTROL_STATES = {
-        pause: new Set(["RUNNING"]),
-        resume: new Set(["PAUSED", "WAITING_FOR_APPROVAL"]),
-        cancel: new Set([
-          "PENDING",
-          "RUNNING",
-          "WAITING_FOR_APPROVAL",
-          "WAITING_FOR_TOOL",
-          "WAITING_FOR_SUBRUN",
-          "WAITING_FOR_USER",
-          "PAUSED",
-        ]),
-      };
-
-      const FINAL_STATES = new Set(["COMPLETED", "FAILED", "CANCELED"]);
-
-      function updateControlStates(status) {
-        if (!pauseBtn || !resumeBtn || !cancelBtn) return;
-        pauseBtn.disabled = !CONTROL_STATES.pause.has(status);
-        resumeBtn.disabled = !CONTROL_STATES.resume.has(status);
-        cancelBtn.disabled = FINAL_STATES.has(status) || !CONTROL_STATES.cancel.has(status);
-      }
-
-      function setStatus(status) {
-        statusBadge.textContent = status;
-        updateControlStates(status);
-      }
-
-      function normalizeChild(child) {
-        return {
-          id: child.id,
-          status: child.status,
-          agent_name: child.agent__name || child.agent_name || "Subrun",
-          created_at: child.created_at,
-          started_at: child.started_at,
-          ended_at: child.ended_at,
-          input_text: child.input_text,
-          current_step_index: child.current_step_index,
-        };
-      }
-
-      function formatTimestamp(ts) {
-        if (!ts) return "—";
-        return new Date(ts).toLocaleString();
-      }
-
-      function renderChildTree() {
-        if (!childTree) return;
-        childTree.innerHTML = "";
-        if (!childRuns.size) {
-          childTree.innerHTML = "<p>No subruns yet.</p>";
-          return;
-        }
-        childRuns.forEach((child) => {
-          const row = document.createElement("div");
-          row.className = "subrun-entry";
-          row.innerHTML = `
-            <div class="subrun-meta">
-              <strong>${child.agent_name}</strong>
-              <span>${child.input_text || "Child run"}</span>
-              <span>Started: ${formatTimestamp(child.started_at)}</span>
-              <span>Ended: ${formatTimestamp(child.ended_at)}</span>
-            </div>
-            <div class="subrun-status">${child.status}</div>
-          `;
-          childTree.appendChild(row);
-        });
-      }
-
-      function updateChildMapFromSnapshot(children = []) {
-        childRuns.clear();
-        children.forEach((child) => {
-          childRuns.set(child.id, normalizeChild(child));
-        });
-        renderChildTree();
-      }
-
-      function addOrUpdateChild(child) {
-        const existing = childRuns.get(child.id) || {};
-        childRuns.set(child.id, { ...existing, ...normalizeChild(child) });
-        renderChildTree();
-      }
-
-      function handleSubrunSpawned(data) {
-        if (!data?.child_run_id) return;
-        addOrUpdateChild({
-          id: data.child_run_id,
-          status: data.status,
-          input_text: data.input_text,
-        });
-      }
-
-      function handleSubrunCompleted(data) {
-        if (!data?.child_run_id) return;
-        const existing = childRuns.get(data.child_run_id) || {};
-        addOrUpdateChild({
-          ...existing,
-          id: data.child_run_id,
-          status: data.child_status,
-          ended_at: data.ended_at,
-        });
-      }
-
-      function spawnChildRun() {
-        if (!runWS) {
-          logEvent({ event: "control_error", data: { message: "Not connected to run stream" } });
-          return;
-        }
-        const prompt = childPrompt?.value?.trim();
-        window.AgentMaestroWS.spawnSubrun(runWS, prompt);
-        if (childPrompt) {
-          childPrompt.value = "";
-        }
-      }
-
-      function renderSteps(steps) {
-        stepsBody.innerHTML = "";
-        steps.forEach((step) => {
-          const row = document.createElement("tr");
-          row.innerHTML = `
-            <td>${step.step_index}</td>
-            <td>${step.kind}</td>
-            <td><pre>${JSON.stringify(step.payload, null, 2)}</pre></td>
-            <td>${new Date(step.created_at).toLocaleString()}</td>
-          `;
-          stepsBody.appendChild(row);
-        });
-      }
-
-      function normalizeEvent(entry) {
-        const data = entry.data ?? entry.payload ?? {};
-        const correlationId = data?.correlation_id ?? entry.correlation_id;
-        return {
-          seq: entry.seq,
-          event: entry.event ?? entry.event_type ?? "event",
-          data,
-          correlation_id: correlationId,
-        };
-      }
-
-      function renderLogEntry(entry) {
-        const div = document.createElement("div");
-        div.classList.add("log-entry");
-        div.textContent = `[seq ${entry.seq ?? "?"}] ${entry.event}: ${JSON.stringify(entry.data ?? {}, null, 2)}`;
-        if (entry.correlation_id) {
-          const pill = document.createElement("span");
-          pill.className = "corr-pill";
-          pill.textContent = entry.correlation_id;
-          pill.addEventListener("click", () => setCorrelationFilter(entry.correlation_id));
-          div.appendChild(document.createTextNode(" "));
-          div.appendChild(pill);
-        }
-        return div;
-      }
-
-      function renderEventLog() {
-        if (!eventLog) return;
-        eventLog.innerHTML = "";
-        const entries = eventCorrelationFilter
-          ? eventEntries.filter((entry) => entry.correlation_id === eventCorrelationFilter)
-          : eventEntries;
-        entries.forEach((entry) => {
-          eventLog.appendChild(renderLogEntry(entry));
-        });
-      }
-
-      function setCorrelationFilter(value) {
-        eventCorrelationFilter = (value || "").trim();
-        if (correlationFilterInput && correlationFilterInput.value !== eventCorrelationFilter) {
-          correlationFilterInput.value = eventCorrelationFilter;
-        }
-        renderEventLog();
-      }
-
-      function logEvent(entry) {
-        const normalized = normalizeEvent(entry);
-        eventEntries.unshift(normalized);
-        renderEventLog();
-      }
-
-      async function initSnapshot() {
-        try {
-          const response = await fetch(snapshotUrl);
-          if (!response.ok) throw new Error("Snapshot request failed");
-          const snapshot = await response.json();
-          setStatus(snapshot.run.status);
-          renderSteps(snapshot.steps);
-          updateChildMapFromSnapshot(snapshot.child_runs);
-          snapshot.events_since_seq.forEach((evt) => logEvent(evt));
-        } catch (error) {
-          logEvent({ event: "snapshot_error", data: { message: error.message } });
-        }
-      }
-
-      function handlePayload(payload) {
-        logEvent(payload);
-        if (payload.event === "state_changed" && payload.data?.to) {
-          setStatus(payload.data.to);
-        }
-        if (payload.event === "step_appended") {
-          const step = payload.data;
-          const row = document.createElement("tr");
-          row.innerHTML = `
-            <td>${step.step_index}</td>
-            <td>${step.kind}</td>
-            <td><pre>${JSON.stringify(step.payload, null, 2)}</pre></td>
-            <td>${new Date().toLocaleString()}</td>
-          `;
-          stepsBody.appendChild(row);
-        }
-        if (payload.event === "subrun_spawned") {
-          handleSubrunSpawned(payload.data);
-        }
-        if (payload.event === "subrun_completed") {
-          handleSubrunCompleted(payload.data);
-        }
-      }
-
-      function connectRun() {
-        runWS = window.AgentMaestroWS?.connectRun(runId);
-        if (!runWS) {
-          logEvent({ event: "ws_error", data: { message: "WebSocket helper unavailable" } });
-          return;
-        }
-        runWS.addEventListener("message", (event) => {
-          try {
-            const payload = JSON.parse(event.data);
-            handlePayload(payload);
-          } catch (error) {
-            logEvent({ event: "ws_parse_error", data: { raw: event.data } });
-          }
-        });
-      }
-
-      function pauseCurrentRun() {
-        if (!runWS) {
-          logEvent({ event: "control_error", data: { message: "Not connected to run stream" } });
-          return;
-        }
-        window.AgentMaestroWS.pauseRun(runWS);
-      }
-
-      function resumeCurrentRun() {
-        if (!runWS) {
-          logEvent({ event: "control_error", data: { message: "Not connected to run stream" } });
-          return;
-        }
-        window.AgentMaestroWS.resumeRun(runWS);
-      }
-
-      function cancelCurrentRun() {
-        if (!runWS) {
-          logEvent({ event: "control_error", data: { message: "Not connected to run stream" } });
-          return;
-        }
-        window.AgentMaestroWS.cancelRun(runWS, runId);
-      }
-
-      pauseBtn?.addEventListener("click", pauseCurrentRun);
-      resumeBtn?.addEventListener("click", resumeCurrentRun);
-      cancelBtn?.addEventListener("click", cancelCurrentRun);
-      spawnSubrunBtn?.addEventListener("click", spawnChildRun);
-      correlationFilterInput?.addEventListener("input", (event) => {
-        setCorrelationFilter(event.target.value);
-      });
-      clearCorrelationFilterBtn?.addEventListener("click", () => setCorrelationFilter(""));
-
-      initSnapshot();
-      connectRun();
-    </script>
-  </body>
+  <script>
+    window.AgentMaestroRunTimeline = {
+      runId: "{{ run.id|escapejs }}",
+      snapshotUrl: "{% url 'ui:run_snapshot' run_id=run.id %}",
+      agentUrl: "{% url 'agents:agent_detail' slug=run.agent.slug %}",
+    };
+  </script>
+  <script src="{% static 'ui/js/run_timeline.js' %}?v=20260320-1" defer></script>
+</body>
 </html>

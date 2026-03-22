@@ -271,7 +271,7 @@ async def test_openai_http_responses_excludes_stale_tool_outputs_without_previou
 
 
 @pytest.mark.asyncio
-async def test_openai_http_responses_uses_tool_only_continuation_input():
+async def test_openai_http_responses_uses_tool_output_batch_continuation_input():
     class _FakeResponses:
         def __init__(self):
             self.payload = None
@@ -291,14 +291,14 @@ async def test_openai_http_responses_uses_tool_only_continuation_input():
             {"role": "system", "content": "system"},
             {"role": "user", "content": "hi"},
             {"role": "tool", "content": '{"ok": true}', "tool_call_id": "local-1", "provider_call_id": "call_1"},
+            {"role": "tool", "content": '{"ok": true}', "tool_call_id": "local-2", "provider_call_id": "call_2"},
         ],
         model="gpt-5-mini",
         previous_response_id="resp_prev_456",
-        outstanding_provider_call_id="call_1",
+        outstanding_provider_call_ids=["call_1", "call_2"],
     )
 
     payload = service.client.responses.payload
     assert payload["previous_response_id"] == "resp_prev_456"
-    assert len(payload["input"]) == 1
-    assert payload["input"][0]["type"] == "function_call_output"
-    assert payload["input"][0]["call_id"] == "call_1"
+    assert len(payload["input"]) == 2
+    assert [item["call_id"] for item in payload["input"]] == ["call_1", "call_2"]

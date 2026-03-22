@@ -6,16 +6,17 @@ import os
 from typing import Any, Iterable, Mapping, Optional, Tuple
 
 import redis
+import httpx
 from celery import shared_task
 from django.conf import settings
 from django.db import transaction
+from django.utils import timezone
 
 from comms.models import TransportEndpoint
 from comms.services.ingest import ingest_normalized_event
 from comms.services.remote_ops import expire_remote_approval_tickets
 from comms.transports.base import NormalizedEvent
 from comms.transports.telegram import TelegramAdapter
-import httpx
 from httpcore import ReadTimeout as HttpcoreReadTimeout
 
 logger = logging.getLogger(__name__)
@@ -103,6 +104,25 @@ def _fetch_updates(
     return asyncio.run(_poll())
 
 
+def _telegram_polling_disabled(endpoint: TransportEndpoint) -> bool:
+    config = endpoint.config or {}
+    return bool(config.get("telegram_polling_disabled"))
+
+
+def _disable_telegram_polling(endpoint: TransportEndpoint, *, reason: str) -> None:
+    config = dict(endpoint.config or {})
+    config["telegram_polling_disabled"] = True
+    config["telegram_polling_disabled_reason"] = reason
+    config["telegram_polling_disabled_at"] = timezone.now().isoformat()
+    endpoint.config = config
+    endpoint.save(update_fields=["config"])
+    logger.warning(
+        "Disabled Telegram polling for endpoint %s reason=%s",
+        endpoint.id,
+        reason,
+    )
+
+
 def _run_poll(endpoint: TransportEndpoint) -> None:
     config = dict(endpoint.config or {})
     last_update_id = int(config.get("last_update_id") or 0)
@@ -147,7 +167,7 @@ def _telegram_endpoint_signature(endpoint: TransportEndpoint) -> str:
 
 
 def _canonical_telegram_endpoint_ids() -> list[int]:
-    seen_signatures: set[str] = set()
+    chosen_by_signature: dict[str, int] = {}
     endpoint_ids: list[int] = []
     endpoints = (
         TransportEndpoint.objects.filter(
@@ -159,15 +179,18 @@ def _canonical_telegram_endpoint_ids() -> list[int]:
         .order_by("-id")
     )
     for endpoint in endpoints:
+        if _telegram_polling_disabled(endpoint):
+            logger.debug("Skipping disabled Telegram polling endpoint %s.", endpoint.id)
+            continue
         signature = _telegram_endpoint_signature(endpoint)
-        if signature in seen_signatures:
+        if signature in chosen_by_signature:
             logger.debug(
                 "Skipping duplicate Telegram polling endpoint %s for signature %s.",
                 endpoint.id,
                 signature,
             )
             continue
-        seen_signatures.add(signature)
+        chosen_by_signature[signature] = endpoint.id
         endpoint_ids.append(endpoint.id)
     return endpoint_ids
 
@@ -185,7 +208,17 @@ def telegram_poll_once(endpoint_id: int) -> None:
             except TransportEndpoint.DoesNotExist:
                 logger.warning("Telegram endpoint %s not found while holding redis lock.", endpoint_id)
                 return
-            _run_poll(endpoint)
+            try:
+                _run_poll(endpoint)
+            except httpx.HTTPStatusError as exc:
+                status_code = getattr(exc.response, "status_code", None)
+                if status_code in {401, 403}:
+                    _disable_telegram_polling(
+                        endpoint,
+                        reason=f"telegram_http_{status_code}",
+                    )
+                    return
+                raise
         finally:
             lock_handle.release()
         return
@@ -200,7 +233,17 @@ def telegram_poll_once(endpoint_id: int) -> None:
         except TransportEndpoint.DoesNotExist:
             logger.warning("Telegram endpoint %s not found for polling.", endpoint_id)
             return
-        _run_poll(endpoint)
+        try:
+            _run_poll(endpoint)
+        except httpx.HTTPStatusError as exc:
+            status_code = getattr(exc.response, "status_code", None)
+            if status_code in {401, 403}:
+                _disable_telegram_polling(
+                    endpoint,
+                    reason=f"telegram_http_{status_code}",
+                )
+                return
+            raise
 
 
 @shared_task

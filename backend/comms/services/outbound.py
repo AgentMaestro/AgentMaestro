@@ -15,17 +15,9 @@ logger = logging.getLogger(__name__)
 def _find_bot_endpoint(conversation: CommsConversation) -> TransportEndpoint:
     if conversation.endpoint:
         return conversation.endpoint
-
-    endpoint = (
-        TransportEndpoint.objects.filter(
-            transport=conversation.transport, kind="bot", transport__is_enabled=True
-        )
-        .order_by("id")
-        .first()
+    raise RuntimeError(
+        f"Telegram conversation {conversation.external_conversation_id} is missing its paired/main endpoint"
     )
-    if not endpoint:
-        raise RuntimeError(f"No bot endpoint configured for {conversation.transport.key}")
-    return endpoint
 
 
 def send_transport_message(

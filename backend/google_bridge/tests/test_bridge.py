@@ -2,6 +2,7 @@ from datetime import timedelta
 
 import pytest
 from django.contrib.auth import get_user_model
+from django.test import override_settings
 from django.utils import timezone
 
 from core.models import Workspace
@@ -12,7 +13,7 @@ from google_bridge.services.bridge import (
     execute_google_task,
     normalize_google_payload,
 )
-from google_bridge.services.schema import build_google_bridge_args_schema
+from google_bridge.services.schema import GOOGLE_BRIDGE_TOOL_EXAMPLES, build_google_bridge_args_schema
 
 
 pytestmark = pytest.mark.django_db
@@ -97,6 +98,18 @@ def test_execute_google_task_returns_json_summary(monkeypatch):
         def list_gmail_messages(self, *, query: str = "", label_ids: list[str] | None = None, max_results: int = 10):
             return {"messages": [{"id": "msg-1"}], "resultSizeEstimate": 1}
 
+        def get_gmail_message(self, message_id: str):
+            return {
+                "snippet": "List snippet",
+                "payload": {
+                    "headers": [
+                        {"name": "Subject", "value": "List subject"},
+                        {"name": "From", "value": "sender@example.com"},
+                        {"name": "Date", "value": "Fri, 21 Mar 2026 09:00:00 -0400"},
+                    ]
+                },
+            }
+
     monkeypatch.setattr("google_bridge.services.bridge.GoogleBridgeClient", FakeClient)
 
     result = execute_google_task(
@@ -119,8 +132,394 @@ def test_execute_google_task_returns_json_summary(monkeypatch):
     assert result["action_kind"] == "read"
     assert result["operation"] == "list"
     assert result["result"]["messages"][0]["id"] == "msg-1"
-    assert "Found 1 Gmail messages" in result["summary_text"]
+    assert result["result"]["messages"][0]["subject"] == "List subject"
+    assert result["result"]["messages"][0]["from"] == "sender@example.com"
+    assert result["result"]["messages"][0]["date"] == "Fri, 21 Mar 2026 09:00:00 -0400"
+    assert "Returned 1 Gmail messages" in result["summary_text"]
     assert "use google_bridge with operation=read" in result["summary_text"].lower()
+
+
+def test_execute_google_task_defaults_gmail_list_to_unread(monkeypatch):
+    workspace, user, account = _make_account()
+
+    captured: dict[str, object] = {}
+
+    class FakeClient:
+        def __init__(self, connection):
+            self.connection = connection
+
+        def list_gmail_messages(self, *, query: str = "", label_ids: list[str] | None = None, max_results: int = 10):
+            captured["query"] = query
+            captured["label_ids"] = label_ids
+            captured["max_results"] = max_results
+            return {"messages": [{"id": "msg-1"}], "resultSizeEstimate": 1}
+
+        def get_gmail_message(self, message_id: str):
+            return {
+                "snippet": "Unread snippet",
+                "payload": {
+                    "headers": [
+                        {"name": "Subject", "value": "Unread subject"},
+                        {"name": "From", "value": "sender@example.com"},
+                        {"name": "Date", "value": "Fri, 21 Mar 2026 09:00:00 -0400"},
+                    ]
+                },
+            }
+
+    monkeypatch.setattr("google_bridge.services.bridge.GoogleBridgeClient", FakeClient)
+
+    result = execute_google_task(
+        payload={
+            "integration_kind": "google",
+            "resource_kind": "gmail",
+            "action_kind": "read",
+            "operation": "list",
+            "account_scope": "primary",
+            "email": "user@example.com",
+            "max_results": 5,
+        },
+        workspace=workspace,
+        owner=user,
+        account=account,
+    )
+
+    assert captured["query"] == "is:unread"
+    assert captured["label_ids"] == []
+    assert captured["max_results"] == 5
+    assert "Returned 1 unread Gmail messages" in result["summary_text"]
+    assert result["result"]["messages"][0]["subject"] == "Unread subject"
+
+
+def test_execute_google_task_can_include_read_gmail_messages(monkeypatch):
+    workspace, user, account = _make_account()
+
+    captured: dict[str, object] = {}
+
+    class FakeClient:
+        def __init__(self, connection):
+            self.connection = connection
+
+        def list_gmail_messages(self, *, query: str = "", label_ids: list[str] | None = None, max_results: int = 10):
+            captured["query"] = query
+            captured["label_ids"] = label_ids
+            captured["max_results"] = max_results
+            return {"messages": [{"id": "msg-1"}], "resultSizeEstimate": 1}
+
+        def get_gmail_message(self, message_id: str):
+            return {
+                "snippet": "Read snippet",
+                "payload": {
+                    "headers": [
+                        {"name": "Subject", "value": "Read subject"},
+                        {"name": "From", "value": "sender@example.com"},
+                        {"name": "Date", "value": "Fri, 21 Mar 2026 09:00:00 -0400"},
+                    ]
+                },
+            }
+
+    monkeypatch.setattr("google_bridge.services.bridge.GoogleBridgeClient", FakeClient)
+
+    result = execute_google_task(
+        payload={
+            "integration_kind": "google",
+            "resource_kind": "gmail",
+            "action_kind": "read",
+            "operation": "list",
+            "account_scope": "primary",
+            "email": "user@example.com",
+            "include_read": True,
+            "max_results": 5,
+        },
+        workspace=workspace,
+        owner=user,
+        account=account,
+    )
+
+    assert captured["query"] == ""
+    assert captured["label_ids"] == []
+    assert captured["max_results"] == 5
+    assert "Returned 1 Gmail messages" in result["summary_text"]
+    assert "unread" not in result["summary_text"].lower()
+    assert result["result"]["messages"][0]["subject"] == "Read subject"
+
+
+def test_execute_google_task_splits_or_queries_for_gmail_list(monkeypatch):
+    workspace, user, account = _make_account()
+
+    captured: dict[str, object] = {"list_calls": []}
+
+    class FakeClient:
+        def __init__(self, connection):
+            self.connection = connection
+
+        def list_gmail_messages(
+            self,
+            *,
+            query: str = "",
+            label_ids: list[str] | None = None,
+            max_results: int = 20,
+            page_token: str = "",
+        ):
+            captured["list_calls"].append(
+                {
+                    "query": query,
+                    "label_ids": label_ids,
+                    "max_results": max_results,
+                    "page_token": page_token,
+                }
+            )
+            if query == "from:info@airbnb.com":
+                return {"messages": [{"id": f"airbnb-{index}"} for index in range(1, 11)], "resultSizeEstimate": 10}
+            if query == "from:airbnb.com":
+                return {"messages": [{"id": f"domain-{index}"} for index in range(1, 11)], "resultSizeEstimate": 10}
+            if query == "subject:(\"Airbnb\")":
+                return {"messages": [{"id": f"subject-{index}"} for index in range(1, 11)], "resultSizeEstimate": 10}
+            return {"messages": [], "resultSizeEstimate": 0}
+
+        def get_gmail_message(self, message_id: str):
+            return {
+                "snippet": f"Snippet for {message_id}",
+                "payload": {
+                    "headers": [
+                        {"name": "Subject", "value": f"Subject for {message_id}"},
+                        {"name": "From", "value": "sender@example.com"},
+                        {"name": "Date", "value": "Fri, 21 Mar 2026 09:00:00 -0400"},
+                    ]
+                },
+            }
+
+    monkeypatch.setattr("google_bridge.services.bridge.GoogleBridgeClient", FakeClient)
+
+    result = execute_google_task(
+        payload={
+            "integration_kind": "google",
+            "resource_kind": "gmail",
+            "action_kind": "read",
+            "operation": "list",
+            "account_scope": "primary",
+            "email": "user@example.com",
+            "include_read": True,
+            "query": 'from:info@airbnb.com OR from:airbnb.com OR subject:("Airbnb")',
+        },
+        workspace=workspace,
+        owner=user,
+        account=account,
+    )
+
+    assert [call["query"] for call in captured["list_calls"]] == [
+        "from:info@airbnb.com",
+        "from:airbnb.com",
+        'subject:("Airbnb")',
+    ]
+    assert all(call["max_results"] == 20 for call in captured["list_calls"])
+    assert result["result"]["resultSizeEstimate"] == 20
+    assert len(result["result"]["messages"]) == 20
+    assert "Returned 20 Gmail messages" in result["summary_text"]
+
+
+def test_execute_google_task_rejects_nested_or_inside_parentheses():
+    workspace, user, account = _make_account()
+
+    with pytest.raises(GoogleBridgeTaskError, match="OR inside parentheses is not supported"):
+        execute_google_task(
+            payload={
+                "integration_kind": "google",
+                "resource_kind": "gmail",
+                "action_kind": "read",
+                "operation": "list",
+                "account_scope": "primary",
+                "email": "user@example.com",
+                "include_read": True,
+                "query": "subject:(failure OR error)",
+            },
+            workspace=workspace,
+            owner=user,
+            account=account,
+        )
+
+
+@override_settings(GMAIL_OR_CLAUSE_LIMIT=2)
+def test_execute_google_task_rejects_or_queries_over_clause_cap():
+    workspace, user, account = _make_account()
+
+    with pytest.raises(GoogleBridgeTaskError, match="OR clauses are limited to 2 top-level clauses"):
+        execute_google_task(
+            payload={
+                "integration_kind": "google",
+                "resource_kind": "gmail",
+                "action_kind": "read",
+                "operation": "list",
+                "account_scope": "primary",
+                "email": "user@example.com",
+                "include_read": True,
+                "query": "from:a@example.com OR from:b@example.com OR from:c@example.com",
+            },
+            workspace=workspace,
+            owner=user,
+            account=account,
+        )
+
+
+def test_execute_google_task_can_read_gmail_with_query_filters(monkeypatch):
+    workspace, user, account = _make_account()
+
+    captured: dict[str, object] = {}
+
+    class FakeClient:
+        def __init__(self, connection):
+            self.connection = connection
+
+        def list_gmail_messages(self, *, query: str = "", label_ids: list[str] | None = None, max_results: int = 20, page_token: str = ""):
+            captured["query"] = query
+            captured["label_ids"] = label_ids
+            captured["max_results"] = max_results
+            captured["page_token"] = page_token
+            return {"messages": [{"id": "msg-1"}], "resultSizeEstimate": 1}
+
+        def get_gmail_message(self, message_id: str):
+            return {
+                "snippet": "Query snippet",
+                "payload": {
+                    "headers": [
+                        {"name": "Subject", "value": "Query subject"},
+                        {"name": "From", "value": "sender@example.com"},
+                        {"name": "Date", "value": "Fri, 21 Mar 2026 09:00:00 -0400"},
+                    ]
+                },
+            }
+
+    monkeypatch.setattr("google_bridge.services.bridge.GoogleBridgeClient", FakeClient)
+
+    result = execute_google_task(
+        payload={
+            "integration_kind": "google",
+            "resource_kind": "gmail",
+            "action_kind": "read",
+            "operation": "read",
+            "account_scope": "primary",
+            "email": "user@example.com",
+            "include_read": True,
+            "query": "from:airbnb.com",
+        },
+        workspace=workspace,
+        owner=user,
+        account=account,
+    )
+
+    assert captured["query"] == "from:airbnb.com"
+    assert captured["label_ids"] == []
+    assert captured["max_results"] == 20
+    assert captured["page_token"] == ""
+    assert "Returned 1 Gmail messages" in result["summary_text"]
+    assert result["result"]["messages"][0]["subject"] == "Query subject"
+
+
+def test_execute_google_task_normalizes_sender_domain_query(monkeypatch):
+    workspace, user, account = _make_account()
+
+    captured: dict[str, object] = {}
+
+    class FakeClient:
+        def __init__(self, connection):
+            self.connection = connection
+
+        def list_gmail_messages(self, *, query: str = "", label_ids: list[str] | None = None, max_results: int = 20, page_token: str = ""):
+            captured["query"] = query
+            captured["label_ids"] = label_ids
+            captured["max_results"] = max_results
+            captured["page_token"] = page_token
+            return {"messages": [{"id": "msg-1"}], "resultSizeEstimate": 1}
+
+        def get_gmail_message(self, message_id: str):
+            return {
+                "snippet": "Normalized snippet",
+                "payload": {
+                    "headers": [
+                        {"name": "Subject", "value": "Normalized subject"},
+                        {"name": "From", "value": "sender@example.com"},
+                        {"name": "Date", "value": "Fri, 21 Mar 2026 09:00:00 -0400"},
+                    ]
+                },
+            }
+
+    monkeypatch.setattr("google_bridge.services.bridge.GoogleBridgeClient", FakeClient)
+
+    result = execute_google_task(
+        payload={
+            "integration_kind": "google",
+            "resource_kind": "gmail",
+            "action_kind": "read",
+            "operation": "read",
+            "account_scope": "primary",
+            "email": "user@example.com",
+            "include_read": True,
+            "query": "from:@airbnb.com",
+        },
+        workspace=workspace,
+        owner=user,
+        account=account,
+    )
+
+    assert captured["query"] == "from:airbnb.com"
+    assert captured["label_ids"] == []
+    assert captured["max_results"] == 20
+    assert captured["page_token"] == ""
+    assert "Returned 1 Gmail messages" in result["summary_text"]
+    assert result["result"]["messages"][0]["subject"] == "Normalized subject"
+
+
+def test_execute_google_task_normalizes_spaced_sender_domain_query(monkeypatch):
+    workspace, user, account = _make_account()
+
+    captured: dict[str, object] = {}
+
+    class FakeClient:
+        def __init__(self, connection):
+            self.connection = connection
+
+        def list_gmail_messages(self, *, query: str = "", label_ids: list[str] | None = None, max_results: int = 20, page_token: str = ""):
+            captured["query"] = query
+            captured["label_ids"] = label_ids
+            captured["max_results"] = max_results
+            captured["page_token"] = page_token
+            return {"messages": [{"id": "msg-1"}], "resultSizeEstimate": 1}
+
+        def get_gmail_message(self, message_id: str):
+            return {
+                "snippet": "Spaced snippet",
+                "payload": {
+                    "headers": [
+                        {"name": "Subject", "value": "Spaced subject"},
+                        {"name": "From", "value": "sender@example.com"},
+                        {"name": "Date", "value": "Fri, 21 Mar 2026 09:00:00 -0400"},
+                    ]
+                },
+            }
+
+    monkeypatch.setattr("google_bridge.services.bridge.GoogleBridgeClient", FakeClient)
+
+    result = execute_google_task(
+        payload={
+            "integration_kind": "google",
+            "resource_kind": "gmail",
+            "action_kind": "read",
+            "operation": "read",
+            "account_scope": "primary",
+            "email": "user@example.com",
+            "include_read": True,
+            "query": "from: @airbnb.com",
+        },
+        workspace=workspace,
+        owner=user,
+        account=account,
+    )
+
+    assert captured["query"] == "from:airbnb.com"
+    assert captured["label_ids"] == []
+    assert captured["max_results"] == 20
+    assert captured["page_token"] == ""
+    assert "Returned 1 Gmail messages" in result["summary_text"]
+    assert result["result"]["messages"][0]["subject"] == "Spaced subject"
 
 
 def test_execute_google_task_creates_gmail_draft(monkeypatch):
@@ -250,28 +649,36 @@ def test_execute_google_task_trashes_gmail_message(monkeypatch):
     assert "moved to trash" in result["summary_text"]
 
 
-def test_execute_google_task_trash_can_resolve_unique_query(monkeypatch):
+def test_execute_google_task_trash_can_bulk_resolve_query(monkeypatch):
     workspace, user, account = _make_account()
 
-    captured: dict[str, object] = {"list_calls": []}
+    captured: dict[str, object] = {"list_calls": [], "trashed_ids": []}
 
     class FakeClient:
         def __init__(self, connection):
             self.connection = connection
 
-        def list_gmail_messages(self, *, query: str = "", label_ids: list[str] | None = None, max_results: int = 10):
+        def list_gmail_messages(
+            self,
+            *,
+            query: str = "",
+            label_ids: list[str] | None = None,
+            max_results: int = 10,
+            page_token: str = "",
+        ):
             captured["list_calls"].append(
                 {
                     "query": query,
                     "label_ids": label_ids,
                     "max_results": max_results,
+                    "page_token": page_token,
                     "email": self.connection.email,
                 }
             )
-            return {"messages": [{"id": "msg-789"}], "resultSizeEstimate": 1}
+            return {"messages": [{"id": "msg-789"}, {"id": "msg-790"}], "resultSizeEstimate": 2}
 
         def trash_gmail_message(self, message_id: str):
-            captured["message_id"] = message_id
+            captured["trashed_ids"].append(message_id)
             return {}
 
     monkeypatch.setattr("google_bridge.services.bridge.GoogleBridgeClient", FakeClient)
@@ -281,21 +688,23 @@ def test_execute_google_task_trash_can_resolve_unique_query(monkeypatch):
             "integration_kind": "google",
             "resource_kind": "gmail",
             "action_kind": "delete",
-            "operation": "trash",
             "account_scope": "primary",
             "email": "user@example.com",
-            "google_subject": "Email test",
-            "query": 'subject:"Email test" from:kissinger.scott@gmail.com',
+            "query": "from:airbnb.com",
+            "max_results": 100,
         },
         workspace=workspace,
         owner=user,
         account=account,
     )
 
-    assert captured["list_calls"][0]["query"] == 'subject:"Email test" from:kissinger.scott@gmail.com'
-    assert captured["message_id"] == "msg-789"
+    assert captured["list_calls"][0]["query"] == "from:airbnb.com"
+    assert captured["list_calls"][0]["max_results"] == 100
+    assert captured["list_calls"][0]["page_token"] == ""
+    assert captured["trashed_ids"] == ["msg-789", "msg-790"]
     assert result["action_kind"] == "delete"
     assert result["operation"] == "trash"
+    assert "Count: 2" in result["summary_text"]
     assert "moved to trash" in result["summary_text"]
 
 
@@ -397,6 +806,18 @@ def test_execute_google_task_can_merge_multiple_accounts(monkeypatch):
         def list_gmail_messages(self, *, query: str = "", label_ids: list[str] | None = None, max_results: int = 10):
             return {"messages": [{"id": f"{self.connection.email}-msg"}], "resultSizeEstimate": 1}
 
+        def get_gmail_message(self, message_id: str):
+            return {
+                "snippet": "Account snippet",
+                "payload": {
+                    "headers": [
+                        {"name": "Subject", "value": f"Subject for {message_id}"},
+                        {"name": "From", "value": f"sender@{self.connection.email}"},
+                        {"name": "Date", "value": "Fri, 21 Mar 2026 09:00:00 -0400"},
+                    ]
+                },
+            }
+
     monkeypatch.setattr("google_bridge.services.bridge.GoogleBridgeClient", FakeClient)
 
     result = execute_google_task(
@@ -416,7 +837,314 @@ def test_execute_google_task_can_merge_multiple_accounts(monkeypatch):
     assert len(result["accounts"]) == 2
     assert result["result"]["resultSizeEstimate"] == 2
     assert len(result["result"]["messages"]) == 2
+    assert result["result"]["messages"][0]["subject"].startswith("Subject for ")
+    assert "Returned 2 Gmail messages across 2 accounts" in result["summary_text"]
+
+
+def test_execute_google_task_can_bulk_trash_query_across_all_accounts(monkeypatch):
+    User = get_user_model()
+    user = User.objects.create_user(username="googlebridge-bulk-trash", password="x")
+    workspace = Workspace.objects.create(name="Google Bulk Trash Workspace")
+    first = GoogleAccount.objects.create(
+        workspace=workspace,
+        owner=user,
+        google_subject="sub-trash-1",
+        email="first@example.com",
+        token_expires_at=timezone.now() + timedelta(hours=1),
+        is_active=True,
+    )
+    first.set_tokens(access_token="access-1", refresh_token="refresh-1")
+    first.save()
+    second = GoogleAccount.objects.create(
+        workspace=workspace,
+        owner=user,
+        google_subject="sub-trash-2",
+        email="second@example.com",
+        token_expires_at=timezone.now() + timedelta(hours=1),
+        is_active=True,
+    )
+    second.set_tokens(access_token="access-2", refresh_token="refresh-2")
+    second.save()
+
+    captured: dict[str, list[dict[str, object]]] = {"list_calls": [], "trashed": []}
+
+    class FakeClient:
+        def __init__(self, connection):
+            self.connection = connection
+
+        def list_gmail_messages(
+            self,
+            *,
+            query: str = "",
+            label_ids: list[str] | None = None,
+            max_results: int = 10,
+            page_token: str = "",
+        ):
+            captured["list_calls"].append(
+                {
+                    "email": self.connection.email,
+                    "query": query,
+                    "label_ids": label_ids,
+                    "max_results": max_results,
+                    "page_token": page_token,
+                }
+            )
+            return {"messages": [{"id": f"{self.connection.email}-airbnb"}], "resultSizeEstimate": 1}
+
+        def trash_gmail_message(self, message_id: str):
+            captured["trashed"].append({"email": self.connection.email, "message_id": message_id})
+            return {}
+
+    monkeypatch.setattr("google_bridge.services.bridge.GoogleBridgeClient", FakeClient)
+
+    result = execute_google_task(
+        payload={
+            "integration_kind": "google",
+            "resource_kind": "gmail",
+            "action_kind": "delete",
+            "operation": "trash",
+            "account_scope": "all",
+            "query": "from:airbnb.com",
+            "include_read": True,
+            "max_results": 100,
+        },
+        workspace=workspace,
+        owner=user,
+    )
+
+    assert len(result["accounts"]) == 2
+    assert result["result"]["deleted_message_ids"] == ["first@example.com-airbnb", "second@example.com-airbnb"]
+    assert len(captured["list_calls"]) == 2
+    assert len(captured["trashed"]) == 2
+    assert {item["email"] for item in captured["trashed"]} == {"first@example.com", "second@example.com"}
     assert "across 2 accounts" in result["summary_text"]
+
+
+def test_execute_google_task_can_skip_empty_accounts_during_bulk_trash(monkeypatch):
+    User = get_user_model()
+    user = User.objects.create_user(username="googlebridge-bulk-trash-skip", password="x")
+    workspace = Workspace.objects.create(name="Google Bulk Trash Skip Workspace")
+    first = GoogleAccount.objects.create(
+        workspace=workspace,
+        owner=user,
+        google_subject="sub-trash-skip-1",
+        email="first@example.com",
+        token_expires_at=timezone.now() + timedelta(hours=1),
+        is_active=True,
+    )
+    first.set_tokens(access_token="access-1", refresh_token="refresh-1")
+    first.save()
+    second = GoogleAccount.objects.create(
+        workspace=workspace,
+        owner=user,
+        google_subject="sub-trash-skip-2",
+        email="second@example.com",
+        token_expires_at=timezone.now() + timedelta(hours=1),
+        is_active=True,
+    )
+    second.set_tokens(access_token="access-2", refresh_token="refresh-2")
+    second.save()
+
+    captured: dict[str, list[dict[str, object]]] = {"list_calls": [], "trashed": []}
+
+    class FakeClient:
+        def __init__(self, connection):
+            self.connection = connection
+
+        def list_gmail_messages(
+            self,
+            *,
+            query: str = "",
+            label_ids: list[str] | None = None,
+            max_results: int = 20,
+            page_token: str = "",
+        ):
+            captured["list_calls"].append(
+                {
+                    "email": self.connection.email,
+                    "query": query,
+                    "label_ids": label_ids,
+                    "max_results": max_results,
+                    "page_token": page_token,
+                }
+            )
+            if self.connection.email == "first@example.com":
+                return {"messages": [], "resultSizeEstimate": 0}
+            return {"messages": [{"id": "second@example.com-airbnb"}], "resultSizeEstimate": 1}
+
+        def trash_gmail_message(self, message_id: str):
+            captured["trashed"].append({"email": self.connection.email, "message_id": message_id})
+            return {}
+
+    monkeypatch.setattr("google_bridge.services.bridge.GoogleBridgeClient", FakeClient)
+
+    result = execute_google_task(
+        payload={
+            "integration_kind": "google",
+            "resource_kind": "gmail",
+            "action_kind": "delete",
+            "operation": "trash",
+            "account_scope": "all",
+            "query": "from:airbnb.com",
+            "include_read": True,
+            "max_results": 200,
+        },
+        workspace=workspace,
+        owner=user,
+    )
+
+    assert len(result["accounts"]) == 2
+    assert result["result"]["deleted_message_ids"] == ["second@example.com-airbnb"]
+    assert len(captured["list_calls"]) == 2
+    assert len(captured["trashed"]) == 1
+    assert captured["trashed"][0]["email"] == "second@example.com"
+    assert "across 2 accounts" in result["summary_text"]
+
+
+def test_execute_google_task_returns_completed_noop_when_bulk_trash_matches_nothing(monkeypatch):
+    User = get_user_model()
+    user = User.objects.create_user(username="googlebridge-bulk-trash-none", password="x")
+    workspace = Workspace.objects.create(name="Google Bulk Trash None Workspace")
+    first = GoogleAccount.objects.create(
+        workspace=workspace,
+        owner=user,
+        google_subject="sub-trash-none-1",
+        email="first@example.com",
+        token_expires_at=timezone.now() + timedelta(hours=1),
+        is_active=True,
+    )
+    first.set_tokens(access_token="access-1", refresh_token="refresh-1")
+    first.save()
+    second = GoogleAccount.objects.create(
+        workspace=workspace,
+        owner=user,
+        google_subject="sub-trash-none-2",
+        email="second@example.com",
+        token_expires_at=timezone.now() + timedelta(hours=1),
+        is_active=True,
+    )
+    second.set_tokens(access_token="access-2", refresh_token="refresh-2")
+    second.save()
+
+    captured: dict[str, list[dict[str, object]]] = {"list_calls": [], "trashed": []}
+
+    class FakeClient:
+        def __init__(self, connection):
+            self.connection = connection
+
+        def list_gmail_messages(
+            self,
+            *,
+            query: str = "",
+            label_ids: list[str] | None = None,
+            max_results: int = 20,
+            page_token: str = "",
+        ):
+            captured["list_calls"].append(
+                {
+                    "email": self.connection.email,
+                    "query": query,
+                    "label_ids": label_ids,
+                    "max_results": max_results,
+                    "page_token": page_token,
+                }
+            )
+            return {"messages": [], "resultSizeEstimate": 0}
+
+        def trash_gmail_message(self, message_id: str):
+            captured["trashed"].append({"email": self.connection.email, "message_id": message_id})
+            return {}
+
+    monkeypatch.setattr("google_bridge.services.bridge.GoogleBridgeClient", FakeClient)
+
+    result = execute_google_task(
+        payload={
+            "integration_kind": "google",
+            "resource_kind": "gmail",
+            "action_kind": "delete",
+            "operation": "trash",
+            "account_scope": "all",
+            "query": "from:seekingalpha.com",
+            "include_read": True,
+            "max_results": 200,
+        },
+        workspace=workspace,
+        owner=user,
+    )
+
+    assert result["ok"] is True
+    assert len(result["accounts"]) == 2
+    assert result["result"]["deleted_message_ids"] == []
+    assert result["result"]["matched_queries"] == ["from:seekingalpha.com"]
+    assert len(captured["list_calls"]) == 2
+    assert len(captured["trashed"]) == 0
+    assert "No Gmail messages matched this cleanup query" in result["summary_text"]
+    assert "first@example.com" in result["summary_text"]
+    assert "second@example.com" in result["summary_text"]
+
+
+def test_execute_google_task_splits_or_queries_for_bulk_trash(monkeypatch):
+    workspace, user, account = _make_account()
+
+    captured: dict[str, object] = {"list_calls": [], "trashed_ids": []}
+
+    class FakeClient:
+        def __init__(self, connection):
+            self.connection = connection
+
+        def list_gmail_messages(
+            self,
+            *,
+            query: str = "",
+            label_ids: list[str] | None = None,
+            max_results: int = 10,
+            page_token: str = "",
+        ):
+            captured["list_calls"].append(
+                {
+                    "query": query,
+                    "label_ids": label_ids,
+                    "max_results": max_results,
+                    "page_token": page_token,
+                }
+            )
+            if "airbnb" in query:
+                return {"messages": [{"id": "msg-airbnb"}], "resultSizeEstimate": 1}
+            if "travelzoo" in query:
+                return {"messages": [{"id": "msg-travelzoo"}], "resultSizeEstimate": 1}
+            if "petco" in query:
+                return {"messages": [{"id": "msg-petco"}], "resultSizeEstimate": 1}
+            return {"messages": [], "resultSizeEstimate": 0}
+
+        def trash_gmail_message(self, message_id: str):
+            captured["trashed_ids"].append(message_id)
+            return {}
+
+    monkeypatch.setattr("google_bridge.services.bridge.GoogleBridgeClient", FakeClient)
+
+    result = execute_google_task(
+        payload={
+            "integration_kind": "google",
+            "resource_kind": "gmail",
+            "action_kind": "delete",
+            "operation": "trash",
+            "account_scope": "primary",
+            "query": "from:airbnb.com OR from:us.travelzoo.com OR from:e.petco.com",
+            "max_results": 100,
+        },
+        workspace=workspace,
+        owner=user,
+        account=account,
+    )
+
+    assert [call["query"] for call in captured["list_calls"]] == [
+        "from:airbnb.com",
+        "from:us.travelzoo.com",
+        "from:e.petco.com",
+    ]
+    assert captured["trashed_ids"] == ["msg-airbnb", "msg-travelzoo", "msg-petco"]
+    assert result["result"]["deleted_message_ids"] == ["msg-airbnb", "msg-travelzoo", "msg-petco"]
+    assert "Count: 3" in result["summary_text"]
 
 
 def test_execute_google_task_runs_multi_step_read_plan(monkeypatch):
@@ -428,6 +1156,18 @@ def test_execute_google_task_runs_multi_step_read_plan(monkeypatch):
 
         def list_gmail_messages(self, *, query: str = "", label_ids: list[str] | None = None, max_results: int = 10):
             return {"messages": [{"id": "msg-1"}], "resultSizeEstimate": 1}
+
+        def get_gmail_message(self, message_id: str):
+            return {
+                "snippet": "Test snippet",
+                "payload": {
+                    "headers": [
+                        {"name": "Subject", "value": "Test subject"},
+                        {"name": "From", "value": "sender@example.com"},
+                        {"name": "Date", "value": "Fri, 21 Mar 2026 09:00:00 -0400"},
+                    ]
+                },
+            }
 
         def list_calendar_events(self, *, calendar_id: str = "primary", time_min: str = "", time_max: str = "", max_results: int = 10):
             self.received_time_min = time_min
@@ -463,7 +1203,7 @@ def test_execute_google_task_runs_multi_step_read_plan(monkeypatch):
     assert len(result["steps"]) == 2
     assert result["steps"][0]["resource_kind"] == "gmail"
     assert result["steps"][1]["resource_kind"] == "calendar"
-    assert "1. Found 1 Gmail messages" in result["summary_text"]
+    assert "1. Returned 1 Gmail messages" in result["summary_text"]
     assert "2. Found 1 calendar events" in result["summary_text"]
     assert account.access_token  # ensure the account fixture remains valid
 
@@ -502,6 +1242,64 @@ def test_execute_google_task_normalizes_calendar_bounds_to_eastern_time(monkeypa
     assert captured["time_min"] == "2026-03-20T00:00:00-04:00"
     assert captured["time_max"] == "2026-03-20T20:00:00-04:00"
     assert result["steps"][0]["resource_kind"] == "calendar"
+
+
+def test_execute_google_task_lists_all_connected_account_calendars_when_calendar_id_is_omitted(monkeypatch):
+    workspace, user, account = _make_account()
+
+    captured: dict[str, list[str]] = {"calendar_ids": []}
+
+    class FakeClient:
+        def __init__(self, connection):
+            self.connection = connection
+
+        def list_calendar_list(self):
+            return {
+                "items": [
+                    {"id": "primary", "summary": "Primary Calendar", "primary": True},
+                    {"id": "shared", "summary": "Shared Calendar", "selected": True},
+                ]
+            }
+
+        def list_calendar_events(self, *, calendar_id: str = "primary", time_min: str = "", time_max: str = "", max_results: int = 10):
+            captured["calendar_ids"].append(calendar_id)
+            if calendar_id == "shared":
+                return {
+                    "items": [
+                        {
+                            "id": "event-1",
+                            "summary": "Shared calendar event",
+                            "start": {"dateTime": "2026-03-22T14:00:00-04:00"},
+                        }
+                    ]
+                }
+            return {"items": []}
+
+    monkeypatch.setattr("google_bridge.services.bridge.GoogleBridgeClient", FakeClient)
+
+    result = execute_google_task(
+        payload={
+            "integration_kind": "google",
+            "resource_kind": "calendar",
+            "action_kind": "read",
+            "operation": "list",
+            "account_scope": "primary",
+            "email": "user@example.com",
+            "time_min": "2026-03-22T00:00:00",
+            "time_max": "2026-03-23T00:00:00",
+            "max_results": 50,
+        },
+        workspace=workspace,
+        owner=user,
+        account=account,
+    )
+
+    assert captured["calendar_ids"] == ["primary", "shared"]
+    assert len(result["result"]["items"]) == 1
+    assert result["result"]["items"][0]["calendar_id"] == "shared"
+    assert result["result"]["items"][0]["calendar_summary"] == "Shared Calendar"
+    assert len(result["result"]["calendars"]) == 2
+    assert "Found 1 calendar events" in result["summary_text"]
 
 
 def test_execute_google_task_creates_calendar_event(monkeypatch):
@@ -829,6 +1627,7 @@ def test_google_bridge_calendar_schema_requires_local_time_bounds():
     start_description = schema["properties"]["start"]["description"]
     action_kind_description = schema["properties"]["action_kind"]["description"]
     resource_kind_description = schema["properties"]["resource_kind"]["description"]
+    calendar_id_description = schema["properties"]["calendar_id"]["description"]
     to_description = schema["properties"]["to"]["description"]
     cc_description = schema["properties"]["cc"]["description"]
     bcc_description = schema["properties"]["bcc"]["description"]
@@ -843,8 +1642,15 @@ def test_google_bridge_calendar_schema_requires_local_time_bounds():
     assert "GMT or Zulu" in time_max_description
     assert "EST/EDT" in time_max_description
     assert "America/New_York" in time_zone_description
+    account_scope_description = schema["properties"]["account_scope"]["description"]
     assert "message_id" in query_description.lower() or "message id" in query_description.lower()
-    assert "directly to the trash/delete operation" in query_description.lower()
+    assert "from:airbnb.com" in query_description.lower()
+    assert "exact sender" in query_description.lower()
+    assert "sender-domain" in query_description.lower()
+    assert "subject search" in query_description.lower()
+    assert "or is supported only for bulk trash/delete cleanup" in query_description.lower()
+    assert "fan out across every active connected account" in account_scope_description.lower()
+    assert "every connected gmail inbox or calendar" in account_scope_description.lower()
     assert "account_email" in message_id_description
     assert "fetch subject, sender, snippet, and metadata" in message_id_description
     assert "account_email" in event_id_description
@@ -861,4 +1667,43 @@ def test_google_bridge_calendar_schema_requires_local_time_bounds():
     assert "update" in action_kind_description
     assert "read, list, draft, send, create, update, delete" in action_kind_description
     assert "gmail supports draft/send writes and Calendar supports create/update/delete writes" in resource_kind_description
+    assert "all calendars" in calendar_id_description.lower()
     assert "local time" in start_description
+    assert schema["properties"]["max_results"]["default"] == 20
+    assert "maximum" not in schema["properties"]["max_results"]
+    assert "operation" not in schema["required"]
+    assert "operation" not in schema["properties"]["steps"]["items"]["required"]
+    assert "simple or splitting" in query_description.lower()
+    assert "or is supported for gmail list/read searches and bulk trash/delete cleanup" in query_description.lower()
+    gmail_delete_examples = [
+        example
+        for example in GOOGLE_BRIDGE_TOOL_EXAMPLES
+        if example.get("resource_kind") == "gmail" and example.get("action_kind") == "delete"
+    ]
+    gmail_read_examples = [
+        example
+        for example in GOOGLE_BRIDGE_TOOL_EXAMPLES
+        if example.get("resource_kind") == "gmail" and example.get("action_kind") == "read"
+    ]
+    assert any(
+        example.get("query") == 'from:info@airbnb.com OR from:airbnb.com OR subject:("Airbnb")'
+        and example.get("account_scope") == "primary"
+        for example in gmail_read_examples
+    )
+    assert any(
+        example.get("query") == 'from:info@airbnb.com OR from:airbnb.com OR subject:("Airbnb")'
+        and example.get("account_scope") == "all"
+        for example in gmail_read_examples
+    )
+    assert any(example.get("query") == "subject:(\"Airbnb\")" and example.get("operation") == "trash" for example in gmail_delete_examples)
+    assert any(example.get("query") == "subject:(\"Airbnb\")" and example.get("operation") == "delete" and example.get("delete_mode") == "delete" for example in gmail_delete_examples)
+    assert any(example.get("query") == "from:info@airbnb.com" and example.get("operation") == "trash" for example in gmail_delete_examples)
+    assert any(example.get("query") == "from:info@airbnb.com" and example.get("operation") == "delete" and example.get("delete_mode") == "delete" for example in gmail_delete_examples)
+    assert any(example.get("query") == "from:airbnb.com" and example.get("operation") == "trash" for example in gmail_delete_examples)
+    assert any(example.get("query") == "from:airbnb.com" and example.get("operation") == "delete" and example.get("delete_mode") == "delete" for example in gmail_delete_examples)
+    assert any(example.get("account_scope") == "all" and example.get("query") == "subject:(\"Airbnb\")" and example.get("operation") == "trash" for example in gmail_delete_examples)
+    assert any(example.get("account_scope") == "all" and example.get("query") == "subject:(\"Airbnb\")" and example.get("operation") == "delete" and example.get("delete_mode") == "delete" for example in gmail_delete_examples)
+    assert any(example.get("account_scope") == "all" and example.get("query") == "from:info@airbnb.com" and example.get("operation") == "trash" for example in gmail_delete_examples)
+    assert any(example.get("account_scope") == "all" and example.get("query") == "from:info@airbnb.com" and example.get("operation") == "delete" and example.get("delete_mode") == "delete" for example in gmail_delete_examples)
+    assert any(example.get("account_scope") == "all" and example.get("query") == "from:airbnb.com" and example.get("operation") == "trash" for example in gmail_delete_examples)
+    assert any(example.get("account_scope") == "all" and example.get("query") == "from:airbnb.com" and example.get("operation") == "delete" and example.get("delete_mode") == "delete" for example in gmail_delete_examples)
