@@ -1,9 +1,8 @@
 from __future__ import annotations
 
 import json
-import logging
-import os
 import inspect
+import os
 from typing import Any, Dict, List, Optional
 
 import redis
@@ -11,8 +10,9 @@ from django.conf import settings
 from django.utils import timezone
 
 from core.utils.redis_checks import validate_redis_db
+from logging_utils import get_app_logger
 
-logger = logging.getLogger(__name__)
+logger = get_app_logger(__name__)
 
 
 def _get_redis_url() -> str:
@@ -126,7 +126,7 @@ def delete_tool_result(tool_call_id: str) -> None:
 
 def pop_pending_tool_results(run_id: str, limit: int = 20) -> List[Dict[str, Any]]:
     client = _request_redis_client("pop_pending_tool_results")
-    logging.debug(f"result_bus.pop_pending_tool_results redis client = {client}")
+    logger.debug("result_bus.pop_pending_tool_results redis client = %s", client)
 
     list_key = make_run_pending_list_key(run_id)
     tool_call_ids: List[str] = []

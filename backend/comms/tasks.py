@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 import os
 from typing import Any, Iterable, Mapping, Optional, Tuple
 
@@ -18,8 +17,9 @@ from comms.services.remote_ops import expire_remote_approval_tickets
 from comms.transports.base import NormalizedEvent
 from comms.transports.telegram import TelegramAdapter
 from httpcore import ReadTimeout as HttpcoreReadTimeout
+from logging_utils import get_app_logger
 
-logger = logging.getLogger(__name__)
+logger = get_app_logger(__name__)
 _POLL_LOCK_BUSY = object()
 
 

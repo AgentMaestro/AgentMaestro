@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import logging
 import os
 import socket
 from dataclasses import dataclass
@@ -10,6 +9,7 @@ from typing import Dict, Optional
 from agentmaestro.celery import app
 from django.db import DatabaseError, transaction
 from django.utils import timezone
+from logging_utils import get_app_logger
 
 from runs.models import AgentRun
 from runs.services.events import append_event
@@ -21,7 +21,7 @@ LOCK_LEASE_SECONDS = int(os.getenv("LOCK_LEASE_SECONDS", "20"))
 RETRY_BACKOFF_SECONDS = int(os.getenv("RETRY_BACKOFF_SECONDS", "5"))
 WORKER_ID = os.getenv("TICKER_ID") or f"{socket.gethostname()}:{os.getpid()}"
 
-logger = logging.getLogger(__name__)
+logger = get_app_logger(__name__)
 
 EXPECTED_STEP_INDEX = {
     AgentRun.Status.PENDING: 0,

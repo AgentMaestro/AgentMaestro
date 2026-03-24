@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 import json
-import logging
 from collections import Counter
 from typing import Iterable, List
 
+from logging_utils import get_app_logger
 from runs.models import RunEvent
 
-logger = logging.getLogger(__name__)
+logger = get_app_logger(__name__)
 
 RESUMABLE_EVENT_TYPES = {
     "chat_message",

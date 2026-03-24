@@ -6,6 +6,7 @@ import os
 
 import httpx
 from django.core.management.base import BaseCommand, CommandError
+from logging_utils import scrub_sensitive_text
 
 
 class Command(BaseCommand):
@@ -48,11 +49,11 @@ class Command(BaseCommand):
         username = result.get("username")
         is_bot = result.get("is_bot")
 
-        self.stdout.write("Telegram token validated.")
-        self.stdout.write(f"  bot_id={bot_id}")
-        self.stdout.write(f"  first_name={first_name}")
-        self.stdout.write(f"  username={username}")
-        self.stdout.write(f"  is_bot={is_bot}")
+        self.stdout.write(scrub_sensitive_text("Telegram token validated."))
+        self.stdout.write(scrub_sensitive_text(f"  bot_id={bot_id}"))
+        self.stdout.write(scrub_sensitive_text(f"  first_name={first_name}"))
+        self.stdout.write(scrub_sensitive_text(f"  username={username}"))
+        self.stdout.write(scrub_sensitive_text(f"  is_bot={is_bot}"))
 
     def _extract_error_detail(self, exc: httpx.HTTPStatusError) -> str:
         if not exc.response.headers.get("content-type", "").startswith("application/json"):

@@ -5,14 +5,14 @@ import json
 from typing import Any, Dict, Optional, Tuple
 from uuid import UUID, uuid4
 
-import logging
-
 from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
 from django.db import transaction
 from django.db.models import Max
 from django.utils import timezone
 
+from logging_utils import get_app_logger
+from logging_utils import scrub_sensitive_value
 from runs.models import AgentRun, RunEvent
 from runs.services.event_contracts import (
     make_approvals_push,
@@ -20,7 +20,7 @@ from runs.services.event_contracts import (
     make_workspace_push,
 )
 
-logger = logging.getLogger(__name__)
+logger = get_app_logger(__name__)
 
 TOOL_CALL_COMPLETED_EVENT = "tool_call_completed"
 TOOL_CALL_DENIED_EVENT = "tool_call_denied"
@@ -32,18 +32,15 @@ def _as_dict(value: Any) -> Dict[str, Any]:
     return {}
 
 
-def _normalize_tool_completed_payload(payload: Dict[str, Any], correlation_id: UUID) -> Dict[str, Any]:
+def _normalize_tool_completed_payload(
+    payload: Dict[str, Any], correlation_id: UUID
+) -> Dict[str, Any]:
     """
     Canonical payload shape for tool_call_completed events sent to AgentChatConsumer.push().
     """
     raw = _as_dict(payload)
 
-    tool_call_id = str(
-        raw.get("tool_call_id")
-        or raw.get("id")
-        or raw.get("tool_id")
-        or ""
-    ).strip()
+    tool_call_id = str(raw.get("tool_call_id") or raw.get("id") or raw.get("tool_id") or "").strip()
 
     status = str(raw.get("status") or "completed").strip()
     stdout = raw.get("stdout")
@@ -88,12 +85,7 @@ def _normalize_tool_completed_payload(payload: Dict[str, Any], correlation_id: U
 def _normalize_tool_denied_payload(payload: Dict[str, Any], correlation_id: UUID) -> Dict[str, Any]:
     raw = _as_dict(payload)
 
-    tool_call_id = str(
-        raw.get("tool_call_id")
-        or raw.get("id")
-        or raw.get("tool_id")
-        or ""
-    ).strip()
+    tool_call_id = str(raw.get("tool_call_id") or raw.get("id") or raw.get("tool_id") or "").strip()
 
     normalized: Dict[str, Any] = {
         "tool_call_id": tool_call_id,
@@ -151,6 +143,7 @@ def _layer_diag(channel_layer: object) -> Dict[str, Any]:
             break
     return info
 
+
 def _run_group(run_id: str) -> str:
     return f"run.{run_id}"
 
@@ -200,12 +193,7 @@ def append_event(
     )
 
     # Lock the run row so concurrent tickers cannot allocate the same seq.
-    run = (
-        AgentRun.objects
-        .select_for_update()
-        .select_related("workspace")
-        .get(id=run_id)
-    )
+    run = AgentRun.objects.select_for_update().select_related("workspace").get(id=run_id)
 
     # Compute next seq from existing events (safe under run row lock).
     agg = RunEvent.objects.filter(run_id=run_id).aggregate(m=Max("seq"))
@@ -276,7 +264,6 @@ def append_event(
                 data=normalized_run_data,
             )
 
-
             logger.debug(
                 "append_event broadcast_run_event completed run=%s seq=%s",
                 run_id,
@@ -318,7 +305,9 @@ def append_event(
         transaction.on_commit(_after_commit)
         logger.debug("append_event on_commit registered run=%s seq=%s", run_id, next_seq)
     except Exception:
-        logger.exception("append_event failed to register on_commit for run=%s seq=%s", run_id, next_seq)
+        logger.exception(
+            "append_event failed to register on_commit for run=%s seq=%s", run_id, next_seq
+        )
 
     return evt, next_seq
 
@@ -357,11 +346,12 @@ async def broadcast_run_event_async(
             data,
         )
         data = {"raw_data": data}
+    safe_data = scrub_sensitive_value(data or {})
 
     push = make_run_push(
         run_id=run_id,
         event=event,
-        data=data or {},
+        data=safe_data,
         seq=seq,
         workspace_id=workspace_id,
     )
@@ -378,9 +368,9 @@ async def broadcast_run_event_async(
             "broadcast_run_event_async tool completion run=%s seq=%s tool_call_id=%s status=%s keys=%s",
             run_id,
             seq,
-            data.get("tool_call_id"),
-            data.get("status"),
-            sorted(data.keys()),
+            safe_data.get("tool_call_id"),
+            safe_data.get("status"),
+            sorted(safe_data.keys()),
         )
 
     group = _run_group(run_id)
@@ -423,14 +413,13 @@ def broadcast_run_event(
     seq: Optional[int] = None,
     workspace_id: Optional[str] = None,
 ) -> None:
-    async_to_sync(
-        broadcast_run_event_async)(
-            run_id=run_id,
-            event=event,
-            data=data,
-            seq=seq,
-            workspace_id=workspace_id,
-        )
+    async_to_sync(broadcast_run_event_async)(
+        run_id=run_id,
+        event=event,
+        data=data,
+        seq=seq,
+        workspace_id=workspace_id,
+    )
 
 
 def broadcast_workspace_event(
@@ -446,29 +435,35 @@ def broadcast_workspace_event(
 
     logger.info("Execution made it here")
 
-
     channel_layer = get_channel_layer()
     if channel_layer is None:
         return
 
-    logger.info(f"Prior to broadcast push...  Workspace id = {workspace_id}  Event = {event}  Data = {data}  Seq = {seq} ")
-
+    safe_data = scrub_sensitive_value(data or {})
+    logger.info(
+        "Prior to broadcast push...  Workspace id = %s  Event = %s  Data = %s  Seq = %s",
+        workspace_id,
+        event,
+        safe_data,
+        seq,
+    )
 
     push = make_workspace_push(
         workspace_id=workspace_id,
         event=event,
-        data=data or {},
+        data=safe_data,
         seq=seq,
     )
 
     workspace_group = _workspace_group(workspace_id)
-    logger.info(f"Workspace group:  {workspace_group}")
-    logger.info(f"Payload: {push}")
+    logger.info("Workspace group:  %s", workspace_group)
+    logger.info("Payload: %s", push)
 
     async_to_sync(channel_layer.group_send)(
         workspace_group,
         {"type": "push", "payload": push},
     )
+
 
 def broadcast_approvals_event(
     *,
@@ -486,7 +481,7 @@ def broadcast_approvals_event(
     push = make_approvals_push(
         workspace_id=workspace_id,
         event=event,
-        data=data or {},
+        data=scrub_sensitive_value(data or {}),
     )
 
     async_to_sync(channel_layer.group_send)(

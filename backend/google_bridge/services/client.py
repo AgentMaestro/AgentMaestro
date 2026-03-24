@@ -139,6 +139,7 @@ class GoogleBridgeClient:
         self,
         *,
         calendar_id: str = "primary",
+        q: str = "",
         time_min: str = "",
         time_max: str = "",
         max_results: int = 20,
@@ -148,6 +149,8 @@ class GoogleBridgeClient:
             "singleEvents": "true",
             "orderBy": "startTime",
         }
+        if q.strip():
+            params["q"] = q.strip()
         if time_min.strip():
             params["timeMin"] = time_min.strip()
         if time_max.strip():

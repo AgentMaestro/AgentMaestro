@@ -272,7 +272,7 @@ def test_execute_google_task_splits_or_queries_for_gmail_list(monkeypatch):
                 return {"messages": [{"id": f"airbnb-{index}"} for index in range(1, 11)], "resultSizeEstimate": 10}
             if query == "from:airbnb.com":
                 return {"messages": [{"id": f"domain-{index}"} for index in range(1, 11)], "resultSizeEstimate": 10}
-            if query == "subject:(\"Airbnb\")":
+            if query == "subject:Airbnb":
                 return {"messages": [{"id": f"subject-{index}"} for index in range(1, 11)], "resultSizeEstimate": 10}
             return {"messages": [], "resultSizeEstimate": 0}
 
@@ -309,40 +309,139 @@ def test_execute_google_task_splits_or_queries_for_gmail_list(monkeypatch):
     assert [call["query"] for call in captured["list_calls"]] == [
         "from:info@airbnb.com",
         "from:airbnb.com",
-        'subject:("Airbnb")',
+        "subject:Airbnb",
     ]
     assert all(call["max_results"] == 20 for call in captured["list_calls"])
     assert result["result"]["resultSizeEstimate"] == 20
     assert len(result["result"]["messages"]) == 20
     assert "Returned 20 Gmail messages" in result["summary_text"]
+    assert result["result"]["query_plan"]["call_count"] == 3
 
 
-def test_execute_google_task_rejects_nested_or_inside_parentheses():
+def test_execute_google_task_supports_nested_or_inside_parentheses():
     workspace, user, account = _make_account()
 
-    with pytest.raises(GoogleBridgeTaskError, match="OR inside parentheses is not supported"):
-        execute_google_task(
-            payload={
-                "integration_kind": "google",
-                "resource_kind": "gmail",
-                "action_kind": "read",
-                "operation": "list",
-                "account_scope": "primary",
-                "email": "user@example.com",
-                "include_read": True,
-                "query": "subject:(failure OR error)",
-            },
-            workspace=workspace,
-            owner=user,
-            account=account,
-        )
+    captured: dict[str, object] = {"list_calls": []}
+
+    class FakeClient:
+        def __init__(self, connection):
+            self.connection = connection
+
+        def list_gmail_messages(
+            self,
+            *,
+            query: str = "",
+            label_ids: list[str] | None = None,
+            max_results: int = 20,
+            page_token: str = "",
+        ):
+            captured["list_calls"].append(query)
+            if query == "subject:failure":
+                return {"messages": [{"id": "msg-1"}], "resultSizeEstimate": 1}
+            if query == "subject:error":
+                return {"messages": [{"id": "msg-2"}], "resultSizeEstimate": 1}
+            return {"messages": [], "resultSizeEstimate": 0}
+
+        def get_gmail_message(self, message_id: str):
+            return {
+                "snippet": f"Snippet for {message_id}",
+                "payload": {
+                    "headers": [
+                        {"name": "Subject", "value": f"Subject for {message_id}"},
+                        {"name": "From", "value": "sender@example.com"},
+                        {"name": "Date", "value": "Fri, 21 Mar 2026 09:00:00 -0400"},
+                    ]
+                },
+            }
+
+    monkeypatch.setattr("google_bridge.services.bridge.GoogleBridgeClient", FakeClient)
+
+    result = execute_google_task(
+        payload={
+            "integration_kind": "google",
+            "resource_kind": "gmail",
+            "action_kind": "read",
+            "operation": "list",
+            "account_scope": "primary",
+            "email": "user@example.com",
+            "include_read": True,
+            "query": "subject:(failure OR error)",
+        },
+        workspace=workspace,
+        owner=user,
+        account=account,
+    )
+
+    assert captured["list_calls"] == ["subject:failure", "subject:error"]
+    assert result["result"]["query_plan"]["call_count"] == 2
+    assert result["result"]["resultSizeEstimate"] == 2
+
+
+def test_execute_google_task_supports_grouped_or_and_not_for_gmail_list(monkeypatch):
+    workspace, user, account = _make_account()
+
+    captured: dict[str, object] = {"list_calls": []}
+
+    class FakeClient:
+        def __init__(self, connection):
+            self.connection = connection
+
+        def list_gmail_messages(
+            self,
+            *,
+            query: str = "",
+            label_ids: list[str] | None = None,
+            max_results: int = 20,
+            page_token: str = "",
+        ):
+            captured["list_calls"].append(query)
+            if query in {"from:dsmith@aol.com -label_ids:promotions", "from:dsmyth@aol.com -label_ids:promotions"}:
+                return {"messages": [{"id": "msg-1"}], "resultSizeEstimate": 1}
+            return {"messages": [], "resultSizeEstimate": 0}
+
+        def get_gmail_message(self, message_id: str):
+            return {
+                "snippet": f"Snippet for {message_id}",
+                "payload": {
+                    "headers": [
+                        {"name": "Subject", "value": f"Subject for {message_id}"},
+                        {"name": "From", "value": "sender@example.com"},
+                        {"name": "Date", "value": "Fri, 21 Mar 2026 09:00:00 -0400"},
+                    ]
+                },
+            }
+
+    monkeypatch.setattr("google_bridge.services.bridge.GoogleBridgeClient", FakeClient)
+
+    result = execute_google_task(
+        payload={
+            "integration_kind": "google",
+            "resource_kind": "gmail",
+            "action_kind": "read",
+            "operation": "list",
+            "account_scope": "primary",
+            "email": "user@example.com",
+            "include_read": True,
+            "query": "from:(dsmith@aol.com OR dsmyth@aol.com) AND NOT label_ids:promotions",
+        },
+        workspace=workspace,
+        owner=user,
+        account=account,
+    )
+
+    assert captured["list_calls"] == [
+        "from:dsmith@aol.com -label_ids:promotions",
+        "from:dsmyth@aol.com -label_ids:promotions",
+    ]
+    assert result["result"]["query_plan"]["call_count"] == 2
+    assert result["result"]["resultSizeEstimate"] == 1
 
 
 @override_settings(GMAIL_OR_CLAUSE_LIMIT=2)
 def test_execute_google_task_rejects_or_queries_over_clause_cap():
     workspace, user, account = _make_account()
 
-    with pytest.raises(GoogleBridgeTaskError, match="OR clauses are limited to 2 top-level clauses"):
+    with pytest.raises(GoogleBridgeTaskError, match="expanded to 3 clauses, which exceeds the limit of 2"):
         execute_google_task(
             payload={
                 "integration_kind": "google",
@@ -1169,7 +1268,7 @@ def test_execute_google_task_runs_multi_step_read_plan(monkeypatch):
                 },
             }
 
-        def list_calendar_events(self, *, calendar_id: str = "primary", time_min: str = "", time_max: str = "", max_results: int = 10):
+        def list_calendar_events(self, *, calendar_id: str = "primary", q: str = "", time_min: str = "", time_max: str = "", max_results: int = 10):
             self.received_time_min = time_min
             self.received_time_max = time_max
             return {"items": [{"id": "event-1", "summary": "Standup"}]}
@@ -1217,7 +1316,7 @@ def test_execute_google_task_normalizes_calendar_bounds_to_eastern_time(monkeypa
         def __init__(self, connection):
             self.connection = connection
 
-        def list_calendar_events(self, *, calendar_id: str = "primary", time_min: str = "", time_max: str = "", max_results: int = 10):
+        def list_calendar_events(self, *, calendar_id: str = "primary", q: str = "", time_min: str = "", time_max: str = "", max_results: int = 10):
             captured["time_min"] = time_min
             captured["time_max"] = time_max
             return {"items": [{"id": "event-1", "summary": "Standup"}]}
@@ -1261,7 +1360,7 @@ def test_execute_google_task_lists_all_connected_account_calendars_when_calendar
                 ]
             }
 
-        def list_calendar_events(self, *, calendar_id: str = "primary", time_min: str = "", time_max: str = "", max_results: int = 10):
+        def list_calendar_events(self, *, calendar_id: str = "primary", q: str = "", time_min: str = "", time_max: str = "", max_results: int = 10):
             captured["calendar_ids"].append(calendar_id)
             if calendar_id == "shared":
                 return {
@@ -1299,6 +1398,58 @@ def test_execute_google_task_lists_all_connected_account_calendars_when_calendar
     assert result["result"]["items"][0]["calendar_id"] == "shared"
     assert result["result"]["items"][0]["calendar_summary"] == "Shared Calendar"
     assert len(result["result"]["calendars"]) == 2
+    assert "Found 1 calendar events" in result["summary_text"]
+
+
+def test_execute_google_task_supports_grouped_or_for_calendar_list(monkeypatch):
+    workspace, user, account = _make_account()
+
+    captured: dict[str, list[tuple[str, str]]] = {"list_calls": []}
+
+    class FakeClient:
+        def __init__(self, connection):
+            self.connection = connection
+
+        def list_calendar_events(self, *, calendar_id: str = "primary", q: str = "", time_min: str = "", time_max: str = "", max_results: int = 10):
+            captured["list_calls"].append((calendar_id, q))
+            if q in {"team sync", "planning"}:
+                return {
+                    "items": [
+                        {
+                            "id": "event-1",
+                            "summary": "Team sync",
+                            "start": {"dateTime": "2026-03-22T09:00:00-04:00"},
+                        }
+                    ]
+                }
+            return {"items": []}
+
+    monkeypatch.setattr("google_bridge.services.bridge.GoogleBridgeClient", FakeClient)
+
+    result = execute_google_task(
+        payload={
+            "integration_kind": "google",
+            "resource_kind": "calendar",
+            "action_kind": "read",
+            "operation": "list",
+            "account_scope": "primary",
+            "email": "user@example.com",
+            "calendar_id": "primary",
+            "query": "q:(team sync OR planning)",
+            "time_min": "2026-03-22T00:00:00",
+            "time_max": "2026-03-23T00:00:00",
+            "max_results": 10,
+        },
+        workspace=workspace,
+        owner=user,
+        account=account,
+    )
+
+    assert captured["list_calls"] == [("primary", "team sync"), ("primary", "planning")]
+    assert result["result"]["query_plan"]["call_count"] == 2
+    assert result["result"]["resultSizeEstimate"] == 1
+    assert len(result["result"]["items"]) == 1
+    assert result["result"]["items"][0]["calendar_id"] == "primary"
     assert "Found 1 calendar events" in result["summary_text"]
 
 
@@ -1698,12 +1849,19 @@ def test_google_bridge_calendar_schema_requires_local_time_bounds():
     assert "EST/EDT" in time_max_description
     assert "America/New_York" in time_zone_description
     account_scope_description = schema["properties"]["account_scope"]["description"]
+    assert "generic google_bridge query language" in query_description.lower()
+    assert "and, or, not" in query_description.lower()
+    assert "from:(dsmith@aol.com or dsmyth@aol.com)" in query_description.lower()
+    assert "to:(sktennis7@gmail.com or kissinger.scott@gmail.com)" in query_description.lower()
+    assert "supported query fields vary by surface" in query_description.lower()
+    assert "gmail list/read supports from, to, subject, label_ids, include_read, in, is, newer_than, and older_than" in query_description.lower()
+    assert "calendar list/read supports q" in query_description.lower()
+    assert "q:(team sync or planning)" in query_description.lower()
     assert "message_id" in query_description.lower() or "message id" in query_description.lower()
     assert "from:airbnb.com" in query_description.lower()
     assert "exact sender" in query_description.lower()
     assert "sender-domain" in query_description.lower()
     assert "subject search" in query_description.lower()
-    assert "or is supported only for bulk trash/delete cleanup" in query_description.lower()
     assert "fan out across every active connected account" in account_scope_description.lower()
     assert "every connected gmail inbox or calendar" in account_scope_description.lower()
     assert "account_email" in message_id_description
@@ -1723,13 +1881,14 @@ def test_google_bridge_calendar_schema_requires_local_time_bounds():
     assert "read, list, draft, send, create, update, delete" in action_kind_description
     assert "gmail supports draft/send writes and Calendar supports create/update/delete writes" in resource_kind_description
     assert "all calendars" in calendar_id_description.lower()
+    assert "supports q for event search terms" in calendar_id_description.lower()
     assert "local time" in start_description
     assert schema["properties"]["max_results"]["default"] == 20
     assert "maximum" not in schema["properties"]["max_results"]
     assert "operation" not in schema["required"]
     assert "operation" not in schema["properties"]["steps"]["items"]["required"]
-    assert "simple or splitting" in query_description.lower()
-    assert "or is supported for gmail list/read searches and bulk trash/delete cleanup" in query_description.lower()
+    assert "compiled by the bridge planner" in query_description.lower()
+    assert "calendar list/read supports q" in query_description.lower()
     gmail_delete_examples = [
         example
         for example in GOOGLE_BRIDGE_TOOL_EXAMPLES
@@ -1749,6 +1908,31 @@ def test_google_bridge_calendar_schema_requires_local_time_bounds():
         example.get("query") == 'from:info@airbnb.com OR from:airbnb.com OR subject:("Airbnb")'
         and example.get("account_scope") == "all"
         for example in gmail_read_examples
+    )
+    assert any(
+        example.get("query") == "from:(dsmith@aol.com OR dsmyth@aol.com)"
+        and example.get("account_scope") == "primary"
+        for example in gmail_read_examples
+    )
+    assert any(
+        example.get("query") == "to:(sktennis7@gmail.com OR kissinger.scott@gmail.com)"
+        and example.get("account_scope") == "primary"
+        for example in gmail_read_examples
+    )
+    assert any(
+        example.get("query") == "subject:(invoice OR receipt) AND NOT label_ids:promotions"
+        and example.get("account_scope") == "primary"
+        for example in gmail_read_examples
+    )
+    calendar_read_examples = [
+        example
+        for example in GOOGLE_BRIDGE_TOOL_EXAMPLES
+        if example.get("resource_kind") == "calendar" and example.get("action_kind") == "read"
+    ]
+    assert any(
+        example.get("query") == "q:(team sync OR planning)"
+        and example.get("calendar_id") == "primary"
+        for example in calendar_read_examples
     )
     assert any(example.get("query") == "subject:(\"Airbnb\")" and example.get("operation") == "trash" for example in gmail_delete_examples)
     assert any(example.get("query") == "subject:(\"Airbnb\")" and example.get("operation") == "delete" and example.get("delete_mode") == "delete" for example in gmail_delete_examples)

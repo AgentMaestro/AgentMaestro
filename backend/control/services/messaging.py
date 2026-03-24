@@ -1,25 +1,25 @@
 from __future__ import annotations
 
-import logging
 from typing import Dict
 
 from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
 
 from control.models import ControlMessage
+from logging_utils import get_app_logger, scrub_sensitive_value
 
-logger = logging.getLogger(__name__)
+logger = get_app_logger(__name__)
 
 
-def _serialize_message(message: ControlMessage) -> Dict[str, str]:
+def _serialize_message(message: ControlMessage) -> Dict[str, object]:
     return {
         "id": str(message.id),
         "conversation": str(message.conversation.uuid),
         "direction": message.direction,
         "author_type": message.author_type,
         "author_label": message.author_label,
-        "text": message.text,
-        "payload": message.payload or {},
+        "text": scrub_sensitive_value(message.text),
+        "payload": scrub_sensitive_value(message.payload or {}),
         "created_at": message.created_at.isoformat(),
     }
 

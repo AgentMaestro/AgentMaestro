@@ -29,6 +29,7 @@
     let approvalAudioContext = null;
     let activeApprovalGrants = [];
     let scrollToBottomFrameId = null;
+    let approvalScrollLockToolCallId = null;
     const RUN_ID_STORAGE_KEY_BASE = "agentmaestro.active_run_id";
     let runtimeProvider = (shell.dataset.llmProvider || "openai").trim() || "openai";
     let runtimeProviderLabel = (shell.dataset.llmProviderLabel || "LLM").trim() || "LLM";
@@ -87,6 +88,14 @@
             return null;
         }
     })();
+    const isBrowserReload = (() => {
+        try {
+            const navigationEntries = window.performance?.getEntriesByType?.("navigation") || [];
+            return String(navigationEntries[0]?.type || "").toLowerCase() === "reload";
+        } catch {
+            return false;
+        }
+    })();
     if (!wsUrl) {
         return;
     }
@@ -98,7 +107,7 @@
     };
 
     const scheduleScrollToBottom = () => {
-        if (!messagesEl) {
+        if (!messagesEl || approvalScrollLockToolCallId) {
             return;
         }
         if (scrollToBottomFrameId !== null) {
@@ -106,8 +115,39 @@
         }
         scrollToBottomFrameId = window.requestAnimationFrame(() => {
             scrollToBottomFrameId = null;
+            if (approvalScrollLockToolCallId) {
+                return;
+            }
             scrollToBottom();
         });
+    };
+
+    const scrollCardIntoView = (card) => {
+        if (!card?._articleEl || !messagesEl) {
+            return;
+        }
+        card._articleEl.scrollIntoView({block: "start", inline: "nearest", behavior: "auto"});
+    };
+
+    const syncApprovalScrollLock = () => {
+        if (!messagesEl) {
+            return;
+        }
+        const pendingCardEl = messagesEl.querySelector(".tool-request-card[data-status='PENDING_APPROVAL']");
+        if (pendingCardEl) {
+            const nextToolCallId = pendingCardEl.dataset.toolCallId || null;
+            const lockChanged = approvalScrollLockToolCallId !== nextToolCallId;
+            approvalScrollLockToolCallId = nextToolCallId;
+            if (lockChanged) {
+                scrollCardIntoView(toolCards.get(nextToolCallId));
+            }
+            return;
+        }
+        const hadLock = Boolean(approvalScrollLockToolCallId);
+        approvalScrollLockToolCallId = null;
+        if (hadLock) {
+            scheduleScrollToBottom();
+        }
     };
 
     const getCookie = (name) => {
@@ -584,12 +624,17 @@
         }
     };
 
+    if (isBrowserReload) {
+        clearStoredRunId();
+        log("Detected browser reload; ignoring stored run_id and starting fresh.");
+    }
+
     // Prefer the server-reported dashboard run over any stale session-stored run.
     // The stored value is still used later as a reconnect fallback when no current run exists.
     updateRunTimelineLink(currentRunId || null);
 
     const ensureRunId = async ({fromRunId = "", rotationReason = ""} = {}) => {
-        if (!activeRunId && currentRunId && !fromRunId) {
+        if (!isBrowserReload && !activeRunId && currentRunId && !fromRunId) {
             syncCurrentRunId();
             return activeRunId;
         }
@@ -598,7 +643,7 @@
             return activeRunId;
         }
         const storedRun = readStoredRunId();
-        if (storedRun && !fromRunId && !currentRunId) {
+        if (!isBrowserReload && storedRun && !fromRunId && !currentRunId) {
             activeRunId = storedRun;
             updateRunTimelineLink(activeRunId);
             log("ensureRunId: restored run_id from sessionStorage =", activeRunId);
@@ -1137,7 +1182,7 @@
         });
         if (messagesEl) {
             messagesEl.appendChild(thinkingPlaceholder);
-            scrollToBottom();
+            scheduleScrollToBottom();
         }
     };
 
@@ -1162,7 +1207,7 @@
         }
         const article = createMessageElement(payload);
         messagesEl.appendChild(article);
-        scrollToBottom();
+        scheduleScrollToBottom();
     };
 
     const sendToolControl = (type, toolCallId, extra = {}) => {
@@ -1388,7 +1433,11 @@
             const approveBtn = document.createElement("button");
             approveBtn.className = "tool-approve-btn";
             approveBtn.textContent = "Approve";
-            approveBtn.addEventListener("click", () => {
+            approveBtn.type = "button";
+            approveBtn.addEventListener("click", (event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                setApprovalButtonsState(card, "pending");
                 sendToolControl("tool_approve", payload.tool_call_id, {
                     grant_mode: card._grantSelect?.value || "once",
                 });
@@ -1396,7 +1445,10 @@
             const denyBtn = document.createElement("button");
             denyBtn.className = "tool-deny-btn";
             denyBtn.textContent = "Deny";
-            denyBtn.addEventListener("click", () => {
+            denyBtn.type = "button";
+            denyBtn.addEventListener("click", (event) => {
+                event.preventDefault();
+                event.stopPropagation();
                 sendToolControl("tool_deny", payload.tool_call_id);
             });
             card._approveBtn = approveBtn;
@@ -1426,7 +1478,7 @@
             detail.classList.toggle("tool-request-detail-collapsed", !expanded);
             footer.classList.toggle("tool-request-footer-expanded", expanded);
             updateDetailToggle(detailToggle, expanded);
-            scrollToBottom();
+            scheduleScrollToBottom();
         });
         footerHeader.append(footerLabel, detailToggle);
         footer.append(footerHeader, detail);
@@ -1480,6 +1532,9 @@
                 setApprovalButtonsState(card, "approved");
             }
         }
+        if (statusKey !== "PENDING_APPROVAL" && approvalScrollLockToolCallId === toolCallId) {
+            approvalScrollLockToolCallId = null;
+        }
     };
 
     const handleToolRequest = (payload) => {
@@ -1492,9 +1547,12 @@
             card = createToolCard(payload);
             messagesEl.appendChild(card._articleEl);
             toolCards.set(payload.tool_call_id, card);
-            scrollToBottom();
         }
         updateToolCardStatus(payload.tool_call_id, payload.status || "Queued");
+        syncApprovalScrollLock();
+        if (!payload.awaiting_approval && !approvalScrollLockToolCallId) {
+            scheduleScrollToBottom();
+        }
     };
 
     const handleToolStatus = (payload) => {
@@ -1504,6 +1562,7 @@
             display.statusText || payload.status || "Queued",
             display.detail || payload.error || payload.detail || payload.approval_note,
         );
+        syncApprovalScrollLock();
     };
 
     const handleToolResult = (payload) => {
@@ -1522,7 +1581,7 @@
             display.statusText || data?.status || "COMPLETED",
             display.detail,
         );
-        scheduleScrollToBottom();
+        syncApprovalScrollLock();
     };
 
     const handleToolDenied = (payload) => {
@@ -1534,6 +1593,7 @@
             kind: "tool",
         });
         updateToolCardStatus(data.tool_call_id || payload.tool_call_id, "DENIED", data.error);
+        syncApprovalScrollLock();
     };
 
     const handleSocketMessage = (event) => {
@@ -1614,6 +1674,11 @@
                 setStatus("Tool requested");
                 log("[TOOL_REQUEST] tool_request run_id=", activeRunId, payload);
                 return;
+            case "tool_call_requested":
+                handleToolRequest(payload.data || payload);
+                setStatus("Tool requested");
+                log("[TOOL_REQUEST] tool_call_requested run_id=", activeRunId, payload);
+                return;
 
             case "debug_group_echo":
                 log("[debug_group_echo] received:", payload);
@@ -1624,6 +1689,24 @@
             case "tool_status":
                 handleToolStatus(payload.data || payload);
                 log("[tool_status] run_id=", activeRunId, payload);
+                return;
+            case "tool_call_approval_ack":
+                updateToolCardStatus(
+                    payload.tool_call_id,
+                    "Approved",
+                    "Approval submitted.",
+                );
+                syncApprovalScrollLock();
+                log("[tool_call_approval_ack] run_id=", activeRunId, payload);
+                return;
+            case "tool_call_approved":
+                updateToolCardStatus(
+                    payload.tool_call_id,
+                    payload.status || "Approved",
+                    payload.detail || "Approval submitted.",
+                );
+                syncApprovalScrollLock();
+                log("[tool_call_approved] run_id=", activeRunId, payload);
                 return;
             case "tool_result":
                 handleToolResult(payload);

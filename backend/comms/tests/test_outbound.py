@@ -1,14 +1,20 @@
-import pytest
 from datetime import timedelta
+
+import pytest
 
 from django.contrib.auth import get_user_model
 from django.utils import timezone
 
-from comms.models import CommsConversation, Transport, TransportEndpoint
-from comms.services.agent_chat_bridge import active_run_for_agent, paired_conversation_for_agent
-from comms.services.outbound import send_telegram_message, send_telegram_text
-from control.models import ControlConversation, ControlMessage
 from agents.models import Agent
+from comms.models import CommsConversation, Transport, TransportEndpoint
+from comms.services.agent_chat_bridge import (
+    active_run_for_agent,
+    paired_conversation_for_agent,
+    send_run_transport_message,
+)
+from comms.services.outbound import send_telegram_message, send_telegram_text
+from comms.services.telegram_markup import render_mirror_telegram_html
+from control.models import ControlConversation, ControlMessage
 from core.models import Workspace
 from runs.models import AgentRun
 
@@ -131,3 +137,161 @@ def test_active_run_for_agent_prefers_dashboard_runs():
     resolved = active_run_for_agent(agent)
 
     assert resolved == dashboard_run
+
+
+@pytest.mark.django_db
+def test_send_run_transport_message_uses_markdownv2_escaped_plain_text(monkeypatch):
+    workspace = Workspace.objects.create(name="telegram-markdownv2-ws")
+    owner = get_user_model().objects.create_user(username="telegram-markdownv2-owner")
+    agent = Agent.objects.create(
+        workspace=workspace,
+        owner=owner,
+        name="markdown-agent",
+        description="test markdown rendering",
+        default_model="gpt-5",
+        temperature=0.70,
+        soul="You are an agent.",
+        policy_name="react",
+        tool_policy_json={},
+    )
+    transport = Transport.objects.create(key="telegram", display_name="Telegram")
+    endpoint = TransportEndpoint.objects.create(transport=transport, kind="bot", config={})
+    control_conversation = ControlConversation.objects.create(kind="comms_mirror", title="Markdown")
+    conversation = CommsConversation.objects.create(
+        transport=transport,
+        endpoint=endpoint,
+        external_conversation_id="chat-markdownv2",
+        control_conversation=control_conversation,
+    )
+    agent.default_conversation = control_conversation
+    agent.save(update_fields=["default_conversation"])
+    run = AgentRun.objects.create(
+        workspace=workspace,
+        agent=agent,
+        started_by=owner,
+        status=AgentRun.Status.RUNNING,
+        channel=AgentRun.Channel.DASHBOARD,
+        execution_mode=AgentRun.ExecutionMode.INTERACTIVE,
+        trigger_kind=AgentRun.TriggerKind.USER_CHAT,
+        input_text="markdown run",
+    )
+    run.started_at = timezone.now()
+    run.save(update_fields=["started_at"])
+
+    captured: dict[str, object] = {}
+
+    def fake_send(conversation_arg, text, **kwargs):
+        captured["conversation"] = conversation_arg
+        captured["text"] = text
+        captured["kwargs"] = kwargs
+        return {"response": {"ok": True}, "comms_message_id": 1, "control_message_id": 2}
+
+    monkeypatch.setattr("comms.services.agent_chat_bridge.send_conversation_message", fake_send)
+
+    delivered = send_run_transport_message(
+        run_id=str(run.id),
+        text="Hello *world* (test) _markdown_",
+        author_label="Assistant",
+    )
+
+    assert delivered is True
+    assert captured["conversation"] == conversation
+    assert captured["kwargs"]["parse_mode"] == "HTML"
+    assert captured["text"] == "<b>markdown-agent</b>\nHello <i>world</i> (test) <i>markdown</i>"
+
+
+@pytest.mark.django_db
+def test_send_run_transport_message_honors_explicit_parse_mode(monkeypatch):
+    workspace = Workspace.objects.create(name="telegram-explicit-parse-mode-ws")
+    owner = get_user_model().objects.create_user(username="telegram-explicit-parse-mode-owner")
+    agent = Agent.objects.create(
+        workspace=workspace,
+        owner=owner,
+        name="markup-agent",
+        description="test explicit parse mode",
+        default_model="gpt-5",
+        temperature=0.70,
+        soul="You are an agent.",
+        policy_name="react",
+        tool_policy_json={},
+    )
+    transport = Transport.objects.create(key="telegram", display_name="Telegram")
+    endpoint = TransportEndpoint.objects.create(transport=transport, kind="bot", config={})
+    control_conversation = ControlConversation.objects.create(kind="comms_mirror", title="Markup")
+    CommsConversation.objects.create(
+        transport=transport,
+        endpoint=endpoint,
+        external_conversation_id="chat-markup",
+        control_conversation=control_conversation,
+    )
+    agent.default_conversation = control_conversation
+    agent.save(update_fields=["default_conversation"])
+    run = AgentRun.objects.create(
+        workspace=workspace,
+        agent=agent,
+        started_by=owner,
+        status=AgentRun.Status.RUNNING,
+        channel=AgentRun.Channel.DASHBOARD,
+        execution_mode=AgentRun.ExecutionMode.INTERACTIVE,
+        trigger_kind=AgentRun.TriggerKind.USER_CHAT,
+        input_text="markup run",
+    )
+    run.started_at = timezone.now()
+    run.save(update_fields=["started_at"])
+
+    captured: dict[str, object] = {}
+
+    def fake_send(conversation_arg, text, **kwargs):
+        captured["text"] = text
+        captured["kwargs"] = kwargs
+        return {"response": {"ok": True}, "comms_message_id": 1, "control_message_id": 2}
+
+    monkeypatch.setattr("comms.services.agent_chat_bridge.send_conversation_message", fake_send)
+
+    delivered = send_run_transport_message(
+        run_id=str(run.id),
+        text="Hello *world*",
+        author_label="Assistant",
+        parse_mode="HTML",
+    )
+
+    assert delivered is True
+    assert captured["kwargs"]["parse_mode"] == "HTML"
+    assert captured["text"] == "Hello *world*"
+
+
+def test_render_mirror_telegram_html_flattens_headings_lists_blockquotes_tables_and_code_blocks():
+    rendered = render_mirror_telegram_html(
+        author_label="jeeves",
+        body=(
+            "# Heading 1\n"
+            "## Heading 2\n"
+            "> This is a quote.\n"
+            "> It continues on the next line.\n"
+            "\n"
+            "| Name | Role | Status |\n"
+            "|------|------|--------|\n"
+            "| Alice | Admin | Active |\n"
+            "| Bob | User | Pending |\n"
+            "\n"
+            "- Item one\n"
+            "  - Nested item\n"
+            "1. First step\n"
+            "```python\n"
+            "def hello(name):\n"
+            "    print(f\"Hello, {name}!\")\n"
+            "```\n"
+        ),
+    )
+
+    assert rendered.startswith("<b>jeeves</b>\n")
+    assert "<b>Heading 1</b>" in rendered
+    assert "<b>Heading 2</b>" in rendered
+    assert "<blockquote>This is a quote.<br>It continues on the next line.</blockquote>" in rendered
+    assert "<b>Name</b> | <b>Role</b> | <b>Status</b>" in rendered
+    assert "<b>Name</b>: Alice | <b>Role</b>: Admin | <b>Status</b>: Active" in rendered
+    assert "<b>Name</b>: Bob | <b>Role</b>: User | <b>Status</b>: Pending" in rendered
+    assert "&#8226; Item one" in rendered
+    assert "&#8226; Nested item" in rendered
+    assert "&#8226; First step" in rendered
+    assert "<pre><code>def hello(name):\n    print(f&quot;Hello, {name}!&quot;)</code></pre>" in rendered

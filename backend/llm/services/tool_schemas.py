@@ -218,13 +218,18 @@ _TOOL_TEMPLATES: Dict[str, Dict[str, Any]] = {
     ],
     "file_read": {"path": "C:\\tmp\\agentmaestro\\smoke_tools\\hello.py", "mode": "text"},
     "file_write": {
-        "path": "C:\\tmp\\agentmaestro\\smoke_tools\\hello.py",
+        "path": "C:/tmp/agentmaestro/smoke_tools/hello.py",
+        "absolute_root": "C:\\tmp\\agentmaestro\\smoke_tools",
         "content": "print('hello')\n",
         "overwrite": True,
     },
-    "file_delete": {"path": "C:\\tmp\\agentmaestro\\smoke_tools\\hello.py"},
+    "file_delete": {
+        "path": "C:\\tmp\\agentmaestro\\smoke_tools\\hello.py",
+        "absolute_root": "C:\\tmp\\agentmaestro\\smoke_tools",
+    },
     "file_patch": {
         "path": "C:\\tmp\\agentmaestro\\smoke_tools\\hello.py",
+        "absolute_root": "C:\\tmp\\agentmaestro\\smoke_tools",
         "patch_unified": "--- a/hello.py\n+++ b/hello.py\n@@ -1,1 +1,1 @@\n-print('hello')\n+print('hello world')\n",
     },
     "shell_exec": {
@@ -237,7 +242,7 @@ _TOOL_TEMPLATES: Dict[str, Dict[str, Any]] = {
     "git_add": {"paths": ["backend/tools/admin.py"]},
     "git_status": {
         "repo_dir": "C:\\Dev\\AgentMaestro",
-        "porcelain": "v1",
+        "porcelain": "v2",
         "include_untracked": True,
     },
     "git_diff": {
@@ -434,38 +439,64 @@ _TOOL_TEMPLATES: Dict[str, Dict[str, Any]] = {
             "timeout_ms": 300000,
             "max_output_bytes": 262144,
         },
+        {
+            "tool": "command",
+            "cwd": ".",
+            "cmd": ["cmd", "/C", "echo", "TYPECHECK_OK"],
+            "timeout_ms": 300000,
+            "max_output_bytes": 262144,
+        },
     ],
 }
 
 
 _TOOL_RESPONSE_FIELDS: Dict[str, Dict[str, str]] = {
     "file_read": {
-        "path": "Echoes the requested path value.",
+        "requested_path": "The path value supplied by the caller.",
+        "resolved_path": "The exact filesystem path that was read.",
+        "requested_root": "The root value supplied by the caller, if any.",
+        "resolved_root": "The resolved parent/root directory used for the read.",
         "mode": "Whether the returned payload is text or binary.",
         "content": "Returned text when mode=text.",
         "content_base64": "Returned bytes when mode=binary.",
         "truncated": "True when max_bytes limited the response.",
     },
     "file_write": {
+        "requested_path": "The path value supplied by the caller.",
         "resolved_path": "The exact filesystem path that was written.",
+        "requested_root": "The root value supplied by the caller, if any.",
+        "resolved_root": "The resolved parent/root directory used for the write.",
+        "changed_paths": "The paths modified by the write operation.",
         "created": "True when the file did not exist before the write.",
         "overwritten": "True when an existing file was replaced.",
         "bytes_written": "Number of bytes written to disk.",
     },
     "file_patch": {
+        "requested_path": "The path value supplied by the caller.",
+        "resolved_path": "The exact filesystem path that was patched.",
+        "requested_root": "The absolute_root value supplied by the caller, if any.",
+        "resolved_root": "The resolved parent directory of the patched file.",
+        "requested_repo_dir": "The repo_dir value supplied by the caller, if any; for non-repo temp targets this may be a path-root fallback.",
+        "resolved_repo_dir": "The resolved repository directory or path-root fallback used as the patch base.",
+        "changed_paths": "The paths modified by the patch operation.",
         "applied": "True when all hunks applied.",
         "applied_partially": "True when some hunks applied and rejects were produced.",
         "backup_path": "Backup copy location when backup=true.",
         "rejects_path": "Reject file location when patching fails.",
     },
     "file_delete": {
+        "requested_path": "The path value supplied by the caller.",
         "resolved_path": "The exact filesystem path that was targeted for deletion.",
+        "requested_root": "The root value supplied by the caller, if any.",
+        "resolved_root": "The resolved parent/root directory used for the delete.",
+        "changed_paths": "The paths removed by the delete operation.",
         "deleted": "True when a file or directory was removed.",
         "missing": "True when missing_ok=true and the target did not exist.",
         "deleted_type": "Whether the deleted target was a file or directory.",
     },
     "repo_tree": {
-        "root": "The root path that was listed.",
+        "requested_root": "The root value supplied by the caller.",
+        "resolved_root": "The exact filesystem root that was listed.",
         "entries": "Sorted files/directories found under that root.",
         "stats": "Counts, exclusions, and allowed roots used by policy.",
     },
@@ -473,7 +504,8 @@ _TOOL_RESPONSE_FIELDS: Dict[str, Dict[str, str]] = {
         "tool": "The tool name.",
         "compact": "Whether compact mode was requested. When true, the compact envelope is returned and legacy top-level fields are not included.",
         "query": "The search text, glob, or regex that was searched.",
-        "scope": "Normalized root/path scope used for the search.",
+        "requested_scope": "The scope value supplied by the caller.",
+        "resolved_scope": "The exact filesystem root or file that was searched.",
         "items": "Standardized match records with path, name, kind, and score. Ordering is stable and sorted by score, then path.",
         "returned_count": "Number of items actually returned in `items`.",
         "max_results_used": "The effective max_results limit applied to this result.",
@@ -486,7 +518,8 @@ _TOOL_RESPONSE_FIELDS: Dict[str, Dict[str, str]] = {
         "tool": "The tool name.",
         "compact": "Whether compact mode was requested. When true, the compact envelope is returned and legacy top-level fields are not included.",
         "query": "The scanned path or directory.",
-        "scope": "Normalized root/path scope used for the scan.",
+        "requested_scope": "The scope value supplied by the caller.",
+        "resolved_scope": "The exact filesystem root or file that was scanned.",
         "items": "Standardized symbol records with path, name, kind, line, column, container, and signature. Ordering is stable and grouped by path.",
         "returned_count": "Number of items actually returned in `items`.",
         "max_results_used": "The effective max_results limit applied to this result.",
@@ -499,7 +532,8 @@ _TOOL_RESPONSE_FIELDS: Dict[str, Dict[str, str]] = {
         "tool": "The tool name.",
         "compact": "Whether compact mode was requested. When true, the compact envelope is returned and legacy top-level fields are not included.",
         "query": "The requested symbol name (`symbol_name`).",
-        "scope": "Normalized root/path scope used for the lookup.",
+        "requested_scope": "The scope value supplied by the caller.",
+        "resolved_scope": "The exact filesystem root or file searched for the lookup.",
         "items": "Standardized symbol records with path, name, kind, line, column, container, score, and signature. Ordering is stable and exact matches are ranked before fuzzy matches.",
         "returned_count": "Number of items actually returned in `items`.",
         "max_results_used": "The effective max_results limit applied to this result.",
@@ -512,7 +546,8 @@ _TOOL_RESPONSE_FIELDS: Dict[str, Dict[str, str]] = {
         "tool": "The tool name.",
         "compact": "Whether compact mode was requested. When true, the compact envelope is returned and legacy top-level fields are not included.",
         "query": "The searched symbol name.",
-        "scope": "Normalized root/path scope used for the lookup.",
+        "requested_scope": "The scope value supplied by the caller.",
+        "resolved_scope": "The exact filesystem root or file searched for the lookup.",
         "items": "Standardized reference records with path, name, kind, line, column, and a short line-numbered excerpt. Ordering is stable and follows scan order with deterministic sorting.",
         "returned_count": "Number of items actually returned in `items`.",
         "max_results_used": "The effective max_results limit applied to this result.",
@@ -525,7 +560,8 @@ _TOOL_RESPONSE_FIELDS: Dict[str, Dict[str, str]] = {
         "tool": "The tool name.",
         "compact": "Whether compact mode was requested. When true, the compact envelope is returned and legacy top-level fields are not included.",
         "query": "The requested symbol name.",
-        "scope": "Normalized root/path scope used for the lookup.",
+        "requested_scope": "The scope value supplied by the caller.",
+        "resolved_scope": "The exact filesystem root or file searched for the lookup.",
         "items": "Standardized candidate records with path, name, kind, line, column, container, score, signature, and a short line-numbered excerpt. Ordering is stable and the best match is first.",
         "returned_count": "Number of items actually returned in `items`.",
         "max_results_used": "The effective max_results limit applied to this result.",
@@ -539,7 +575,10 @@ _TOOL_RESPONSE_FIELDS: Dict[str, Dict[str, str]] = {
         "is_regex": "Whether regex mode was enabled for the search.",
         "case_sensitive": "Whether matching was case-sensitive.",
         "matches": "Path-sorted files with match_count and snippet metadata for each matching file.",
+        "requested_root": "The root value supplied by the caller.",
+        "resolved_root": "The exact filesystem root that was searched.",
         "stats": "File counts, total matches, exclusions, and allowed roots used by policy.",
+        "meta": "Optional policy metadata returned only when include_meta=true.",
         "truncated": "True when max_results or timeout limits stopped the scan.",
     },
     "web_search": {
@@ -657,8 +696,10 @@ _TOOL_RESPONSE_FIELDS: Dict[str, Dict[str, str]] = {
         "stderr": "Captured Python stderr.",
     },
     "git_status": {
-        "repo_dir": "Repository path argument echoed back in the response.",
+        "requested_repo_dir": "The repo_dir value supplied by the caller.",
+        "resolved_repo_dir": "The resolved absolute repository directory used for execution.",
         "branch": "Current branch metadata including name, upstream, ahead/behind, head_oid, and detached.",
+        "requested_porcelain": "The porcelain version requested by the caller. The tool normalizes status parsing to porcelain v2 internally.",
         "is_clean": "True when there are no staged, unstaged, conflict, or requested untracked changes.",
         "staged": "List of staged paths.",
         "unstaged": "List of unstaged paths.",
@@ -667,15 +708,19 @@ _TOOL_RESPONSE_FIELDS: Dict[str, Dict[str, str]] = {
         "raw": "Raw git status stdout/stderr plus truncation flags.",
     },
     "git_diff": {
-        "repo_dir": "Repository path argument echoed back in the response.",
+        "requested_repo_dir": "The repo_dir value supplied by the caller.",
+        "resolved_repo_dir": "The resolved absolute repository directory used for execution.",
         "staged": "Whether the diff was collected from the staged index.",
         "paths": "Normalized relative target paths when the request was path-scoped.",
+        "requested_paths": "The paths list supplied by the caller.",
+        "resolved_paths": "The resolved relative paths diffed by git.",
         "diff": "Unified diff text.",
         "truncated": "True when stdout capture truncated the diff payload.",
         "raw": "Raw git diff stdout/stderr plus truncation flags.",
     },
     "git_log": {
-        "repo_dir": "Repository path argument echoed back in the response.",
+        "requested_repo_dir": "The repo_dir value supplied by the caller.",
+        "resolved_repo_dir": "The resolved absolute repository directory used for execution.",
         "ref": "The ref or revision that was logged.",
         "max_count": "Maximum commit count requested.",
         "commits": "Structured commit metadata including oid, author_name, author_email, author_time_epoch, author_time_iso, and subject.",
@@ -684,35 +729,56 @@ _TOOL_RESPONSE_FIELDS: Dict[str, Dict[str, str]] = {
         "raw": "Raw git log stdout/stderr plus truncation flags.",
     },
     "git_add": {
-        "repo_dir": "Repository path argument echoed back in the response.",
+        "requested_repo_dir": "The repo_dir value supplied by the caller.",
+        "resolved_repo_dir": "The resolved absolute repository directory used for execution.",
+        "requested_paths": "The paths list supplied by the caller.",
+        "resolved_paths": "The normalized relative paths staged by git add.",
+        "changed_paths": "The paths staged by git add.",
         "staged_paths": "Normalized relative paths passed to git add when the request targeted explicit files.",
         "raw": "Raw git add stdout/stderr plus truncation flags.",
     },
+    "git_commit": {
+        "requested_repo_dir": "The repo_dir value supplied by the caller.",
+        "resolved_repo_dir": "The resolved absolute repository directory used for execution.",
+        "requested_paths": "The paths_to_add list supplied by the caller.",
+        "resolved_paths": "The normalized relative paths staged before commit creation.",
+        "changed_paths": "The paths included in the resulting commit.",
+        "commit_oid": "OID of the newly created commit.",
+        "summary": "First line of the commit message.",
+        "changed_files": "Count of files changed by the commit.",
+        "changed_files_truncated": "True when the changed-file listing hit output limits.",
+        "raw": "Raw git commit stdout/stderr plus truncation flags.",
+    },
     "git_apply": {
-        "repo_dir": "Repository path argument echoed back in the response.",
+        "requested_repo_dir": "The repo_dir value supplied by the caller.",
+        "resolved_repo_dir": "The resolved absolute repository directory used for execution.",
         "strip_prefix": "The strip-prefix value used for git apply.",
         "check_passed": "True when check=true and the patch validated successfully; otherwise null when not in check mode.",
         "applied": "True when the patch was actually applied.",
+        "changed_paths": "The paths touched by the applied patch.",
         "touched_paths": "File paths extracted from the unified diff headers.",
         "rejects_created": "True when new .rej files were produced.",
         "reject_paths": "Relative reject file paths created by the apply operation.",
         "raw": "Raw git apply stdout/stderr plus truncation flags.",
     },
     "git_branch_create": {
-        "repo_dir": "Repository path argument echoed back in the response.",
+        "requested_repo_dir": "The repo_dir value supplied by the caller.",
+        "resolved_repo_dir": "The resolved absolute repository directory used for execution.",
         "name": "The branch name that was created.",
         "checked_out": "True when checkout=true and the new branch was switched to successfully.",
         "error.details.phase": "On timeout errors, indicates whether the timeout happened during branch creation or checkout.",
         "error.details.timed_out": "On timeout errors, explicitly true so callers can distinguish timeout from repository-state failures.",
     },
     "git_checkout": {
-        "repo_dir": "Repository path argument echoed back in the response.",
+        "requested_repo_dir": "The repo_dir value supplied by the caller.",
+        "resolved_repo_dir": "The resolved absolute repository directory used for execution.",
         "ref": "The ref or branch that checkout targeted.",
         "detached": "True when Git reported a detached HEAD state after checkout.",
         "raw": "Raw git checkout stdout/stderr plus truncation flags.",
     },
     "git_push": {
-        "repo_dir": "Repository path argument echoed back in the response.",
+        "requested_repo_dir": "The repo_dir value supplied by the caller.",
+        "resolved_repo_dir": "The resolved absolute repository directory used for execution.",
         "remote": "The remote name that was pushed to.",
         "ref": "The ref that was pushed.",
         "pushed": "True when the push command completed successfully.",
@@ -722,6 +788,9 @@ _TOOL_RESPONSE_FIELDS: Dict[str, Dict[str, str]] = {
         "total_percent": "Overall measured coverage percentage from coverage.json.",
         "files": "Per-file coverage summaries extracted from coverage.json.",
         "coverage_json_path": "Filesystem path to the generated coverage.json artifact.",
+        "requested_cwd": "The cwd value supplied by the caller.",
+        "resolved_cwd": "The resolved absolute cwd used for execution.",
+        "requested_args": "The argument list supplied by the caller.",
         "stdout": "Stdout from the coverage run command.",
         "python_interpreter": "Interpreter path used for Python-backed coverage commands.",
         "python_interpreter_source": "Whether the interpreter came from TOOLRUNNER_PYTHON or fallback discovery.",
@@ -744,6 +813,8 @@ _TOOL_RESPONSE_FIELDS: Dict[str, Dict[str, str]] = {
         "truncated": "True when stdout or stderr capture was truncated.",
         "normalized_command": "Normalized argv that was validated and, if allowed, executed.",
         "policy_reason": "Policy rejection reason when the request was blocked before execution.",
+        "requested_cwd": "The cwd value supplied by the caller.",
+        "resolved_cwd": "The resolved absolute cwd used for execution.",
     },
     "run_tests": {
         "ok": "True when every requested suite completed with exit code 0.",
@@ -783,6 +854,8 @@ _TOOL_RESPONSE_FIELDS: Dict[str, Dict[str, str]] = {
         "exit_code": "The process exit code, or null if the process timed out.",
         "stdout": "Captured standard output text.",
         "stderr": "Captured standard error text.",
+        "requested_cwd": "The cwd value supplied by the caller.",
+        "resolved_cwd": "The resolved absolute cwd used for execution.",
         "timed_out": "True when the process exceeded its timeout.",
         "timeout_source": "Which timeout setting was enforced for the command.",
     },
@@ -793,6 +866,8 @@ _TOOL_RESPONSE_FIELDS: Dict[str, Dict[str, str]] = {
         "parse_mode": "The parser mode requested for result parsing.",
         "parse_source": "Whether parsing succeeded from stdout, stderr, or not at all.",
         "parse_warning": "Parsing warning when the output could not be interpreted for the selected parser.",
+        "requested_cwd": "The cwd value supplied by the caller.",
+        "resolved_cwd": "The resolved absolute cwd used for execution.",
         "stdout": "Captured type-check stdout.",
         "stderr": "Captured type-check stderr.",
         "python_interpreter": "Interpreter path used for Python-backed type checkers such as mypy and pyright.",
@@ -802,13 +877,46 @@ _TOOL_RESPONSE_FIELDS: Dict[str, Dict[str, str]] = {
 
 
 _TOOL_ADDITIONAL_DOCS: Dict[str, str] = {
-    "file_patch": "\n\nPATCH FORMAT NOTES:\n"
+    "file_patch": "\n\nPATH NOTES:\n"
+    "- `requested_path` is the caller-supplied target path.\n"
+    "- `resolved_path` is the exact filesystem path that will be patched.\n"
+    "- `absolute_root` is optional on path-scoped tools.\n"
+    "- `requested_root` and `requested_repo_dir` describe the patch base when the tool resolves through a repository root or explicit absolute base.\n\n"
+    "- For temp files or other non-repo targets, `requested_repo_dir` and `resolved_repo_dir` may be a path-root fallback rather than a git repository path.\n"
+    "PATCH FORMAT NOTES:\n"
     "- `patch_unified` is required.\n"
     "- Provide a complete unified diff for a single target file.\n"
     "- Include `---` and `+++` file markers and at least one `@@` hunk header.\n"
     "- Hunk headers must use explicit, accurate unified diff ranges, for example `@@ -1,2 +1,2 @@` or `@@ -0,0 +1,3 @@`.\n"
     "- Shorthand headers like `@@ -1 +1 @@` are rejected. Even pure insertions must include counts.\n"
     "- Do not include `*** Begin Patch` / `*** End Patch` fences; this tool expects only unified diff text.\n",
+    "file_read": "\n\nPATH NOTES:\n"
+    "- `requested_path` is the caller-supplied path value.\n"
+    "- `resolved_path` is the exact filesystem path that will be read.\n"
+    "- `requested_root` and `resolved_root` describe the read base when the tool resolves through a repository root.\n"
+    "- The result payload uses `requested_path` and `resolved_path` only.\n",
+    "file_write": "\n\nPATH NOTES:\n"
+    "- `requested_path` is the caller-supplied path value, normalized to forward slashes in the response.\n"
+    "- `resolved_path` is the exact filesystem path that will be written.\n"
+    "- `absolute_root` is optional on path-scoped tools.\n"
+    "- `requested_root` and `resolved_root` describe the write base when the tool resolves through a repository root or explicit absolute base.\n"
+    "- Use forward slashes in examples for relative paths so the response format is easier to compare across platforms.\n"
+    "- The result payload uses `requested_path` and `resolved_path` only.\n\n"
+    "WRITE MODE NOTES:\n"
+    "- `overwrite` is optional.\n"
+    "- Leave `overwrite=false` to avoid replacing an existing file.\n"
+    "- Set `overwrite=true` when you intentionally want to replace an existing file instead of deleting it first.\n"
+    "- Use `file_delete` only when the goal is to remove the file entirely.",
+    "file_delete": "\n\nPATH NOTES:\n"
+    "- `requested_path` is the caller-supplied path value.\n"
+    "- `resolved_path` is the exact filesystem path that was targeted for deletion.\n"
+    "- `absolute_root` is optional on path-scoped tools.\n"
+    "- `requested_root` and `resolved_root` describe the delete base when the tool resolves through a repository root or explicit absolute base.\n"
+    "- The result payload uses `requested_path` and `resolved_path` only.\n",
+    "repo_tree": "\n\nPATH NOTES:\n"
+    "- `requested_root` is the caller-supplied root value.\n"
+    "- `resolved_root` is the exact filesystem root that will be listed.\n"
+    "- The result payload uses `requested_root` and `resolved_root` only.\n",
     "search_files": "\n\nPATH NOTES:\n"
     "- `scope` is the canonical name for the search root.\n"
     "- `scope` may be omitted, repo-relative, or absolute.\n"
@@ -819,11 +927,12 @@ _TOOL_ADDITIONAL_DOCS: Dict[str, str] = {
     "- Test paths are included by default unless `include_tests=false` is set.\n"
     "- Use this when you need to locate files or directories by name or path. Do not use it for content search; use `search_code` instead. This tool matches names and paths only and does not search file contents.\n\n"
     "OUTPUT NOTES:\n"
-    "- Set `compact=true` when you want the standardized envelope with `tool`, `compact`, `query`, `scope`, `items`, `returned_count`, `max_results_used`, `selection`, `selection_excerpt`, `stats`, and `truncated`.\n"
-    "- Compact mode does not include legacy top-level fields.\n"
+    "- Set `compact=true` when you want the standardized envelope with `tool`, `compact`, `query`, `requested_scope`, `resolved_scope`, `items`, `returned_count`, `max_results_used`, `selection`, `selection_excerpt`, `stats`, and `truncated`.\n"
+    "- The result payload uses `requested_scope` and `resolved_scope` only.\n"
+    "- For exact file hits, `selection_excerpt` may be `exact file match` to make the compact result self-explanatory.\n"
     "- `items` is stable and ordered by score, then path/name.\n\n"
     "WORKFLOW NOTES:\n"
-    "- Use the navigation tools sequentially when precision matters. Wait for one result before issuing the next navigation call.\n\n"
+    "- Use the navigation tools sequentially when the next step depends on the prior result; otherwise independent navigation lookups can be parallelized.\n\n"
     "QUERY NOTES:\n"
     "- `query` can be a literal filename, partial path, glob-style pattern, or regex.\n"
     "- This is a path/name search only; it does not inspect file contents.\n"
@@ -839,11 +948,12 @@ _TOOL_ADDITIONAL_DOCS: Dict[str, str] = {
     "- Test paths are included by default unless `include_tests=false` is set.\n\n"
     "- Use this when you already know the file or subtree and want a symbol outline. Do not use it for text search; use `search_code` or `search_files` instead.\n\n"
     "OUTPUT NOTES:\n"
-    "- Set `compact=true` when you want the standardized envelope with `tool`, `compact`, `query`, `scope`, `items`, `returned_count`, `max_results_used`, `selection`, `selection_excerpt`, `stats`, and `truncated`.\n"
-    "- Compact mode does not include legacy top-level fields.\n"
+    "- Set `compact=true` when you want the standardized envelope with `tool`, `compact`, `query`, `requested_scope`, `resolved_scope`, `items`, `returned_count`, `max_results_used`, `selection`, `selection_excerpt`, `stats`, and `truncated`.\n"
+    "- The result payload uses `requested_scope` and `resolved_scope` only.\n"
+    "- For exact file or directory scopes, compact mode may surface `selection_excerpt` as an exact-scope marker instead of a line excerpt.\n"
     "- `items` is stable and ordered by path, then symbol order within each file.\n\n"
     "WORKFLOW NOTES:\n"
-    "- Use the navigation tools sequentially when precision matters. Wait for one result before issuing the next navigation call.\n\n"
+    "- Use the navigation tools sequentially when the next step depends on the prior result; otherwise independent navigation lookups can be parallelized.\n\n"
     "RESULT NOTES:\n"
     "- Each entry summarizes the symbols found in a single file and includes per-file symbol counts.\n"
     "- Use `include_docstrings=true` only when you want docstring summaries in the returned symbol records.",
@@ -856,11 +966,11 @@ _TOOL_ADDITIONAL_DOCS: Dict[str, str] = {
     "- Test paths are included by default unless `include_tests=false` is set.\n\n"
     "- Use this when you know the symbol name and want the definition. Do not use it for content search; use `search_code` instead.\n\n"
     "OUTPUT NOTES:\n"
-    "- Set `compact=true` when you want the standardized envelope with `tool`, `compact`, `query`, `scope`, `items`, `returned_count`, `max_results_used`, `selection`, `selection_excerpt`, `stats`, and `truncated`.\n"
-    "- Compact mode does not include legacy top-level fields.\n"
+    "- Set `compact=true` when you want the standardized envelope with `tool`, `compact`, `query`, `requested_scope`, `resolved_scope`, `items`, `returned_count`, `max_results_used`, `selection`, `selection_excerpt`, `stats`, and `truncated`.\n"
+    "- The result payload uses `requested_scope` and `resolved_scope` only.\n"
     "- `items` is stable and exact matches are ordered before fuzzy matches.\n\n"
     "WORKFLOW NOTES:\n"
-    "- Use the navigation tools sequentially when precision matters. Wait for one result before issuing the next navigation call.\n\n"
+    "- Use the navigation tools sequentially when the next step depends on the prior result; otherwise independent navigation lookups can be parallelized.\n\n"
     "RESULT NOTES:\n"
     "- The tool supports exact or fuzzy symbol matching and ranks exact matches above fuzzy matches when both are available.\n"
     "- Use `symbol_name` for the canonical argument name; legacy callers may still send `name`.\n",
@@ -871,13 +981,13 @@ _TOOL_ADDITIONAL_DOCS: Dict[str, str] = {
     "- Repo-relative scopes resolve from the repository root when one is provided in policy context.\n"
     "- Hidden files and directories are included unless excluded by the default ignore rules.\n"
     "- Test paths are included by default unless `include_tests=false` is set.\n\n"
-    "- Use this when you want to understand impact before changing a symbol. Do not use it for content search; use `search_code` instead.\n\n"
+    "- Use this when you want to understand impact before changing a symbol. This is impact analysis, not content search; use `search_code` instead.\n\n"
     "OUTPUT NOTES:\n"
-    "- Set `compact=true` when you want the standardized envelope with `tool`, `compact`, `query`, `scope`, `items`, `returned_count`, `max_results_used`, `selection`, `selection_excerpt`, `stats`, and `truncated`.\n"
-    "- Compact mode does not include legacy top-level fields.\n"
+    "- Set `compact=true` when you want the standardized envelope with `tool`, `compact`, `query`, `requested_scope`, `resolved_scope`, `items`, `returned_count`, `max_results_used`, `selection`, `selection_excerpt`, `stats`, and `truncated`.\n"
+    "- The result payload uses `requested_scope` and `resolved_scope` only.\n"
     "- `items` is stable and ordered by deterministic scan order.\n\n"
     "WORKFLOW NOTES:\n"
-    "- Use the navigation tools sequentially when precision matters. Wait for one result before issuing the next navigation call.\n\n"
+    "- Use the navigation tools sequentially when the next step depends on the prior result; otherwise independent navigation lookups can be parallelized.\n\n"
     "RESULT NOTES:\n"
     "- Reference hits include the file path, line, column, reference kind, and nearby context.\n"
     "- `context_lines` controls the amount of surrounding source shown for each hit.",
@@ -888,27 +998,29 @@ _TOOL_ADDITIONAL_DOCS: Dict[str, str] = {
     "- Repo-relative scopes resolve from the repository root when one is provided in policy context.\n"
     "- Hidden files and directories are included unless excluded by the default ignore rules.\n"
     "- Test paths are included by default unless `include_tests=false` is set.\n\n"
-    "- Use this when you want the best definition plus a small excerpt. Do not use it for content search; use `search_code` instead.\n\n"
+    "- Use this when you want the best definition plus a small excerpt. This is for impact analysis before edits, not content search; use `search_code` instead.\n\n"
     "OUTPUT NOTES:\n"
-    "- Set `compact=true` when you want the standardized envelope with `tool`, `compact`, `query`, `scope`, `items`, `returned_count`, `max_results_used`, `selection`, `selection_excerpt`, `stats`, and `truncated`.\n"
-    "- Compact mode does not include legacy top-level fields.\n"
+    "- Set `compact=true` when you want the standardized envelope with `tool`, `compact`, `query`, `requested_scope`, `resolved_scope`, `items`, `returned_count`, `max_results_used`, `selection`, `selection_excerpt`, `stats`, and `truncated`.\n"
+    "- The result payload uses `requested_scope` and `resolved_scope` only.\n"
+    "- Compact symbol jumps should surface a short definition excerpt; if the source cannot be read, they may fall back to a one-line symbol marker instead of null.\n"
     "- `items` is stable and the best match appears first.\n\n"
     "WORKFLOW NOTES:\n"
-    "- Use the navigation tools sequentially when precision matters. Wait for one result before issuing the next navigation call.\n\n"
+    "- Use the navigation tools sequentially when the next step depends on the prior result; otherwise independent navigation lookups can be parallelized.\n\n"
     "RESULT NOTES:\n"
     "- The tool returns the best symbol match plus an excerpt around that definition.\n"
     "- Use `context_lines` to control how many surrounding lines appear in the excerpt.",
     "search_code": "\n\nPATH NOTES:\n"
-    "- `root` may be omitted, repo-relative, or absolute.\n"
-    "- Repo-relative `root` values resolve from the repository root when one is provided in policy context.\n"
-    "- Absolute `root` values are permitted only when they fall under the allowed roots for the run.\n"
-    "- `include_globs` are evaluated relative to the provided `root`.\n\n"
+    "- `requested_root` is the caller-supplied root value.\n"
+    "- `resolved_root` is the exact filesystem root that will be searched.\n"
+    "- The result payload uses `requested_root` and `resolved_root` only.\n"
+    "- `include_globs` are evaluated relative to the resolved root.\n\n"
     "ROOT NOTES:\n"
     "- `absolute_root` is optional on path-scoped tools.\n"
     "- Omit `absolute_root` unless you truly need an absolute override.\n"
     "- Do not pass an empty string; empty values are treated as omitted.\n\n"
     "RESULT NOTES:\n"
-    "- Match snippets include `line`, `col`, and `line_text` when the tool can derive them from the scanned text.",
+    "- Match snippets include `line`, `col`, and `line_text` when the tool can derive them from the scanned text.\n"
+    "- `include_meta=true` adds the policy metadata wrapper; omit it for the concise default output.",
     "shell_exec": "\n\nCOMMAND ARGUMENT NOTES:\n"
     "- `cmd` is required and must be an array of strings.\n"
     "- Pass the executable as the first element and each argument as a separate item.\n"
@@ -925,6 +1037,8 @@ _TOOL_ADDITIONAL_DOCS: Dict[str, str] = {
     "  - `kind=command` requires `cmd`\n"
     "- Prefer `kind=pytest` for narrow smoke tests and `kind=powershell_script` for repo-standard test entrypoints.\n"
     "- `cwd` may be absolute or repo-relative.\n\n"
+    "OUTPUT NOTES:\n"
+    "- Pytest-mode results do not use `script_path`; smoke checks should assert `requested_args`/`resolved_args`, `summary`, `exit_code`, and `failed_tests` instead.\n\n"
     "PYTHON ENVIRONMENT NOTES:\n"
     "- `pytest` mode runs through `TOOLRUNNER_PYTHON`.\n"
     "- If `TOOLRUNNER_PYTHON` is unset, toolrunner falls back to `.venv` discovery before using plain `python`.\n"
@@ -933,6 +1047,9 @@ _TOOL_ADDITIONAL_DOCS: Dict[str, str] = {
     "- `kind` is required and currently must be `pytest_coverage`.\n"
     "- Provide pytest target arguments via `args`.\n"
     "- Coverage generates a `coverage.json` artifact in the working directory.\n\n"
+    "OUTPUT NOTES:\n"
+    "- `requested_cwd` and `resolved_cwd` show the execution directory chosen by the runner.\n"
+    "- `requested_args` echoes the target list used for coverage collection.\n\n"
     "PYTHON ENVIRONMENT NOTES:\n"
     "- Coverage commands run through `TOOLRUNNER_PYTHON`.\n"
     "- If `TOOLRUNNER_PYTHON` is unset, toolrunner falls back to `.venv` discovery before using plain `python`.\n"
@@ -961,6 +1078,7 @@ _TOOL_ADDITIONAL_DOCS: Dict[str, str] = {
     "run_command_safe": "\n\nSAFE COMMAND NOTES:\n"
     "- `argv` is required and must be a list of strings.\n"
     "- Allowed executables are limited to `python`, `pytest`, `ruff`, `mypy`, `uv`, and `django-admin`.\n"
+    "- A narrow `python -c` smoke form is allowed only when it is a single `print(...)` call with a string literal.\n"
     "- `git` is explicitly blocked. Use the dedicated `git_*` tools instead.\n"
     "- Shell composition, shell wrappers, package installs, migrations, dev servers, and other interactive or long-running commands are rejected.\n"
     "- `cwd` must stay inside the active workspace root.\n"
@@ -974,6 +1092,7 @@ _TOOL_ADDITIONAL_DOCS: Dict[str, str] = {
     "- `cmd` is required and must be a list of strings.\n"
     "- Pass the executable and each argument as separate list items.\n"
     "- If you need shell features such as `&&`, invoke a shell explicitly.\n"
+    "- `requested_cwd` and `resolved_cwd` appear in the response so callers can see the actual execution directory.\n"
     "- Use `run_command` only as a last resort when no specialized tool matches the task.\n"
     "- Do not use `run_command` for Git operations that map to `git_add`, `git_status`, `git_diff`, `git_log`, `git_apply`, `git_commit`, `git_push`, `git_checkout`, or `git_branch_create`.\n"
     "- Do not use `run_command` for direct file content reads that should go through `file_read`.\n",
@@ -1042,14 +1161,18 @@ _TOOL_ADDITIONAL_DOCS: Dict[str, str] = {
     "- `tool` is required.\n"
     "- Supported values are `mypy`, `pyright`, `tsc`, and `command`.\n"
     "- `cwd` may be absolute or repo-relative.\n"
-    "- Use `cmd` only when `tool=command`.\n\n"
+    "- `requested_cwd` and `resolved_cwd` appear in the response so callers can see the actual type-check execution directory.\n"
+    "- Use `cmd` only when `tool=command`.\n"
+    "- For smoke checks, `tool=command` should use a harmless command such as `cmd /C echo TYPECHECK_OK`; malformed or empty `cmd` lists are rejected early.\n"
+    "- `tool=command` is the escape hatch for custom checks; if it runs `python -m pytest ...` and pytest is missing, the tool returns a missing-runtime-dependency error for `pytest`.\n\n"
     "DEFAULT LIMITS:\n"
     "- `timeout_ms` defaults to `300000`.\n"
     "- `max_output_bytes` defaults to `262144`.\n\n"
     "PYTHON ENVIRONMENT NOTES:\n"
     "- `mypy` and `pyright` run through `TOOLRUNNER_PYTHON`.\n"
     "- If `TOOLRUNNER_PYTHON` is unset, toolrunner falls back to `.venv` discovery before using plain `python`.\n"
-    "- If a Python-backed type checker is missing, the tool reports the resolved interpreter path and source.\n",
+    "- If a Python-backed type checker is missing, the tool reports the resolved interpreter path and source.\n"
+    "- When `tool=command` runs `python -m pytest ...` and `pytest` is not installed, the tool returns a missing-runtime-dependency error for `pytest`.\n",
 }
 
 
@@ -1091,10 +1214,14 @@ for tool in _TOOL_SCHEMAS:
     parameters = tool.get("parameters") or {}
     required_parameters = list(parameters.get("required") or [])
     examples = _TOOL_TEMPLATES.get(tool["name"])
-    docs = _schema_docs(required_parameters, examples, _TOOL_RESPONSE_FIELDS.get(tool["name"]))
+    response_fields = _TOOL_RESPONSE_FIELDS.get(tool["name"])
+    docs = _schema_docs(required_parameters, examples, response_fields)
     docs = f"{docs}{_TOOL_ADDITIONAL_DOCS.get(tool['name'], '')}"
     existing = str(parameters.get("description") or "").strip()
     parameters["description"] = f"{existing}\n\n{docs}".strip() if existing else docs
+    tool["description"] = parameters["description"]
+    if response_fields is not None:
+        tool["response_fields"] = deepcopy(response_fields)
     if examples is not None:
         if isinstance(examples, list):
             parameters["examples"] = deepcopy(examples)

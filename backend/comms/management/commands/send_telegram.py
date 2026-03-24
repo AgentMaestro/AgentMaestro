@@ -4,41 +4,10 @@ import httpx
 from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
 import os
-import sys
-import logging
 
+from logging_utils import get_app_logger, scrub_sensitive_text
 
-def setup_console_logger(name: str = __name__, level: int = logging.DEBUG) -> logging.Logger:
-    """
-    Set up and return a logger that outputs to the console.
-
-    :param name: Logger name (usually __name__)
-    :param level: Logging level (e.g., logging.DEBUG, logging.INFO)
-    :return: Configured Logger object
-    """
-    # Create a logger
-    logger = logging.getLogger(name)
-    logger.setLevel(level)
-
-    # Prevent adding multiple handlers if logger is reused
-    if not logger.handlers:
-        # Create console handler
-        console_handler = logging.StreamHandler(sys.stdout)
-        console_handler.setLevel(level)
-
-        # Define log format
-        formatter = logging.Formatter(
-            fmt="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-            datefmt="%Y-%m-%d %H:%M:%S"
-        )
-        console_handler.setFormatter(formatter)
-
-        # Add handler to logger
-        logger.addHandler(console_handler)
-
-    return logger
-
-log = setup_console_logger(__name__, logging.DEBUG)
+logger = get_app_logger(__name__)
 
 
 class Command(BaseCommand):
@@ -60,9 +29,9 @@ class Command(BaseCommand):
 
         message = options.get("message") or "hi"
 
-        log.info(f"Token={token}")
-        log.info(f"Chat_ID={chat_id}")
-        log.info(f"Message={message}")
+        logger.info("Token=%s", scrub_sensitive_text(token))
+        logger.info("Chat_ID=%s", scrub_sensitive_text(chat_id))
+        logger.info("Message=%s", scrub_sensitive_text(message))
 
         if not token or not chat_id:
             raise CommandError("Bot token and chat ID must be provided (via options or TELEGRAM_* settings).")
@@ -80,4 +49,4 @@ class Command(BaseCommand):
             raise CommandError(f"Telegram reported failure: {data}")
 
         message_id = data.get("result", {}).get("message_id")
-        self.stdout.write(f"Sent '{message}' to chat {chat_id} (message_id={message_id}).")
+        self.stdout.write(scrub_sensitive_text(f"Sent '{message}' to chat {chat_id} (message_id={message_id})."))

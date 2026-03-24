@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from typing import Any, Dict, Optional
 
-import logging
 from django.db import transaction
 from django.utils import timezone
+from logging_utils import get_app_logger
 from runs.models import AgentRun, AgentStep
 from runs.services.events import append_event, broadcast_approvals_event
 from runs.services.state import transition_run
@@ -23,7 +23,7 @@ from tools.services.quotas import acquire_tool_call_slots, release_tool_call_slo
 from comms.services.remote_ops import create_remote_approval_ticket
 
 
-logger = logging.getLogger(__name__)
+logger = get_app_logger(__name__)
 
 TOOL_CALL_REQUESTED_EVENT = "tool_call_requested"
 TOOL_CALL_APPROVED_EVENT = "tool_call_approved"

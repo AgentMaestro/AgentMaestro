@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import logging
-from html import escape
 from typing import Optional
 
 import httpx
@@ -9,11 +7,13 @@ import httpx
 from agents.models import Agent
 from comms.models import CommsConversation, PendingPairing
 from comms.services.outbound import send_conversation_message
+from comms.services.telegram_markup import render_mirror_telegram_html
+from logging_utils import get_app_logger
 from runs.models import AgentRun
 from runs.services.event_builders import build_chat_message_payload
 from runs.services.events import append_event
 
-logger = logging.getLogger(__name__)
+logger = get_app_logger(__name__)
 
 ACTIVE_TRANSPORT_RUN_STATUSES = {
     AgentRun.Status.RUNNING,
@@ -77,13 +77,12 @@ def _telegram_author_label(author_label: str, agent_name: str) -> str:
 
 
 def _render_telegram_message(*, text: str, author_label: str, agent_name: str) -> str:
-    body = (
-        escape(text or "")
-        .replace("\r\n", "\n")
-        .replace("\r", "\n")
+    # Keep the first pass intentionally simple: Telegram HTML with a small
+    # Markdown-to-HTML mapping that prioritizes readability.
+    return render_mirror_telegram_html(
+        author_label=_telegram_author_label(author_label, agent_name),
+        body=text or "",
     )
-    author = escape(_telegram_author_label(author_label, agent_name))
-    return f"<i>{author}</i>\n{body}" if body else f"<i>{author}</i>"
 
 
 def paired_agent_for_conversation(conversation: CommsConversation):
@@ -217,13 +216,20 @@ def send_run_transport_message(
         return False
     chunks = _telegram_text_chunks(text)
     telegram_author = _telegram_author_label(author_label, getattr(run.agent, 'name', 'Assistant'))
+    explicit_parse_mode = kwargs.get("parse_mode")
     try:
         for index, chunk in enumerate(chunks or [text], start=1):
-            rendered_chunk = _render_telegram_message(
-                text=chunk,
-                author_label=telegram_author,
-                agent_name=getattr(run.agent, 'name', 'Assistant'),
-            )
+            if explicit_parse_mode:
+                rendered_chunk = chunk
+                send_kwargs = dict(kwargs)
+            else:
+                rendered_chunk = _render_telegram_message(
+                    text=chunk,
+                    author_label=telegram_author,
+                    agent_name=getattr(run.agent, 'name', 'Assistant'),
+                )
+                send_kwargs = dict(kwargs)
+                send_kwargs["parse_mode"] = "HTML"
             send_conversation_message(
                 conversation,
                 rendered_chunk,
@@ -232,8 +238,7 @@ def send_run_transport_message(
                 control_direction="system",
                 control_payload=control_payload,
                 mirror_to_control=mirror_to_control,
-                parse_mode="HTML",
-                **kwargs,
+                **send_kwargs,
             )
             if len(chunks) > 1:
                 logger.info(

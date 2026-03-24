@@ -87,6 +87,8 @@ class OpenAIClient(BaseLLMClient):
             return True
         if param == "previous_response_id":
             return True
+        if "no tool output found for function call" in message:
+            return True
         return "previous response with id" in message and "not found" in message
 
     def build_error_meta(self, exc: Exception) -> Dict[str, Any]:

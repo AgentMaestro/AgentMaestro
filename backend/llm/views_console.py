@@ -7,6 +7,7 @@ from django.http import Http404, JsonResponse, StreamingHttpResponse
 from django.utils import timezone
 from django.views.decorators.http import require_GET
 
+from logging_utils import scrub_sensitive_value
 from .models import LLMMessage, LLMRun, LLMToolCall, MessageRole, RunStatus
 
 CONSOLE_ORIGIN = "http://127.0.0.1:8001"
@@ -76,7 +77,9 @@ def _shorten(text: str, limit: int = 120) -> str:
 
 
 def _merge_events(
-    cursor: Dict[str, Any], events: List[Tuple[datetime, Dict[str, Any], Callable[[Dict[str, Any]], None]]], limit: int
+    cursor: Dict[str, Any],
+    events: List[Tuple[datetime, Dict[str, Any], Callable[[Dict[str, Any]], None]]],
+    limit: int,
 ) -> List[Dict[str, Any]]:
     events.sort(key=lambda item: item[0])
     output: List[Dict[str, Any]] = []
@@ -90,7 +93,9 @@ def _merge_events(
     return output
 
 
-def _run_events(run: LLMRun, cursor_ts: float) -> List[Tuple[datetime, Dict[str, Any], Callable[[Dict[str, Any]], None]]]:
+def _run_events(
+    run: LLMRun, cursor_ts: float
+) -> List[Tuple[datetime, Dict[str, Any], Callable[[Dict[str, Any]], None]]]:
     events: List[Tuple[datetime, Dict[str, Any], Callable[[Dict[str, Any]], None]]] = []
     agent = _render_agent(run)
     updated_ts = run.updated_at or timezone.now()
@@ -109,11 +114,19 @@ def _run_events(run: LLMRun, cursor_ts: float) -> List[Tuple[datetime, Dict[str,
             "summary": summary,
             "details_url": f"{CONSOLE_DETAIL_URL}?type=run&id={run.id}",
         }
-        events.append((created_ts, payload, update_run_cursor))
+        events.append((created_ts, scrub_sensitive_value(payload), update_run_cursor))
 
-    if run.status in (RunStatus.COMPLETED, RunStatus.FAILED) and _cursor_from_dt(updated_ts) > cursor_ts:
+    if (
+        run.status in (RunStatus.COMPLETED, RunStatus.FAILED)
+        and _cursor_from_dt(updated_ts) > cursor_ts
+    ):
         level = "ERROR" if run.status == RunStatus.FAILED else "INFO"
-        summary = "RUN failed: " + (_shorten(run.error or "unknown error") if run.error else "unknown error") if run.status == RunStatus.FAILED else "RUN completed"
+        summary = (
+            "RUN failed: "
+            + (_shorten(run.error or "unknown error") if run.error else "unknown error")
+            if run.status == RunStatus.FAILED
+            else "RUN completed"
+        )
         payload = {
             "level": level,
             "run_id": str(run.id),
@@ -122,7 +135,7 @@ def _run_events(run: LLMRun, cursor_ts: float) -> List[Tuple[datetime, Dict[str,
             "summary": summary,
             "details_url": f"{CONSOLE_DETAIL_URL}?type=run&id={run.id}",
         }
-        events.append((updated_ts, payload, update_run_cursor))
+        events.append((updated_ts, scrub_sensitive_value(payload), update_run_cursor))
     return events
 
 
@@ -143,6 +156,7 @@ def _message_event(
         "summary": f"[{agent}] {content}",
         "details_url": f"{CONSOLE_DETAIL_URL}?type=message&id={message.id}",
     }
+    payload = scrub_sensitive_value(payload)
 
     def updater(cursor_state: Dict[str, Any]):
         cursor_state["message_id"] = max(cursor_state["message_id"], message.id)
@@ -181,7 +195,7 @@ def _tool_call_events(
         "summary": tool_summary,
         "details_url": f"{CONSOLE_DETAIL_URL}?type=tool_call&id={call.id}",
     }
-    events.append((ts, tool_payload, update_tool_cursor))
+    events.append((ts, scrub_sensitive_value(tool_payload), update_tool_cursor))
 
     result_summary = f"TOOLRESULT {call.tool_name} ok={call.success}"
     if call.error:
@@ -197,14 +211,24 @@ def _tool_call_events(
         "summary": result_summary,
         "details_url": f"{CONSOLE_DETAIL_URL}?type=tool_call&id={call.id}",
     }
-    events.append((ts, result_payload, update_tool_cursor))
+    events.append((ts, scrub_sensitive_value(result_payload), update_tool_cursor))
     return events
 
 
 def _collect_events(cursor: Dict[str, Any], limit: int) -> List[Dict[str, Any]]:
     events: List[Tuple[datetime, Dict[str, Any], Callable[[Dict[str, Any]], None]]] = []
-    message_q = LLMMessage.objects.filter(id__gt=cursor["message_id"]).select_related("run__profile").order_by("created_at")[:limit]
-    events.extend([_message_event(message, cursor) for message in message_q if message.role == MessageRole.ASSISTANT])
+    message_q = (
+        LLMMessage.objects.filter(id__gt=cursor["message_id"])
+        .select_related("run__profile")
+        .order_by("created_at")[:limit]
+    )
+    events.extend(
+        [
+            _message_event(message, cursor)
+            for message in message_q
+            if message.role == MessageRole.ASSISTANT
+        ]
+    )
     tool_calls = (
         LLMToolCall.objects.filter(id__gt=cursor["tool_id"])
         .select_related("run__profile")
@@ -214,7 +238,9 @@ def _collect_events(cursor: Dict[str, Any], limit: int) -> List[Dict[str, Any]]:
         events.extend(_tool_call_events(call))
     run_since = datetime.fromtimestamp(cursor["run_ts"], tz=dt_timezone.utc)
     run_events = (
-        LLMRun.objects.filter(updated_at__gt=run_since).select_related("profile").order_by("updated_at")[:limit]
+        LLMRun.objects.filter(updated_at__gt=run_since)
+        .select_related("profile")
+        .order_by("updated_at")[:limit]
     )
     for run in run_events:
         events.extend(_run_events(run, cursor["run_ts"]))
@@ -311,5 +337,5 @@ def console_detail(request):
         }
     else:
         raise Http404
-    response = JsonResponse({"type": record_type, "data": data})
+    response = JsonResponse({"type": record_type, "data": scrub_sensitive_value(data)})
     return _apply_console_cors(response)

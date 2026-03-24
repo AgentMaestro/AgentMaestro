@@ -156,6 +156,7 @@ def test_google_bridge_schema_advertises_mutation_aware_payload_contract():
 
     tool_description = google_tool["description"]
     description = google_tool["parameters"]["description"]
+    query_description = google_tool["parameters"]["properties"]["query"]["description"]
     resource_kind = google_tool["parameters"]["properties"]["resource_kind"]["description"]
     action_kind = google_tool["parameters"]["properties"]["action_kind"]["description"]
     calendar_time_zone = google_tool["parameters"]["properties"]["time_zone"]["description"]
@@ -174,6 +175,10 @@ def test_google_bridge_schema_advertises_mutation_aware_payload_contract():
     assert "trash/delete workflows" in action_kind
     assert "Create, update, and delete are supported for Calendar writes" in action_kind
     assert "America/New_York" in calendar_time_zone
+    assert "generic google_bridge query language" in query_description.lower()
+    assert "and, or, not" in query_description.lower()
+    assert "grouped alternation is allowed inside fielded clauses" in query_description.lower()
+    assert "supported query fields vary by surface" in query_description.lower()
 
 
 def test_lint_and_format_schema_advertise_cmd_only_for_command():
@@ -197,6 +202,41 @@ def test_lint_and_format_schema_advertise_cmd_only_for_command():
         assert "requested_paths" in response_fields
         assert "resolved_paths" in response_fields
         assert "command" in response_fields
+
+    run_command_safe = next(tool for tool in get_tool_schemas() if tool["name"] == "run_command_safe")
+    assert "requested_cwd" in run_command_safe["response_fields"]
+    assert "resolved_cwd" in run_command_safe["response_fields"]
+
+
+def test_path_aware_tool_schemas_advertise_requested_and_resolved_fields():
+    tool_lookup = {tool["name"]: tool for tool in get_tool_schemas()}
+
+    file_patch_fields = tool_lookup["file_patch"]["response_fields"]
+    assert "requested_path" in file_patch_fields
+    assert "resolved_path" in file_patch_fields
+    assert "requested_repo_dir" in file_patch_fields
+    assert "resolved_repo_dir" in file_patch_fields
+
+    for tool_name in {
+        "git_add",
+        "git_apply",
+        "git_branch_create",
+        "git_checkout",
+        "git_commit",
+        "git_diff",
+        "git_log",
+        "git_push",
+    }:
+        response_fields = tool_lookup[tool_name]["response_fields"]
+        assert "requested_repo_dir" in response_fields
+        assert "resolved_repo_dir" in response_fields
+
+    assert "requested_paths" in tool_lookup["git_add"]["response_fields"]
+    assert "resolved_paths" in tool_lookup["git_add"]["response_fields"]
+    assert "requested_paths" in tool_lookup["git_commit"]["response_fields"]
+    assert "resolved_paths" in tool_lookup["git_commit"]["response_fields"]
+    assert "requested_paths" in tool_lookup["git_diff"]["response_fields"]
+    assert "resolved_paths" in tool_lookup["git_diff"]["response_fields"]
 
 
 def test_coverage_runner_schema_advertises_file_summaries():

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 
 from django.core.management.base import BaseCommand
+from logging_utils import scrub_sensitive_text, scrub_sensitive_value
 
 from memory.retention import run_memory_retention
 
@@ -23,4 +24,4 @@ class Command(BaseCommand):
             batch_size=options.get("batch_size"),
             group_limit=options.get("group_limit"),
         )
-        self.stdout.write(json.dumps(report, indent=2, sort_keys=True, default=str))
+        self.stdout.write(scrub_sensitive_text(json.dumps(scrub_sensitive_value(report), indent=2, sort_keys=True, default=str)))

@@ -3,6 +3,7 @@ import os
 
 from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
+from logging_utils import scrub_sensitive_text
 
 from llm.services.providers.openai_client import OpenAIClient
 
@@ -23,7 +24,7 @@ class Command(BaseCommand):
         )
         text = (response.get("text") or "").strip()
         response_id = response.get("response_id")
-        self.stdout.write(f"response_id={response_id}")
-        self.stdout.write(f"text={text}")
+        self.stdout.write(scrub_sensitive_text(f"response_id={response_id}"))
+        self.stdout.write(scrub_sensitive_text(f"text={text}"))
         if "OK_WS_SMOKE" not in text:
             raise CommandError("OpenAI WebSocket response did not contain OK_WS_SMOKE")

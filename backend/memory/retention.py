@@ -4,17 +4,17 @@ from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from decimal import Decimal
-import logging
 
 from django.conf import settings
 from django.db import transaction
 from django.db.models import Q
 from django.utils import timezone
+from logging_utils import get_app_logger
 
 from memory.models import MemoryRecord
 from memory.services import remember
 
-logger = logging.getLogger(__name__)
+logger = get_app_logger(__name__)
 
 DISTILLED_SOURCE_KIND = "distilled_memory"
 DEFAULT_LOW_IMPORTANCE_THRESHOLD = Decimal("0.40")

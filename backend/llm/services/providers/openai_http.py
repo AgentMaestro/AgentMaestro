@@ -1,10 +1,10 @@
 import json
-import logging
 import os
 from typing import Any, Dict, List, Optional, Sequence
 
 from django.conf import settings
 from openai import AsyncOpenAI
+from logging_utils import get_app_logger
 
 from .common import (
     chat_usage_to_normalized_usage,
@@ -17,7 +17,7 @@ from .common import (
 )
 from runs.services.input_items import build_input_items
 
-logger = logging.getLogger(__name__)
+logger = get_app_logger(__name__)
 
 
 def _show_condensed_system_logs() -> bool:

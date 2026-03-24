@@ -1,14 +1,14 @@
-import logging
 import os
 from collections import defaultdict
 
 from celery import shared_task
 from django.db import transaction
 from openai import OpenAI
+from logging_utils import get_app_logger
 
 from .models import ModelsAvailable
 
-logger = logging.getLogger(__name__)
+logger = get_app_logger(__name__)
 OPENAI_MODELS_COMPANY = "openai"
 OPENAI_MODELS_API = "responses"
 

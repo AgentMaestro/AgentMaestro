@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 
 from django.core.management.base import BaseCommand
+from logging_utils import scrub_sensitive_text, scrub_sensitive_value
 
 from memory.health import build_memory_health_report
 
@@ -24,4 +25,4 @@ class Command(BaseCommand):
             compare_days=options.get("compare_days") or 30,
             save_snapshot=not bool(options.get("no_save")),
         )
-        self.stdout.write(json.dumps(report, indent=2, sort_keys=True, default=str))
+        self.stdout.write(scrub_sensitive_text(json.dumps(scrub_sensitive_value(report), indent=2, sort_keys=True, default=str)))

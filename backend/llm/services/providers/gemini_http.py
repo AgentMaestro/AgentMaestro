@@ -1,13 +1,13 @@
 import json
-import logging
 from typing import Any, Dict, Iterable, List, Optional, Sequence
 
 import httpx
 from django.conf import settings
+from logging_utils import get_app_logger
 
 from .common import normalize_openai_compatible_tools
 
-logger = logging.getLogger(__name__)
+logger = get_app_logger(__name__)
 DEFAULT_CLIENT_NAME = "agentmaestro/1.0"
 DEFAULT_TIMEOUT_SECONDS = 60.0
 

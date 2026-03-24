@@ -17,6 +17,7 @@ from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.core.management.base import BaseCommand, CommandError
 from django.utils import timezone
+from logging_utils import scrub_sensitive_text, scrub_sensitive_value
 
 from agents.models import Agent
 from comms.models import PendingPairing, Transport, TransportEndpoint
@@ -562,8 +563,8 @@ class Command(BaseCommand):
             path = Path(output_path).resolve()
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
-            self.stdout.write(f"report_written={path}")
-        self.stdout.write(json.dumps(report, indent=2, ensure_ascii=False))
+            self.stdout.write(scrub_sensitive_text(f"report_written={path}"))
+        self.stdout.write(scrub_sensitive_text(json.dumps(scrub_sensitive_value(report), indent=2, ensure_ascii=False)))
 
     def _build_report(
         self,
@@ -612,12 +613,14 @@ class Command(BaseCommand):
         targets = report.get("targets") or []
         scenario_count = len(targets[0].get("scenario_results") or []) if targets else 0
         self.stdout.write(
-            f"LLM provider matrix smoke summary ({len(targets)} targets x {scenario_count} scenarios)"
+            scrub_sensitive_text(f"LLM provider matrix smoke summary ({len(targets)} targets x {scenario_count} scenarios)")
         )
         self.stdout.write("  rank | target | model | transport | speed | quality | overall | grade")
         for index, target in enumerate(targets, start=1):
             self.stdout.write(
-                f"  {index:>4} | {target['label']} | {target['model']} | {target['transport']} | "
-                f"{target['speed_score']:.2f} | {target['quality_score']:.2f} | "
-                f"{target['overall_score']:.2f} | {target['grade']}"
+                scrub_sensitive_text(
+                    f"  {index:>4} | {target['label']} | {target['model']} | {target['transport']} | "
+                    f"{target['speed_score']:.2f} | {target['quality_score']:.2f} | "
+                    f"{target['overall_score']:.2f} | {target['grade']}"
+                )
             )

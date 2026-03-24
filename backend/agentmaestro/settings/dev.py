@@ -7,10 +7,12 @@ LOGGING = {
     "disable_existing_loggers": False,
     "formatters": {
         "verbose": {
+            "()": "logging_utils.ScrubbingFormatter",
             "format": "%(asctime)s %(levelname)-5s %(name)s %(message)s",
             "datefmt": "%H:%M:%S",
         },
         "simple": {
+            "()": "logging_utils.ScrubbingFormatter",
             "format": "%(asctime)s %(levelname)-5s %(name)s: %(message)s",
             "datefmt": "%H:%M:%S",
         },
@@ -59,4 +61,3 @@ LOGGING = {
         },
     },
 }
-

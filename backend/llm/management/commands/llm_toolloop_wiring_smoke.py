@@ -6,6 +6,7 @@ from typing import Any, Dict, List, Sequence
 
 from django.conf import settings
 from django.core.management.base import BaseCommand
+from logging_utils import scrub_sensitive_text
 from unittest.mock import patch
 
 from llm.models import AgentRole, LLMModelProfile, LLMRun
@@ -250,14 +251,14 @@ class Command(BaseCommand):
         profile = self._ensure_profile()
         for scenario_name, prompt, responses in SCENARIOS:
             result = self._run_scenario(scenario_name, prompt, responses, profile)
-            self.stdout.write(f"\nScenario: {scenario_name}")
-            self.stdout.write(f"  run_id: {result.run_id}")
-            self.stdout.write(f"  status: {result.status}")
-            self.stdout.write(f"  tool_calls_executed: {result.tool_calls_executed}")
-            self.stdout.write(f"  final output: {result.final_output}")
+            self.stdout.write(scrub_sensitive_text(f"\nScenario: {scenario_name}"))
+            self.stdout.write(scrub_sensitive_text(f"  run_id: {result.run_id}"))
+            self.stdout.write(scrub_sensitive_text(f"  status: {result.status}"))
+            self.stdout.write(scrub_sensitive_text(f"  tool_calls_executed: {result.tool_calls_executed}"))
+            self.stdout.write(scrub_sensitive_text(f"  final output: {result.final_output}"))
             if result.policy_denials:
                 for denial in result.policy_denials:
-                    self.stdout.write(f"  policy denial: {denial}")
+                    self.stdout.write(scrub_sensitive_text(f"  policy denial: {denial}"))
             else:
                 self.stdout.write("  policy denials: none")
 

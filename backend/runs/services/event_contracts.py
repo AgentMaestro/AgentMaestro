@@ -4,10 +4,10 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
-import logging
+from logging_utils import get_app_logger
+from logging_utils import scrub_sensitive_value
 
-
-logger = logging.getLogger(__name__)
+logger = get_app_logger(__name__)
 
 
 def iso_utc_now() -> str:
@@ -29,12 +29,13 @@ class PushMessage:
     user_id: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
+        data = scrub_sensitive_value(self.data)
         out: Dict[str, Any] = {
             "type": self.type,
             "topic": self.topic,
             "ts": self.ts,
             "event": self.event,
-            "data": self.data,
+            "data": data,
         }
         if self.seq is not None:
             out["seq"] = self.seq
@@ -53,12 +54,19 @@ class PushMessage:
             self.seq,
             self.run_id,
             self.workspace_id,
-            sorted((self.data or {}).keys()),
+            sorted((data or {}).keys()),
         )
         return out
 
 
-def make_run_push(*, run_id: str, event: str, data: Dict[str, Any], seq: Optional[int] = None, workspace_id: Optional[str] = None) -> Dict[str, Any]:
+def make_run_push(
+    *,
+    run_id: str,
+    event: str,
+    data: Dict[str, Any],
+    seq: Optional[int] = None,
+    workspace_id: Optional[str] = None,
+) -> Dict[str, Any]:
     logger.debug(
         "make_run_push run=%s event=%s seq=%s workspace=%s data_keys=%s",
         run_id,
@@ -79,7 +87,9 @@ def make_run_push(*, run_id: str, event: str, data: Dict[str, Any], seq: Optiona
     ).to_dict()
 
 
-def make_workspace_push(*, workspace_id: str, event: str, data: Dict[str, Any], seq: Optional[int] = None) -> Dict[str, Any]:
+def make_workspace_push(
+    *, workspace_id: str, event: str, data: Dict[str, Any], seq: Optional[int] = None
+) -> Dict[str, Any]:
     return PushMessage(
         type="push",
         topic="workspace.event",
@@ -91,7 +101,9 @@ def make_workspace_push(*, workspace_id: str, event: str, data: Dict[str, Any], 
     ).to_dict()
 
 
-def make_approvals_push(*, workspace_id: str, event: str, data: Dict[str, Any], seq: Optional[int] = None) -> Dict[str, Any]:
+def make_approvals_push(
+    *, workspace_id: str, event: str, data: Dict[str, Any], seq: Optional[int] = None
+) -> Dict[str, Any]:
     return PushMessage(
         type="push",
         topic="approvals.event",
@@ -103,7 +115,14 @@ def make_approvals_push(*, workspace_id: str, event: str, data: Dict[str, Any], 
     ).to_dict()
 
 
-def make_user_push(*, user_id: str, event: str, data: Dict[str, Any], seq: Optional[int] = None, workspace_id: Optional[str] = None) -> Dict[str, Any]:
+def make_user_push(
+    *,
+    user_id: str,
+    event: str,
+    data: Dict[str, Any],
+    seq: Optional[int] = None,
+    workspace_id: Optional[str] = None,
+) -> Dict[str, Any]:
     return PushMessage(
         type="push",
         topic="user.event",

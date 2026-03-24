@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import json
-import logging
-
 from django.http import HttpRequest, HttpResponseBadRequest, JsonResponse
 from django.shortcuts import get_object_or_404
 from django.views.decorators.csrf import csrf_exempt
@@ -11,8 +9,9 @@ from django.views.decorators.http import require_POST
 from comms.models import TransportEndpoint
 from comms.services.ingest import ingest_normalized_event
 from comms.transports.telegram import TelegramAdapter
+from logging_utils import get_app_logger
 
-logger = logging.getLogger(__name__)
+logger = get_app_logger(__name__)
 
 
 @csrf_exempt

@@ -168,6 +168,24 @@ class ToolSchemaCoverageTests(TestCase):
         self.assertIn("resolved_cwd", registry_tools["format_runner"]["response_fields"])
         self.assertIn("resolved_paths", registry_tools["format_runner"]["response_fields"])
         self.assertIn("command", registry_tools["format_runner"]["response_fields"])
+        self.assertIn("requested_cwd", registry_tools["run_command_safe"]["response_fields"])
+        self.assertIn("resolved_cwd", registry_tools["run_command_safe"]["response_fields"])
+        self.assertIn("requested_path", registry_tools["file_patch"]["response_fields"])
+        self.assertIn("resolved_path", registry_tools["file_patch"]["response_fields"])
+        self.assertIn("requested_repo_dir", registry_tools["file_patch"]["response_fields"])
+        self.assertIn("resolved_repo_dir", registry_tools["file_patch"]["response_fields"])
+        for tool_name in {
+            "git_add",
+            "git_apply",
+            "git_branch_create",
+            "git_checkout",
+            "git_commit",
+            "git_diff",
+            "git_log",
+            "git_push",
+        }:
+            self.assertIn("requested_repo_dir", registry_tools[tool_name]["response_fields"])
+            self.assertIn("resolved_repo_dir", registry_tools[tool_name]["response_fields"])
         self.assertIn(
             "coverage summaries", registry_tools["coverage_runner"]["response_fields"]["files"]
         )

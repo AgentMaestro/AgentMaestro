@@ -8,6 +8,7 @@ import os
 import httpx
 from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
+from logging_utils import scrub_sensitive_text
 
 
 class Command(BaseCommand):
@@ -62,11 +63,11 @@ class Command(BaseCommand):
         result = (response.json() or {}).get("result", {})
         message_id = result.get("message_id")
         chat = result.get("chat") or {}
-        self.stdout.write("Telegram message sent.")
-        self.stdout.write(f"  chat_id={chat_id}")
-        self.stdout.write(f"  message_id={message_id}")
+        self.stdout.write(scrub_sensitive_text("Telegram message sent."))
+        self.stdout.write(scrub_sensitive_text(f"  chat_id={chat_id}"))
+        self.stdout.write(scrub_sensitive_text(f"  message_id={message_id}"))
         if chat:
-            self.stdout.write("  chat=" + json.dumps(chat))
+            self.stdout.write(scrub_sensitive_text("  chat=" + json.dumps(chat)))
 
     def _extract_error_detail(self, exc: httpx.HTTPStatusError) -> str:
         if not exc.response or not exc.response.headers.get("content-type", "").startswith("application/json"):

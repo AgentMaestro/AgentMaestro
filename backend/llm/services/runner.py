@@ -1,12 +1,12 @@
 import asyncio
 import json
-import logging
 from types import SimpleNamespace
 from typing import Any, Dict, List, Optional, Sequence
 
 from asgiref.sync import sync_to_async
 from django.conf import settings
 from django.utils import timezone
+from logging_utils import get_app_logger
 
 from llm.models import AgentRole, LLMMessage, LLMModelProfile, LLMRun, LLMToolCall, MessageRole, RunStatus
 from llm.services.model_failover import (
@@ -21,7 +21,7 @@ from llm.services.tool_schemas import get_tool_schemas
 from llm.services.toolrunner_bridge import run_tool
 from runs.services.input_items import build_ws_request_input_items
 
-logger = logging.getLogger(__name__)
+logger = get_app_logger(__name__)
 HEADLESS_WS_INIT_LOG_PREFIX = "[HEADLESS-WS-INIT]"
 HEADLESS_WS_DISPATCH_LOG_PREFIX = "[HEADLESS-WS-DISPATCH]"
 

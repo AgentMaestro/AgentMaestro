@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-import logging
 import uuid
 from typing import Any, Dict, Optional
 
 from django.db import transaction
+from logging_utils import get_app_logger
 from django.utils import timezone
 
 from core.services.limits import LimitKey, QUOTA_MANAGER
@@ -32,7 +32,7 @@ FAILURE_RUN_STATUSES = {
 }
 MAX_PENDING_SUBRUNS_PER_PARENT = 4
 NETWORK_ERROR_SUBRUN_FAILURE_THRESHOLD = 2
-logger = logging.getLogger(__name__)
+logger = get_app_logger(__name__)
 
 
 def _normalize_join_policy(value: str) -> str:

@@ -1,4 +1,4 @@
-import json
+﻿import json
 from copy import deepcopy
 
 from google_bridge.services.schema import (
@@ -59,14 +59,18 @@ _TOOL_EXAMPLES = {
     "file_write": [
         {"path": "notes/hello.py", "content": "print('hello')\n"},
         {
-            "path": "C:\\tmp\\agentmaestro\\smoke_tools\\hello.py",
+            "path": "C:/tmp/agentmaestro/smoke_tools/hello.py",
+            "absolute_root": "C:\\tmp\\agentmaestro\\smoke_tools",
             "content": "print('hello')\n",
             "overwrite": True,
         },
     ],
     "file_delete": [
         {"path": "notes/hello.py"},
-        {"path": "C:\\tmp\\agentmaestro\\smoke_tools\\hello.py"},
+        {
+            "path": "C:\\tmp\\agentmaestro\\smoke_tools\\hello.py",
+            "absolute_root": "C:\\tmp\\agentmaestro\\smoke_tools",
+        },
     ],
     "file_patch": [
         {
@@ -75,6 +79,7 @@ _TOOL_EXAMPLES = {
         },
         {
             "path": "C:\\tmp\\agentmaestro\\smoke_tools\\hello.py",
+            "absolute_root": "C:\\tmp\\agentmaestro\\smoke_tools",
             "patch_unified": "--- a/hello.py\n+++ b/hello.py\n@@ -1,1 +1,1 @@\n-print('hello')\n+print('hello world')\n",
         },
     ],
@@ -86,8 +91,8 @@ _TOOL_EXAMPLES = {
         },
     ],
     "git_status": [
-        {"repo_dir": ".", "porcelain": "v1", "include_untracked": True},
-        {"repo_dir": "C:\\Dev\\AgentMaestro", "porcelain": "v1", "include_untracked": True},
+        {"repo_dir": ".", "porcelain": "v2", "include_untracked": True},
+        {"repo_dir": "C:\\Dev\\AgentMaestro", "porcelain": "v2", "include_untracked": True},
     ],
     "git_diff": [
         {"repo_dir": ".", "paths": ["backend/tools/admin.py"], "staged": False},
@@ -339,25 +344,44 @@ _TOOL_EXAMPLES = {
             "timeout_ms": 300000,
             "max_output_bytes": 262144,
         },
+        {
+            "tool": "command",
+            "cwd": ".",
+            "cmd": ["cmd", "/C", "echo", "TYPECHECK_OK"],
+            "timeout_ms": 300000,
+            "max_output_bytes": 262144,
+        },
     ],
 }
 
 _TOOL_ADDITIONAL_DOCS = {
     "file_read": "\n\nPATH NOTES:\n"
-    "- `path` may be absolute or repo-relative.\n"
-    "- Repo-relative paths resolve from the repository root when one is provided in policy context.",
+    "- `requested_path` is the caller-supplied path value.\n"
+    "- `resolved_path` is the exact filesystem path that will be read.\n"
+    "- `requested_root` and `resolved_root` describe the read base when the tool resolves through a repository root.\n"
+    "- The result payload uses `requested_path` and `resolved_path` only.",
     "repo_tree": "\n\nPATH NOTES:\n"
-    "- `path` may be absolute or repo-relative.\n"
-    "- Repo-relative paths resolve from the repository root when one is provided in policy context.",
+    "- `requested_root` is the caller-supplied root value.\n"
+    "- `resolved_root` is the exact filesystem root that will be listed.\n"
+    "- The result payload uses `requested_root` and `resolved_root` only.",
     "file_write": "\n\nPATH NOTES:\n"
-    "- `path` may be absolute or repo-relative.\n"
-    "- Repo-relative paths resolve from the repository root when one is provided in policy context.\n\n"
+    "- `requested_path` is the caller-supplied path value, normalized to forward slashes in the response.\n"
+    "- `resolved_path` is the exact filesystem path that will be written.\n"
+    "- `requested_root` and `resolved_root` describe the write base when the tool resolves through a repository root.\n"
+    "- Use forward slashes in examples for relative paths so the response format is easier to compare across platforms.\n"
+    "- The result payload uses `requested_path` and `resolved_path` only.\n\n"
     "WRITE MODE NOTES:\n"
     "- `overwrite` is optional.\n"
     "- Leave `overwrite=false` to avoid replacing an existing file.\n"
     "- Set `overwrite=true` when you intentionally want to replace an existing file instead of deleting it first.\n"
     "- Use `file_delete` only when the goal is to remove the file entirely.",
-    "file_patch": "\n\nPATCH FORMAT NOTES:\n"
+    "file_patch": "\n\nPATH NOTES:\n"
+    "- `requested_path` is the caller-supplied target path.\n"
+    "- `resolved_path` is the exact filesystem path that will be patched.\n"
+    "- `requested_root` is `null` for file_patch.\n"
+    "- `requested_repo_dir` / `resolved_repo_dir` may still appear as a path-root fallback for temp files or other non-repo targets.\n"
+    "- The result payload uses `requested_path`, `resolved_path`, `requested_root`, `resolved_root`, `requested_repo_dir`, and `resolved_repo_dir`.\n\n"
+    "PATCH FORMAT NOTES:\n"
     "- `path` may be absolute or repo-relative.\n"
     "- Repo-relative paths resolve from the repository root when one is provided in policy context.\n"
     "- `patch_unified` is required.\n"
@@ -383,6 +407,11 @@ _TOOL_ADDITIONAL_DOCS = {
     "- If the wrong file is targeted, make sure the diff path suffix matches the `path` argument.\n"
     "- If a hunk is rejected, re-read the file and rebuild the patch against the current contents.\n"
     "- Use standard `\\n` line endings in the diff text. Mixed or malformed newline style can break patch parsing.",
+    "file_delete": "\n\nPATH NOTES:\n"
+    "- `requested_path` is the caller-supplied path value.\n"
+    "- `resolved_path` is the exact filesystem path that was targeted for deletion.\n"
+    "- `requested_root` and `resolved_root` describe the delete base when the tool resolves through a repository root.\n"
+    "- The result payload uses `requested_path` and `resolved_path` only.",
     "test_runner": "\n\nRUN MODE NOTES:\n"
     "- `kind` is required.\n"
     "- Supported kinds are `powershell_script`, `pytest`, and `command`.\n"
@@ -391,6 +420,8 @@ _TOOL_ADDITIONAL_DOCS = {
     "  - `kind=pytest` requires `pytest_args`\n"
     "  - `kind=command` requires `cmd`\n"
     "- Prefer `kind=pytest` for narrow smoke tests and `kind=powershell_script` for repo-standard test entrypoints.\n\n"
+    "OUTPUT NOTES:\n"
+    "- Pytest-mode results do not use `script_path`; smoke checks should assert `requested_args`/`resolved_args`, `summary`, `exit_code`, and `failed_tests` instead.\n\n"
     "MINIMAL SUCCESSFUL EXAMPLES:\n"
     "- Pytest mode:\n"
     '  `{ "kind": "pytest", "pytest_args": ["toolrunner/app/tests/test_file_write.py"], "cwd": ".", "parse": "pytest" }`\n'
@@ -409,6 +440,9 @@ _TOOL_ADDITIONAL_DOCS = {
     "- `kind` is required and currently must be `pytest_coverage`.\n"
     "- Provide pytest target arguments via `args`.\n"
     "- Coverage generates a `coverage.json` artifact in the working directory.\n\n"
+    "OUTPUT NOTES:\n"
+    "- `requested_cwd` and `resolved_cwd` show the execution directory chosen by the runner.\n"
+    "- `requested_args` echoes the target list used for coverage collection.\n\n"
     "MINIMAL SUCCESSFUL EXAMPLE:\n"
     '- `{ "kind": "pytest_coverage", "cwd": ".", "args": ["toolrunner/app/tests/test_file_write.py"] }`\n\n'
     "TROUBLESHOOTING:\n"
@@ -439,6 +473,7 @@ _TOOL_ADDITIONAL_DOCS = {
     "run_command_safe": "\n\nSAFE COMMAND NOTES:\n"
     "- `argv` is required and must be a list of strings.\n"
     "- Allowed executables are limited to `python`, `pytest`, `ruff`, `mypy`, `uv`, and `django-admin`.\n"
+    "- A narrow `python -c` smoke form is allowed only when it is a single `print(...)` call with a string literal.\n"
     "- `git` is explicitly blocked. Use the dedicated `git_*` tools instead.\n"
     "- Shell composition, shell wrappers, package installs, migrations, dev servers, and other interactive or long-running commands are rejected.\n"
     "- `cwd` must stay inside the active workspace root.\n"
@@ -453,6 +488,7 @@ _TOOL_ADDITIONAL_DOCS = {
     "- Pass the executable and each argument as a separate list item.\n"
     "- Do not send a single shell string unless you are explicitly invoking a shell such as `cmd /C` or `powershell -Command`.\n"
     "- `cwd` may be absolute or repo-relative.\n"
+    "- `requested_cwd` and `resolved_cwd` appear in the response so callers can see the actual execution directory.\n"
     "- Use `run_command` only as a last resort when no specialized tool matches the task.\n"
     "- Do not use `run_command` for Git operations that map to `git_add`, `git_status`, `git_diff`, `git_log`, `git_apply`, `git_commit`, `git_push`, `git_checkout`, or `git_branch_create`.\n"
     "- Do not use `run_command` for direct file content reads that should go through `file_read`.\n\n"
@@ -463,10 +499,10 @@ _TOOL_ADDITIONAL_DOCS = {
     "- If you need shell features such as `&&`, invoke a shell explicitly through `cmd /C` or `powershell -Command`.\n"
     "- If the command times out, inspect the returned timeout source and effective timeout value.",
     "search_code": "\n\nPATH NOTES:\n"
-    "- `root` may be omitted, repo-relative, or absolute.\n"
-    "- Repo-relative `root` values resolve from the repository root when one is provided in policy context.\n"
-    "- Absolute `root` values are permitted only when they fall under the allowed roots for the run.\n"
-    "- `include_globs` are evaluated relative to the provided `root`.\n\n"
+    "- `requested_root` is the caller-supplied root value.\n"
+    "- `resolved_root` is the exact filesystem root that will be searched.\n"
+    "- The result payload uses `requested_root` and `resolved_root` only.\n"
+    "- `include_globs` are evaluated relative to the resolved root.\n\n"
     "QUERY NOTES:\n"
     "- When `is_regex=true`, use regex syntax for alternatives. Prefer `|` between options instead of the word `OR`.\n"
     "- Example: `sprint|roadmap|milestone|next sprint|planning`.\n\n"
@@ -531,7 +567,8 @@ _TOOL_ADDITIONAL_DOCS = {
     "- Repo-relative values resolve from the repository root when one is provided in policy context.",
     "git_status": "\n\nPATH NOTES:\n"
     "- `repo_dir` may be absolute or repo-relative.\n"
-    "- Repo-relative `repo_dir` resolves from the repository root when one is provided in policy context.",
+    "- Repo-relative `repo_dir` resolves from the repository root when one is provided in policy context.\n"
+    "- Porcelain parsing is normalized to v2 internally so dirty-state detection stays stable.",
     "git_diff": "\n\nPATH NOTES:\n"
     "- `repo_dir` may be absolute or repo-relative.\n"
     "- Each item in `paths` may be absolute or repo-relative to the selected repository.\n"
@@ -567,27 +604,35 @@ _TOOL_ADDITIONAL_DOCS = {
     "- If `ruff` is missing, the tool reports the resolved interpreter path and source.",
     "typecheck_runner": "\n\nPATH NOTES:\n"
     "- `cwd` may be absolute or repo-relative.\n"
-    "- Path arguments passed through `args` may also be absolute or repo-relative when the underlying type checker supports them.\n\n"
+    "- `requested_cwd` and `resolved_cwd` appear in the response so callers can see the actual type-check execution directory.\n"
+    "- Path arguments passed through `args` may also be absolute or repo-relative when the underlying type checker supports them.\n"
+    "- `tool=command` is the escape hatch for custom checks; if it runs `python -m pytest ...` and pytest is missing, the tool returns a missing-runtime-dependency error for `pytest`.\n\n"
+    "- For smoke checks, `tool=command` should use a harmless command such as `cmd /C echo TYPECHECK_OK`; malformed or empty `cmd` lists are rejected early.\n\n"
     "DEFAULT LIMITS:\n"
     "- `timeout_ms` defaults to `300000`.\n"
     "- `max_output_bytes` defaults to `262144`.\n\n"
     "PYTHON ENVIRONMENT NOTES:\n"
     "- `mypy` and `pyright` run through `TOOLRUNNER_PYTHON`.\n"
     "- If `TOOLRUNNER_PYTHON` is unset, toolrunner falls back to `.venv` discovery before using plain `python`.\n"
-    "- If a Python-backed type checker is missing, the tool reports the resolved interpreter path and source.",
+    "- If a Python-backed type checker is missing, the tool reports the resolved interpreter path and source.\n"
+    "- When `tool=command` runs `python -m pytest ...` and `pytest` is not installed, the tool returns a missing-runtime-dependency error for `pytest`.",
 }
 
 
 _TOOL_RESPONSE_FIELDS = {
     "file_read": {
-        "path": "Echoes the requested path value.",
+        "requested_path": "The path value supplied by the caller.",
+        "resolved_path": "The exact filesystem path that was read.",
+        "requested_root": "The root value supplied by the caller, if any.",
+        "resolved_root": "The resolved parent/root directory used for the read.",
         "mode": "Whether the response content is text or binary.",
         "content": "Returned text content for text mode.",
         "content_base64": "Returned bytes encoded as base64 for binary mode.",
         "truncated": "True when max_bytes cut the response short.",
     },
     "repo_tree": {
-        "root": "The root path that was listed.",
+        "requested_root": "The root value supplied by the caller.",
+        "resolved_root": "The exact filesystem root that was listed.",
         "entries": "Sorted tree entries returned by the tool.",
         "stats": "Counts for files, dirs, exclusions, and allowed roots used by policy.",
         "truncated": "True when max_entries limited the walk.",
@@ -597,7 +642,10 @@ _TOOL_RESPONSE_FIELDS = {
         "is_regex": "Whether regex mode was enabled for the search.",
         "case_sensitive": "Whether matching was case-sensitive.",
         "matches": "Path-sorted files with match_count and snippet metadata for each matching file.",
+        "requested_root": "The root value supplied by the caller.",
+        "resolved_root": "The exact filesystem root that was searched.",
         "stats": "File counts, total matches, exclusions, and allowed roots used by policy.",
+        "meta": "Optional policy metadata returned only when include_meta=true.",
         "truncated": "True when max_results or timeout limits stopped the scan.",
     },
     "web_search": {
@@ -703,13 +751,23 @@ _TOOL_RESPONSE_FIELDS = {
     },
     "file_write": {
         "resolved_path": "The exact filesystem path that was ultimately written.",
+        "requested_path": "The path value supplied by the caller.",
+        "requested_root": "The root value supplied by the caller, if any.",
+        "resolved_root": "The resolved parent/root directory used for the write.",
+        "changed_paths": "The paths modified by the write operation.",
         "created": "True when the file did not exist before this write.",
         "overwritten": "True when an existing file was replaced.",
         "bytes_written": "Number of bytes written to disk.",
         "sha256": "Checksum of the written content.",
     },
     "file_patch": {
-        "path": "The requested target path.",
+        "requested_path": "The path value supplied by the caller.",
+        "resolved_path": "The exact filesystem path that was patched.",
+        "requested_root": "Reserved for parity with other file tools; null for file_patch.",
+        "resolved_root": "The resolved parent directory of the patched file.",
+        "requested_repo_dir": "The caller-supplied repo_dir when present; otherwise a path-root fallback for temp or non-repo targets.",
+        "resolved_repo_dir": "The resolved repository directory or path-root fallback used as the patch base.",
+        "changed_paths": "The paths modified by the patch operation.",
         "applied": "True when every hunk applied cleanly.",
         "applied_partially": "True when some hunks applied and rejects were produced.",
         "backup_path": "Backup copy path when backup=true.",
@@ -717,6 +775,10 @@ _TOOL_RESPONSE_FIELDS = {
     },
     "file_delete": {
         "resolved_path": "The exact filesystem path that was targeted for deletion.",
+        "requested_path": "The path value supplied by the caller.",
+        "requested_root": "The root value supplied by the caller, if any.",
+        "resolved_root": "The resolved parent/root directory used for the delete.",
+        "changed_paths": "The paths removed by the delete operation.",
         "deleted": "True when a file or directory was removed.",
         "missing": "True when missing_ok=true and the target did not exist.",
         "deleted_type": "Whether the deleted target was a file or directory.",
@@ -725,6 +787,9 @@ _TOOL_RESPONSE_FIELDS = {
         "total_percent": "Overall measured coverage percentage from coverage.json.",
         "files": "Per-file coverage summaries extracted from coverage.json.",
         "coverage_json_path": "Filesystem path to the generated coverage.json artifact.",
+        "requested_cwd": "The cwd value supplied by the caller.",
+        "resolved_cwd": "The resolved absolute cwd used for execution.",
+        "requested_args": "The argument list supplied by the caller.",
         "stdout": "Stdout from the coverage run command.",
         "python_interpreter": "Interpreter path used for Python-backed coverage commands.",
         "python_interpreter_source": "Whether the interpreter came from TOOLRUNNER_PYTHON or fallback discovery.",
@@ -747,6 +812,8 @@ _TOOL_RESPONSE_FIELDS = {
         "truncated": "True when stdout or stderr capture was truncated.",
         "normalized_command": "Normalized argv that was validated and, if allowed, executed.",
         "policy_reason": "Policy rejection reason when the request was blocked before execution.",
+        "requested_cwd": "The cwd value supplied by the caller.",
+        "resolved_cwd": "The resolved absolute cwd used for execution.",
     },
     "run_tests": {
         "ok": "True when every requested suite completed with exit code 0.",
@@ -789,6 +856,8 @@ _TOOL_RESPONSE_FIELDS = {
         "parse_mode": "The parser mode requested for result parsing.",
         "parse_source": "Whether parsing succeeded from stdout, stderr, or not at all.",
         "parse_warning": "Parsing warning when the output could not be interpreted for the selected parser.",
+        "requested_cwd": "The cwd value supplied by the caller.",
+        "resolved_cwd": "The resolved absolute cwd used for execution.",
         "stdout": "Captured type-check stdout.",
         "stderr": "Captured type-check stderr.",
         "python_interpreter": "Interpreter path used for Python-backed type checkers such as mypy and pyright.",
@@ -802,8 +871,10 @@ _TOOL_RESPONSE_FIELDS = {
         "payload": "Echoes the optional nested payload object.",
     },
     "git_status": {
-        "repo_dir": "Repository path argument echoed back in the response.",
+        "requested_repo_dir": "The repo_dir value supplied by the caller.",
+        "resolved_repo_dir": "The resolved absolute repository directory used for execution.",
         "branch": "Current branch metadata including name, upstream, ahead/behind, head_oid, and detached.",
+        "requested_porcelain": "The porcelain version requested by the caller. The tool normalizes status parsing to porcelain v2 internally.",
         "is_clean": "True when there are no staged, unstaged, conflict, or requested untracked changes.",
         "staged": "List of staged paths.",
         "unstaged": "List of unstaged paths.",
@@ -812,12 +883,20 @@ _TOOL_RESPONSE_FIELDS = {
         "raw": "Raw git status stdout/stderr plus truncation flags.",
     },
     "git_add": {
-        "repo_dir": "Repository path argument echoed back in the response.",
+        "requested_repo_dir": "The repo_dir value supplied by the caller.",
+        "resolved_repo_dir": "The resolved absolute repository directory used for execution.",
+        "requested_paths": "The paths list supplied by the caller.",
+        "resolved_paths": "The normalized relative paths staged by git add.",
+        "changed_paths": "The paths staged by git add.",
         "staged_paths": "Normalized relative paths passed to git add when the request targeted explicit files.",
         "raw": "Raw git add stdout/stderr plus truncation flags.",
     },
     "git_commit": {
-        "repo_dir": "Repository path argument echoed back in the response.",
+        "requested_repo_dir": "The repo_dir value supplied by the caller.",
+        "resolved_repo_dir": "The resolved absolute repository directory used for execution.",
+        "requested_paths": "The paths_to_add list supplied by the caller.",
+        "resolved_paths": "The normalized relative paths staged before commit creation.",
+        "changed_paths": "The paths included in the resulting commit.",
         "commit_oid": "OID of the newly created commit.",
         "summary": "First line of the commit message.",
         "changed_files": "Count of files changed by the commit.",
@@ -825,22 +904,27 @@ _TOOL_RESPONSE_FIELDS = {
         "raw": "Raw git commit stdout/stderr plus truncation flags.",
     },
     "git_push": {
-        "repo_dir": "Repository path argument echoed back in the response.",
+        "requested_repo_dir": "The repo_dir value supplied by the caller.",
+        "resolved_repo_dir": "The resolved absolute repository directory used for execution.",
         "remote": "The remote name that was pushed to.",
         "ref": "The ref that was pushed.",
         "pushed": "True when the push command completed successfully.",
         "raw": "Raw git push stdout/stderr plus truncation flags.",
     },
     "git_diff": {
-        "repo_dir": "Repository path argument echoed back in the response.",
+        "requested_repo_dir": "The repo_dir value supplied by the caller.",
+        "resolved_repo_dir": "The resolved absolute repository directory used for execution.",
         "staged": "Whether the diff was collected from the staged index.",
         "paths": "Normalized relative target paths when the request was path-scoped.",
+        "requested_paths": "The paths list supplied by the caller.",
+        "resolved_paths": "The resolved relative paths diffed by git.",
         "diff": "Unified diff text.",
         "truncated": "True when stdout capture truncated the diff payload.",
         "raw": "Raw git diff stdout/stderr plus truncation flags.",
     },
     "git_log": {
-        "repo_dir": "Repository path argument echoed back in the response.",
+        "requested_repo_dir": "The repo_dir value supplied by the caller.",
+        "resolved_repo_dir": "The resolved absolute repository directory used for execution.",
         "ref": "The ref or revision that was logged.",
         "max_count": "Maximum commit count requested.",
         "commits": "Structured commit metadata including oid, author_name, author_email, author_time_epoch, author_time_iso, and subject.",
@@ -849,24 +933,28 @@ _TOOL_RESPONSE_FIELDS = {
         "raw": "Raw git log stdout/stderr plus truncation flags.",
     },
     "git_apply": {
-        "repo_dir": "Repository path argument echoed back in the response.",
+        "requested_repo_dir": "The repo_dir value supplied by the caller.",
+        "resolved_repo_dir": "The resolved absolute repository directory used for execution.",
         "strip_prefix": "The strip-prefix value used for git apply.",
         "check_passed": "True when check=true and the patch validated successfully; otherwise null when not in check mode.",
         "applied": "True when the patch was actually applied.",
+        "changed_paths": "The paths touched by the applied patch.",
         "touched_paths": "File paths extracted from the unified diff headers.",
         "rejects_created": "True when new .rej files were produced.",
         "reject_paths": "Relative reject file paths created by the apply operation.",
         "raw": "Raw git apply stdout/stderr plus truncation flags.",
     },
     "git_branch_create": {
-        "repo_dir": "Repository path argument echoed back in the response.",
+        "requested_repo_dir": "The repo_dir value supplied by the caller.",
+        "resolved_repo_dir": "The resolved absolute repository directory used for execution.",
         "name": "The branch name that was created.",
         "checked_out": "True when checkout=true and the new branch was switched to successfully.",
         "error.details.phase": "On timeout errors, indicates whether the timeout happened during branch creation or checkout.",
         "error.details.timed_out": "On timeout errors, explicitly true so callers can distinguish timeout from repository-state failures.",
     },
     "git_checkout": {
-        "repo_dir": "Repository path argument echoed back in the response.",
+        "requested_repo_dir": "The repo_dir value supplied by the caller.",
+        "resolved_repo_dir": "The resolved absolute repository directory used for execution.",
         "ref": "The ref or branch that checkout targeted.",
         "detached": "True when Git reported a detached HEAD state after checkout.",
         "raw": "Raw git checkout stdout/stderr plus truncation flags.",
@@ -875,6 +963,8 @@ _TOOL_RESPONSE_FIELDS = {
         "exit_code": "The process exit code, or null if the process timed out.",
         "stdout": "Captured standard output text.",
         "stderr": "Captured standard error text.",
+        "requested_cwd": "The cwd value supplied by the caller.",
+        "resolved_cwd": "The resolved absolute cwd used for execution.",
         "timed_out": "True when the process exceeded its timeout.",
         "timeout_source": "Which timeout setting was enforced for the command.",
     },
@@ -935,11 +1025,11 @@ TOOL_REGISTRY = [
     },
     {
         "name": "Code Navigation",
-        "description": "Find files, symbols, and references quickly without scanning repository text by hand. Use these tools sequentially when precision matters, waiting for each result before issuing the next navigation call.",
+        "description": "Find files, symbols, and references quickly without scanning repository text by hand. Use independent navigation calls in parallel when they do not depend on one another; use them sequentially when the next call depends on the previous result.",
         "tools": [
             {
                 "name": "search_files",
-                "description": "Search repository paths and file names by literal text, glob-style patterns, or regex. Use this when you need to locate files, directories, or a root scope by name or path. Do not use it for content search; use `search_code` instead. This tool matches names and paths only and does not search file contents. Hidden paths are included unless they are excluded by the default ignore rules; Test paths are included by default unless `include_tests` is turned off. Use `scope` as the canonical input name for the search root. Rank expectations are exact path/name matches first, then fuzzy/partial matches. Search one path/name query at a time; if you need multiple targets, make separate calls or use regex mode with `|` for alternatives, for example `code_navigation.py|run_command_safe`. In regex mode, exact path/name hits still sort ahead of fuzzy or partial matches. Use sequentially and wait for the result before issuing the next navigation call. Compact mode returns a standardized envelope with `tool`, `compact`, `query`, `scope`, `items`, `returned_count`, `max_results_used`, `selection`, `selection_excerpt`, `stats`, and `truncated`, and it omits legacy top-level fields.",
+                "description": "Search repository paths and file names by literal text, glob-style patterns, or regex. Use this when you need to locate files, directories, or a root scope by name or path. Do not use it for content search; use `search_code` instead. This tool matches names and paths only and does not search file contents. Hidden paths are included unless they are excluded by the default ignore rules; Test paths are included by default unless `include_tests` is turned off. Use `scope` as the canonical input name for the search root. Rank expectations are exact path/name matches first, then fuzzy/partial matches. Search one path/name query at a time; if you need multiple targets, make separate calls or use regex mode with `|` for alternatives, for example `code_navigation.py|run_command_safe`. In regex mode, exact path/name hits still sort ahead of fuzzy or partial matches. Use sequentially when the next navigation step depends on this result; independent navigation lookups can be parallelized. Compact mode returns a standardized envelope with `tool`, `compact`, `query`, `requested_scope`, `resolved_scope`, `items`, `returned_count`, `max_results_used`, `selection`, `selection_excerpt`, `stats`, and `truncated`. For exact file hits, `selection_excerpt` may be `exact file match` so the compact result is self-explanatory.",
                 "risk": ToolRisk.SAFE,
                 "requires_approval": False,
                 "released": True,
@@ -1019,7 +1109,7 @@ TOOL_REGISTRY = [
             },
             {
                 "name": "list_symbols",
-                "description": "List symbols defined in a file, directory, or repo root scope without reading every file manually. Use this when you already know the file or subtree and want a symbol outline. Do not use it for text search; use `search_code` or `search_files` instead. Use `scope` as the canonical input name for the symbol scope. Hidden paths are included unless excluded by the default ignore rules; test paths are included by default unless `include_tests` is turned off. Use sequentially and wait for the result before issuing the next navigation call. Compact mode returns a standardized envelope with `tool`, `compact`, `query`, `scope`, `items`, `returned_count`, `max_results_used`, `selection`, `selection_excerpt`, `stats`, and `truncated`, and it omits legacy top-level fields. In compact mode, symbol items include defining file, line, column, container/scope, and signature. Ordering is stable and grouped by path.",
+                "description": "List symbols defined in a file, directory, or repo root scope without reading every file manually. Use this when you already know the file or subtree and want a symbol outline. Do not use it for text search; use `search_code` or `search_files` instead. Use `scope` as the canonical input name for the symbol scope. Hidden paths are included unless excluded by the default ignore rules; test paths are included by default unless `include_tests` is turned off. Use sequentially when the next navigation step depends on this result; otherwise run independent lookups in parallel. Compact mode returns a standardized envelope with `tool`, `compact`, `query`, `requested_scope`, `resolved_scope`, `items`, `returned_count`, `max_results_used`, `selection`, `selection_excerpt`, `stats`, and `truncated`. In compact mode, symbol items include defining file, line, column, container/scope, and signature. For exact file or directory scopes, `selection_excerpt` may be an exact-scope marker rather than a line excerpt. Ordering is stable and grouped by path.",
                 "risk": ToolRisk.SAFE,
                 "requires_approval": False,
                 "released": True,
@@ -1088,7 +1178,7 @@ TOOL_REGISTRY = [
             },
             {
                 "name": "find_symbol",
-                "description": "Find a symbol definition by exact or fuzzy name. Use this when you know the symbol name and want the definition. Do not use it for content search; use `search_code` instead. The tool supports exact or fuzzy symbol matching and ranks exact matches above fuzzy matches when both are available. Use `scope` as the canonical input name for the symbol scope. Use this when the scope is a file, directory, or repo root and you want symbol resolution within that scope. Hidden paths are included unless excluded by the default ignore rules; test paths are included by default unless `include_tests` is turned off. Use sequentially and wait for the result before issuing the next navigation call. Compact mode returns a standardized envelope with `tool`, `compact`, `query`, `scope`, `items`, `returned_count`, `max_results_used`, `selection`, `selection_excerpt`, `stats`, and `truncated`, and it omits legacy top-level fields. In compact mode, symbol matches include defining file, line, column, container/scope, and signature. Ordering is stable and exact matches come first.",
+                "description": "Find a symbol definition by exact or fuzzy name. Use this when you know the symbol name and want the definition. Do not use it for content search; use `search_code` instead. The tool supports exact or fuzzy symbol matching and ranks exact matches above fuzzy matches when both are available. Use `scope` as the canonical input name for the symbol scope. Use this when the scope is a file, directory, or repo root and you want symbol resolution within that scope. Hidden paths are included unless excluded by the default ignore rules; test paths are included by default unless `include_tests` is turned off. Use sequentially when the next navigation step depends on this result; otherwise run independent lookups in parallel. Compact mode returns a standardized envelope with `tool`, `compact`, `query`, `requested_scope`, `resolved_scope`, `items`, `returned_count`, `max_results_used`, `selection`, `selection_excerpt`, `stats`, and `truncated`. In compact mode, symbol matches include defining file, line, column, container/scope, and signature. Ordering is stable and exact matches come first.",
                 "risk": ToolRisk.SAFE,
                 "requires_approval": False,
                 "released": True,
@@ -1166,7 +1256,7 @@ TOOL_REGISTRY = [
             },
             {
                 "name": "find_references",
-                "description": "Find where a symbol is used across the repository for impact analysis. Use this when you want to understand impact before changing a symbol. Do not use it for content search; use `search_code` instead. Use `scope` as the canonical input name for the reference scope. Use this when the scope is a file, directory, or repo root and you want usage references within that scope. Hidden paths are included unless excluded by the default ignore rules; test paths are included by default unless `include_tests` is turned off. Use sequentially and wait for the result before issuing the next navigation call. Compact mode returns a standardized envelope with `tool`, `compact`, `query`, `scope`, `items`, `returned_count`, `max_results_used`, `selection`, `selection_excerpt`, `stats`, and `truncated`, and it omits legacy top-level fields. In compact mode, each reference item includes a short line-numbered excerpt, and the first hit is also surfaced in `selection` and `selection_excerpt`. Ordering is stable and deterministic.",
+                "description": "Find where a symbol is used across the repository for impact analysis. Use this when you want to understand impact before changing a symbol. Do not use it for content search; use `search_code` instead. Use `scope` as the canonical input name for the reference scope. Use this when the scope is a file, directory, or repo root and you want usage references within that scope. Use sequentially when the next navigation step depends on this result; otherwise run independent lookups in parallel. Compact mode returns a standardized envelope with `tool`, `compact`, `query`, `requested_scope`, `resolved_scope`, `items`, `returned_count`, `max_results_used`, `selection`, `selection_excerpt`, `stats`, and `truncated`. In compact mode, each reference item includes a short line-numbered excerpt, and the first hit is also surfaced in `selection` and `selection_excerpt`. Ordering is stable and deterministic.",
                 "risk": ToolRisk.SAFE,
                 "requires_approval": False,
                 "released": True,
@@ -1251,7 +1341,7 @@ TOOL_REGISTRY = [
             },
             {
                 "name": "jump_to_symbol",
-                "description": "Resolve a symbol and return the most relevant definition with nearby context. Use this when you want the best definition plus a small excerpt. Do not use it for content search; use `search_code` instead. Use `scope` as the canonical input name for the symbol scope. Use this when the scope is a file, directory, or repo root and you want the best symbol definition within that scope. Hidden paths are included unless excluded by the default ignore rules; test paths are included by default unless `include_tests` is turned off. Use sequentially and wait for the result before issuing the next navigation call. Compact mode returns a standardized envelope with `tool`, `compact`, `query`, `scope`, `items`, `returned_count`, `max_results_used`, `selection`, `selection_excerpt`, `stats`, and `truncated`, and it omits legacy top-level fields. In compact mode, the selected definition includes defining file, line, column, container/scope, signature, and a short line-numbered excerpt. Ordering is stable and the best match comes first.",
+                "description": "Resolve a symbol and return the most relevant definition with nearby context. Use this when you want the best definition plus a small excerpt. Do not use it for content search; use `search_code` instead. Use `scope` as the canonical input name for the symbol scope. Use this when the scope is a file, directory, or repo root and you want the best symbol definition within that scope. Hidden paths are included unless excluded by the default ignore rules; test paths are included by default unless `include_tests` is turned off. Use sequentially when the next navigation step depends on this result; otherwise run independent lookups in parallel. Compact mode returns a standardized envelope with `tool`, `compact`, `query`, `requested_scope`, `resolved_scope`, `items`, `returned_count`, `max_results_used`, `selection`, `selection_excerpt`, `stats`, and `truncated`. In compact mode, the selected definition includes defining file, line, column, container/scope, signature, and a short line-numbered excerpt; if the source cannot be read, the excerpt may fall back to a one-line symbol marker. Ordering is stable and the best match comes first.",
                 "risk": ToolRisk.SAFE,
                 "requires_approval": False,
                 "released": True,
@@ -1343,6 +1433,10 @@ TOOL_REGISTRY = [
                             "type": "string",
                             "description": "Absolute path or repo-relative path to write.",
                         },
+                        "absolute_root": {
+                            "type": "string",
+                            "description": "Optional absolute base directory for resolving relative paths.",
+                        },
                         "content": {"type": "string"},
                         "overwrite": {
                             "type": "boolean",
@@ -1364,6 +1458,10 @@ TOOL_REGISTRY = [
                         "path": {
                             "type": "string",
                             "description": "Absolute path or repo-relative path to patch.",
+                        },
+                        "absolute_root": {
+                            "type": "string",
+                            "description": "Optional absolute base directory for resolving relative paths.",
                         },
                         "patch_unified": {"type": "string"},
                         "strip_prefix": {"type": "integer", "minimum": 0},
@@ -1388,6 +1486,10 @@ TOOL_REGISTRY = [
                         "path": {
                             "type": "string",
                             "description": "Absolute path or repo-relative path to delete.",
+                        },
+                        "absolute_root": {
+                            "type": "string",
+                            "description": "Optional absolute base directory for resolving relative paths.",
                         },
                         "recursive": {
                             "type": "boolean",
@@ -2199,7 +2301,7 @@ TOOL_REGISTRY = [
             },
             {
                 "name": "search_code",
-                "description": "Search codebase for text patterns/regex. When using regex mode, use `|` for alternatives instead of the word `OR`.",
+                "description": "Search codebase for text patterns/regex. By default the response is the concise result block; pass include_meta=true if you need the policy wrapper. When using regex mode, use `|` for alternatives instead of the word `OR`.",
                 "risk": ToolRisk.ELEVATED,
                 "args_schema": {
                     "type": "object",
@@ -2361,9 +2463,14 @@ for group in TOOL_REGISTRY:
             if existing_schema_description
             else docs
         )
+        tool["description"] = schema["description"]
+        response_fields = _TOOL_RESPONSE_FIELDS.get(tool["name"])
+        if response_fields is not None:
+            tool["response_fields"] = deepcopy(response_fields)
         examples = _TOOL_EXAMPLES.get(tool["name"])
         if examples is not None:
             if isinstance(examples, list):
                 schema["examples"] = deepcopy(examples)
             else:
                 schema["examples"] = [deepcopy(examples)]
+

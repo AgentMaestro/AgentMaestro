@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any, Dict
 
 from django.db import transaction
-import logging
+from logging_utils import get_app_logger
 
 from core.services.limits import LimitExceeded, LimitKey, QUOTA_MANAGER
 from runs.models import AgentRun, AgentStep
@@ -35,7 +35,7 @@ def _build_step_event_payload(step: AgentStep) -> Dict[str, Any]:
     }
 
 
-logger = logging.getLogger(__name__)
+logger = get_app_logger(__name__)
 
 
 @transaction.atomic

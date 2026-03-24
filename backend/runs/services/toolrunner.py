@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-import logging
+from logging_utils import get_app_logger
 
-logger = logging.getLogger(__name__)
+logger = get_app_logger(__name__)
 
 
 def signal_toolrunner_cancel(run_id: str) -> None:

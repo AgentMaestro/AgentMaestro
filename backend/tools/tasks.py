@@ -1,14 +1,13 @@
 from __future__ import annotations
 
-import logging
-
 from celery import shared_task
 from django.utils import timezone
+from logging_utils import get_app_logger
 
 from tools.models import ToolCall
 from tools.services.execution import execute_tool_call
 
-logger = logging.getLogger(__name__)
+logger = get_app_logger(__name__)
 
 
 @shared_task(bind=True, name="tools.execute_tool_call_async", max_retries=2)

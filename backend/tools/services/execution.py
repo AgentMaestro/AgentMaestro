@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import hmac
 import json
-import logging
 import time
 from hashlib import sha256
 from pathlib import Path
@@ -20,8 +19,9 @@ from tools.services.native_tools import execute_native_tool_call
 from tools.services.quotas import acquire_tool_call_slots, release_tool_call_slots
 from tools.services.result_bus import store_tool_result
 from tools.services.tool_validation import ToolArgumentValidationError, validate_required_tool_arguments
+from logging_utils import get_app_logger
 
-logger = logging.getLogger(__name__)
+logger = get_app_logger(__name__)
 _DEFAULT_TOOLRUNNER_SANDBOX_ROOT = Path("C:/tmp/agentmaestro/sandbox")
 _DEFAULT_TOOLRUNNER_HTTP_TIMEOUT_BUFFER_S = 30.0
 _NATIVE_TOOL_NAMES = {

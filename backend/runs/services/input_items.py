@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-import logging
 from typing import Iterable
 
-logger = logging.getLogger(__name__)
+from logging_utils import get_app_logger
+
+logger = get_app_logger(__name__)
 
 
 def build_input_items(

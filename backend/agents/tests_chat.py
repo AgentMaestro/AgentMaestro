@@ -635,8 +635,8 @@ async def test_dispatch_to_provider_http_clears_previous_response_after_final_an
     await consumer._dispatch_to_provider_http()
 
     assert consumer.client.calls == 1
-    assert consumer.session.previous_response_id == ""
-    assert consumer._response_chain_previous_id == ""
+    assert consumer.session.previous_response_id == "resp-final"
+    assert consumer._response_chain_previous_id == "resp-final"
     assert consumer._tool_output_payload is None
 
 
@@ -729,6 +729,71 @@ async def test_dispatch_to_provider_http_fails_over_through_backups(monkeypatch)
     assert consumer.send_json.await_args.kwargs == {}
     assert consumer.send_json.await_args.args[0]["type"] == "message"
     assert consumer.send_json.await_args.args[0]["text"] == "final answer"
+
+
+@pytest.mark.asyncio
+@pytest.mark.django_db(transaction=True)
+async def test_switch_model_candidate_preserves_previous_response_id(monkeypatch):
+    workspace = Workspace.objects.create(name="switch-preserve-ws")
+    owner = get_user_model().objects.create_user(username="switch-preserve-user")
+    agent = Agent.objects.create(
+        workspace=workspace,
+        owner=owner,
+        name="Switch Preserve Agent",
+        soul="Preserve continuity across backup models.",
+        default_model="gpt-5.2",
+        backup_models_json=[
+            {"company": "google", "api": "gemini", "name": "gemini-2.5-pro"},
+        ],
+    )
+    run = AgentRun.objects.create(
+        workspace=workspace,
+        agent=agent,
+        started_by=owner,
+        status=AgentRun.Status.RUNNING,
+        input_text="hello",
+        previous_response_id="resp-preserve",
+    )
+
+    class SwitchClient:
+        def __init__(self):
+            self.transport = "http"
+
+        def resolve_transport(self) -> str:
+            return "http"
+
+        async def complete(self, *args, **kwargs):
+            return {}
+
+    consumer = AgentChatConsumer(
+        scope={"type": "websocket", "user": owner, "url_route": {"kwargs": {"slug": agent.slug}}}
+    )
+    consumer.agent = agent
+    consumer.run = run
+    consumer.run_id = str(run.id)
+    consumer.provider = "openai"
+    consumer.provider_label = "OpenAI"
+    consumer.model_name = "primary-model"
+    consumer.transport = "http"
+    consumer.use_ws = False
+    consumer.client = SwitchClient()
+    consumer.session = SimpleNamespace(previous_response_id="resp-preserve")
+    consumer._response_chain_previous_id = "resp-preserve"
+    consumer._model_candidates = [
+        {"provider": "openai", "model": "primary-model", "source": "primary"},
+        {"provider": "gemini", "model": "gemini-2.5-pro", "source": "backup"},
+    ]
+    consumer._active_model_candidate_index = 0
+    monkeypatch.setattr("agents.consumers.get_client", lambda provider: SwitchClient())
+    set_previous_response_id = AsyncMock()
+    monkeypatch.setattr("agents.consumers._set_run_previous_response_id", set_previous_response_id)
+
+    switched = await consumer._switch_model_candidate(1)
+
+    assert switched is True
+    assert consumer.session.previous_response_id == "resp-preserve"
+    assert consumer._response_chain_previous_id == "resp-preserve"
+    set_previous_response_id.assert_awaited_once_with(str(run.id), "resp-preserve")
 
 
 @pytest.mark.asyncio

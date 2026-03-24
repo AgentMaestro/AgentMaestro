@@ -1,9 +1,8 @@
 from __future__ import annotations
 
-import logging
-
 from celery import shared_task
 from django.conf import settings
+from logging_utils import get_app_logger
 
 from memory.models import ScheduledTask
 from memory.retention import (
@@ -20,7 +19,7 @@ from memory.scheduled_tasks import (
 from runs.models import AgentRun
 from runs.services.headless import launch_scheduled_task_run
 
-logger = logging.getLogger(__name__)
+logger = get_app_logger(__name__)
 
 
 @shared_task(name="memory.tasks.run_due_scheduled_tasks")

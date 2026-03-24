@@ -4,6 +4,7 @@ from typing import Any, Dict, Optional
 
 from channels.db import database_sync_to_async
 from channels.generic.websocket import AsyncJsonWebsocketConsumer
+from logging_utils import scrub_sensitive_value
 
 from core.models import WorkspaceMembership
 from core.services.limits import LimitExceeded, LimitKey, QUOTA_MANAGER
@@ -52,7 +53,9 @@ def _has_workspace_membership(user_id: int, workspace_id: str) -> bool:
 
 
 @database_sync_to_async
-def _fetch_run_and_membership(run_id: str, user_id: int) -> tuple[Optional[AgentRun], Optional[WorkspaceMembership]]:
+def _fetch_run_and_membership(
+    run_id: str, user_id: int
+) -> tuple[Optional[AgentRun], Optional[WorkspaceMembership]]:
     try:
         run = AgentRun.objects.select_related("workspace").get(id=run_id)
     except AgentRun.DoesNotExist:
@@ -71,6 +74,9 @@ class WorkspaceConsumer(AsyncJsonWebsocketConsumer):
     workspace_conn_acquired: bool = False
     user_conn_acquired: bool = False
     user_id: Optional[int] = None
+
+    async def send_json(self, content, close=False):
+        await super().send_json(scrub_sensitive_value(content), close=close)
 
     async def connect(self):
         user = self.scope.get("user")
@@ -117,9 +123,13 @@ class WorkspaceConsumer(AsyncJsonWebsocketConsumer):
 
     async def disconnect(self, close_code):
         if self.workspace_id:
-            await self.channel_layer.group_discard(group_workspace(self.workspace_id), self.channel_name)
+            await self.channel_layer.group_discard(
+                group_workspace(self.workspace_id), self.channel_name
+            )
         if self.approvals_subscribed:
-            await self.channel_layer.group_discard(group_approvals(self.workspace_id), self.channel_name)
+            await self.channel_layer.group_discard(
+                group_approvals(self.workspace_id), self.channel_name
+            )
         if self.workspace_conn_acquired and self.workspace_id:
             QUOTA_MANAGER.release_concurrency(
                 self.workspace_id, LimitKey.WS_CONNECTIONS_WORKSPACE, self.channel_name
@@ -176,7 +186,9 @@ class WorkspaceConsumer(AsyncJsonWebsocketConsumer):
     async def _unsubscribe_approvals(self):
         if not self.workspace_id or not self.approvals_subscribed:
             return
-        await self.channel_layer.group_discard(group_approvals(self.workspace_id), self.channel_name)
+        await self.channel_layer.group_discard(
+            group_approvals(self.workspace_id), self.channel_name
+        )
         self.approvals_subscribed = False
         await self.send_json(
             make_approvals_push(
@@ -209,6 +221,9 @@ class RunConsumer(AsyncJsonWebsocketConsumer):
     workspace_conn_acquired: bool = False
     user_conn_acquired: bool = False
     user_id: Optional[int] = None
+
+    async def send_json(self, content, close=False):
+        await super().send_json(scrub_sensitive_value(content), close=close)
 
     async def connect(self):
         user = self.scope.get("user")

@@ -11,6 +11,7 @@ from typing import Any, Callable, Dict, List, Sequence
 
 from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
+from logging_utils import scrub_sensitive_text
 
 from llm.models import AgentRole, LLMModelProfile, LLMRun, MessageRole
 from llm.services.runner import LLMRunner
@@ -238,7 +239,7 @@ class Command(BaseCommand):
         runner = LLMRunner()
         sanity = asyncio.run(runner.run(prompt="Say 'hi'", profile_name=profile.name, tools=None))
         if sanity["status"] != "completed":
-            self.stdout.write(f"Sanity check failed run_id={sanity['run_id']} error={sanity['error']}")
+            self.stdout.write(scrub_sensitive_text(f"Sanity check failed run_id={sanity['run_id']} error={sanity['error']}"))
             raise CommandError("Unable to complete a simple OpenAI call; check API/model/base_url")
         failures: list[str] = []
         for scenario in SCENARIOS:
@@ -260,30 +261,30 @@ class Command(BaseCommand):
             fails = scenario.verify(result, tool_names, denials, run)
             tool_calls_label = ", ".join(tool_names)
             final_output = (result.get("text") or "").strip()
-            self.stdout.write(f"\nScenario: {scenario.name} {'PASS' if not fails else 'FAIL'}")
-            self.stdout.write(f"  run_id={result['run_id']}")
-            self.stdout.write(f"  tool_calls={result.get('tool_calls_executed')} [{tool_calls_label}]")
-            self.stdout.write(f"  denials={len(denials)}")
-            self.stdout.write(f"  final_output={final_output[:200]}")
+            self.stdout.write(scrub_sensitive_text(f"\nScenario: {scenario.name} {'PASS' if not fails else 'FAIL'}"))
+            self.stdout.write(scrub_sensitive_text(f"  run_id={result['run_id']}"))
+            self.stdout.write(scrub_sensitive_text(f"  tool_calls={result.get('tool_calls_executed')} [{tool_calls_label}]"))
+            self.stdout.write(scrub_sensitive_text(f"  denials={len(denials)}"))
+            self.stdout.write(scrub_sensitive_text(f"  final_output={final_output[:200]}"))
             if fails:
                 for reason in fails:
-                    self.stdout.write(f"    failure: {reason}")
-                self.stdout.write(f"  run_error={run.error}")
-                self.stdout.write(f"  provider_meta={run.provider_meta}")
+                    self.stdout.write(scrub_sensitive_text(f"    failure: {reason}"))
+                self.stdout.write(scrub_sensitive_text(f"  run_error={run.error}"))
+                self.stdout.write(scrub_sensitive_text(f"  provider_meta={run.provider_meta}"))
                 self.stdout.write("  tool call history:")
                 for call in run.tool_calls.order_by("created_at"):
                     args_str = json.dumps(call.arguments or {}, ensure_ascii=False)
                     result_str = json.dumps(call.result or {}, ensure_ascii=False)
-                    self.stdout.write(f"    {call.tool_name}: args={_truncate(args_str, 300)}")
-                    self.stdout.write(f"      error={call.error or '<none>'}")
-                    self.stdout.write(f"      result={_truncate(result_str, 800)}")
+                    self.stdout.write(scrub_sensitive_text(f"    {call.tool_name}: args={_truncate(args_str, 300)}"))
+                    self.stdout.write(scrub_sensitive_text(f"      error={call.error or '<none>'}"))
+                    self.stdout.write(scrub_sensitive_text(f"      result={_truncate(result_str, 800)}"))
                     tool_message = (
                         run.messages.filter(role=MessageRole.TOOL, meta__tool_call_id=call.id)
                         .order_by("created_at")
                         .last()
                     )
                     if tool_message:
-                        self.stdout.write(f"      tool message={_truncate(tool_message.content or '', 800)}")
+                        self.stdout.write(scrub_sensitive_text(f"      tool message={_truncate(tool_message.content or '', 800)}"))
                 failures.append(scenario.name)
         if failures:
             raise CommandError(f"llm_toolloop_real_smoke failed: {len(failures)} scenarios failed")

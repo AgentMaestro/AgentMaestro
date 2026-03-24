@@ -2,8 +2,6 @@ from __future__ import annotations
 
 from typing import Iterable, Optional
 
-import logging
-
 from django.conf import settings
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
@@ -20,8 +18,9 @@ from comms.models import PendingPairing, Transport, TransportEndpoint, generate_
 from comms.services.outbound import get_telegram_bot_info, send_telegram_text
 from control.models import ControlConversation, ControlMessage
 from control.services.messaging import broadcast_control_message
+from logging_utils import get_app_logger, scrub_sensitive_text
 
-logger = logging.getLogger(__name__)
+logger = get_app_logger(__name__)
 
 
 def _format_telegram_error(exc: httpx.HTTPStatusError) -> str:
@@ -70,7 +69,9 @@ def chat_detail(request, uuid):
 @login_required
 def telegram_chat(request):
     conversations = (
-        ControlConversation.objects.filter(kind="comms_mirror", comms_conversation__transport__key="telegram")
+        ControlConversation.objects.filter(
+            kind="comms_mirror", comms_conversation__transport__key="telegram"
+        )
         .order_by("-updated_at")
         .select_related("comms_conversation")
     )
@@ -85,20 +86,21 @@ def chat_send(request, uuid):
     text = request.POST.get("message", "").strip()
     if not text:
         return redirect(reverse("control:chat_detail", kwargs={"uuid": uuid}))
+    safe_text = scrub_sensitive_text(text)
 
     message = ControlMessage.objects.create(
         conversation=conversation,
         direction="out",
         author_type="operator",
         author_label=request.user.get_username(),
-        text=text,
+        text=safe_text,
     )
     broadcast_control_message(message)
 
     comms = getattr(conversation, "comms_conversation", None)
     if comms and comms.transport.key == "telegram" and comms.external_conversation_id:
         try:
-            send_telegram_text(comms, text, actor_label=request.user.get_username())
+            send_telegram_text(comms, safe_text, actor_label=request.user.get_username())
         except httpx.HTTPStatusError as exc:
             detail = _format_telegram_error(exc)
             logger.warning(
@@ -142,7 +144,9 @@ def connect_telegram(request, agent_uuid):
             {
                 "bot_token_env": bot_token_env,
                 "allow_user_ids": allow_user_ids,
-                "webhook_secret": str(draft_config.get("webhook_secret") or generate_callback_token(20)),
+                "webhook_secret": str(
+                    draft_config.get("webhook_secret") or generate_callback_token(20)
+                ),
             }
         )
         draft_config.pop("agent_id", None)
@@ -158,23 +162,32 @@ def connect_telegram(request, agent_uuid):
             messages.error(request, f"Unable to validate Telegram token: {detail}")
         else:
             bot_username = bot_data.get("username") or ""
-            bot_display_name = " ".join(
-                filter(
-                    None,
-                    [
-                        bot_data.get("first_name"),
-                        bot_data.get("last_name"),
-                    ],
-                )
-            ).strip() or bot_username
+            bot_display_name = (
+                " ".join(
+                    filter(
+                        None,
+                        [
+                            bot_data.get("first_name"),
+                            bot_data.get("last_name"),
+                        ],
+                    )
+                ).strip()
+                or bot_username
+            )
             endpoint = _find_shared_endpoint_for_bot(
                 transport=transport,
                 bot_id=str(bot_data.get("id") or ""),
                 bot_username=bot_username,
                 bot_token_env=bot_token_env,
-            ) or (endpoint if endpoint and endpoint.pk else TransportEndpoint(transport=transport, kind="bot"))
+            ) or (
+                endpoint
+                if endpoint and endpoint.pk
+                else TransportEndpoint(transport=transport, kind="bot")
+            )
             config = dict(endpoint.config or {})
-            merged_allowed_ids = sorted({*map(str, config.get("allow_user_ids") or []), *allow_user_ids})
+            merged_allowed_ids = sorted(
+                {*map(str, config.get("allow_user_ids") or []), *allow_user_ids}
+            )
             config.update(
                 {
                     "bot_token_env": bot_token_env,
@@ -182,7 +195,11 @@ def connect_telegram(request, agent_uuid):
                     "bot_id": bot_data.get("id"),
                     "bot_username": bot_username,
                     "bot_name": bot_display_name,
-                    "webhook_secret": str(config.get("webhook_secret") or draft_config.get("webhook_secret") or generate_callback_token(20)),
+                    "webhook_secret": str(
+                        config.get("webhook_secret")
+                        or draft_config.get("webhook_secret")
+                        or generate_callback_token(20)
+                    ),
                 }
             )
             config.pop("agent_id", None)
@@ -201,9 +218,7 @@ def connect_telegram(request, agent_uuid):
                 "name": bot_display_name,
             }
             pairing = _pending_pairing_for_agent(agent, endpoint)
-            pairing_status_url = reverse(
-                "ui:pairing_status", kwargs={"pairing_uuid": pairing.uuid}
-            )
+            pairing_status_url = reverse("ui:pairing_status", kwargs={"pairing_uuid": pairing.uuid})
             webhook_url = _telegram_webhook_url(endpoint)
             webhook_secret = _telegram_webhook_secret(endpoint)
 
@@ -266,11 +281,7 @@ def _find_agent_endpoint(agent: Agent, transport: Transport) -> Optional[Transpo
     )
     if pairing is not None:
         return pairing.endpoint
-    return (
-        TransportEndpoint.objects.filter(transport=transport, kind="bot")
-        .order_by("-id")
-        .first()
-    )
+    return TransportEndpoint.objects.filter(transport=transport, kind="bot").order_by("-id").first()
 
 
 def _find_shared_endpoint_for_bot(

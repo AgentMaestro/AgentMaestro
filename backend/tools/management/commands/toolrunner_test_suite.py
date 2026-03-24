@@ -22,6 +22,7 @@ from typing import Any, Dict, List, Optional
 import httpx
 from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
+from logging_utils import scrub_sensitive_text
 
 
 class Command(BaseCommand):
@@ -57,7 +58,7 @@ class Command(BaseCommand):
         failures = [msg for name, success, msg in results if not success]
         for name, success, msg in results:
             style = self.style.SUCCESS if success else self.style.ERROR
-            self.stdout.write(style(f"{name}: {msg}"))
+            self.stdout.write(style(scrub_sensitive_text(f"{name}: {msg}")))
         if failures:
             raise CommandError("Some ToolRunner bridge checks failed; see output above.")
 
@@ -102,16 +103,16 @@ class Command(BaseCommand):
             response.raise_for_status()
         except httpx.HTTPStatusError as exc:  # pragma: no cover - best effort logging
             err_msg = f"ToolRunner returned {exc.response.status_code}"
-            self.stderr.write(self.style.ERROR(f"[toolrunner_test_suite] {tool_name} {err_msg}"))
-            self.stderr.write(self.style.ERROR(f"[toolrunner_test_suite] Request body: {body.decode('utf-8', errors='ignore')}"))
-            self.stderr.write(self.style.ERROR(f"[toolrunner_test_suite] Response body: {exc.response.text}"))
+            self.stderr.write(self.style.ERROR(scrub_sensitive_text(f"[toolrunner_test_suite] {tool_name} {err_msg}")))
+            self.stderr.write(self.style.ERROR(scrub_sensitive_text(f"[toolrunner_test_suite] Request body: {body.decode('utf-8', errors='ignore')}")))
+            self.stderr.write(self.style.ERROR(scrub_sensitive_text(f"[toolrunner_test_suite] Response body: {exc.response.text}")))
             return {
                 "ok": False,
                 "error": {"message": err_msg, "status_code": exc.response.status_code, "body": exc.response.text},
             }
         except httpx.RequestError as exc:  # pragma: no cover
             err_msg = f"ToolRunner request failed: {exc}"
-            self.stderr.write(self.style.ERROR(f"[toolrunner_test_suite] {tool_name} {err_msg}"))
+            self.stderr.write(self.style.ERROR(scrub_sensitive_text(f"[toolrunner_test_suite] {tool_name} {err_msg}")))
             return {
                 "ok": False,
                 "error": {"message": err_msg},

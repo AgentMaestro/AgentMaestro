@@ -1,17 +1,16 @@
 # backend/runs/tasks.py
 from __future__ import annotations
 
-import logging
-
 from agentmaestro.celery import app
 from django.conf import settings
+from logging_utils import get_app_logger
 from runs.models import AgentRun
 from runs.services.checkpoints import archive_completed_runs
 from runs.services.headless import execute_headless_run as execute_headless_run_service
 from runs.services.recovery import handle_run_failure
 from runs.services.ticker import run_tick as run_tick_service
 
-logger = logging.getLogger(__name__)
+logger = get_app_logger(__name__)
 
 
 @app.task(bind=True, name="runs.tasks.run_tick", max_retries=5)

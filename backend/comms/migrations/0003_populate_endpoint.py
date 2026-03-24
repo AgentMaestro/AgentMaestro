@@ -1,8 +1,9 @@
 import logging
 
 from django.db import migrations
+from logging_utils import get_app_logger
 
-logger = logging.getLogger("comms.migrations")
+logger = get_app_logger("comms.migrations")
 
 
 def _populate_endpoints(apps, schema_editor):

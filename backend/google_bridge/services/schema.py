@@ -2,14 +2,30 @@ from __future__ import annotations
 
 from copy import deepcopy
 
+GOOGLE_BRIDGE_QUERY_LANGUAGE_OVERVIEW = (
+    "The query field is parsed by a generic google_bridge query language with AND, OR, NOT, and parentheses. "
+    "Grouped alternation is allowed inside fielded clauses such as from:(dsmith@aol.com OR dsmyth@aol.com) or to:(sktennis7@gmail.com OR kissinger.scott@gmail.com). "
+    "The bridge compiles the query into one or more concrete backend calls. "
+    "Use | only for regex search tools, not Google bridge queries. "
+)
+
+GOOGLE_BRIDGE_QUERY_LANGUAGE_FIELD_SUPPORT = (
+    "Supported query and payload fields vary by surface: Gmail list/read currently uses from, to, subject, label_ids, in, is, newer_than, and older_than in the query string; Gmail write and cleanup flows also accept message_id when targeting a single message. "
+    "Calendar list/read supports q in the query string and the bridge compiles grouped boolean clauses into one or more backend calls; Calendar create/update/delete expose separate payload fields. Documented Calendar fields include calendar_id, q, time_min, time_max, updated_min, summary, description, location, start, end, time_zone, attendees, send_updates, and event_id. "
+    "Future Google surfaces will register their own supported query fields in the bridge contract."
+)
+
 GOOGLE_BRIDGE_TOOL_NAME = "google_bridge"
 GOOGLE_BRIDGE_TOOL_GROUP_NAME = "Google Bridge"
 GOOGLE_BRIDGE_TOOL_DESCRIPTION = (
     "Read and write Google Gmail and Calendar data through a JSON bridge, with Gmail draft/send workflows supported. "
     "Use this tool directly for live reads and Gmail draft/send/trash/delete workflows; the same payload shape is reused by scheduled headless runs. "
     "Gmail draft, send, trash, and delete workflows are supported. Preferred Gmail write flow is to create a draft first, then send that draft when ready. Preferred Gmail deletion flow is to trash first unless permanent deletion is explicitly intended. Calendar create, update, and delete workflows are supported. Use local time for Calendar inputs, and keep the same time zone convention across create/update calls. "
-    "For Gmail, bare list operations default to unread messages. Gmail list rows include message IDs, sender, subject, date, and snippet so the agent can inspect mail without a follow-up read. Use include_read=true when you want all Gmail messages instead of unread-only mail. Gmail list/read query filters support exact sender, sender domain, subject, and top-level OR splitting across those clauses. Calendar list reads inspect all calendars on the connected account unless a specific calendar_id is supplied. "
-    "Use the account_email or google_subject returned by the list step when you do the follow-up read. For trash/delete, do not use read as a lookup step. Use the latest list result's message_id directly when possible. For Gmail reads, use list with query filters such as from:info@airbnb.com for exact sender search, from:airbnb.com for sender-domain search, subject:(\"Airbnb\") for subject search, and label_ids or include_read for inbox/mailbox filtering. OR is supported for Gmail list/read searches and bulk trash/delete cleanup only at the top level, where it is split into separate Gmail clauses before merging or deleting. Nested OR inside parentheses is rejected as malformed. Trash is the safe default; set delete_mode=delete only when you explicitly want permanent deletion. When deleting many messages by query, use action_kind=delete with operation=trash (or omit operation and let it default) plus the appropriate Gmail query. If you need multiple cleanup targets in one call, you may join them with ` OR ` and the bridge will split them into separate Gmail delete clauses as long as each clause is a complete top-level search. The bridge caps Gmail OR fan-out at 10 top-level clauses by default; set `TOOLRUNNER_GMAIL_OR_CLAUSE_LIMIT` to adjust it. If the agent accidentally writes `from:@domain.com` or adds stray spaces after query tokens, the bridge normalizes that to the canonical Gmail form. Use account_scope=all when you want that query-based cleanup to fan out across every active connected account in the workspace. "
+    "For Gmail, bare list operations default to unread messages. Gmail list rows include message IDs, sender, subject, date, and snippet so the agent can inspect mail without a follow-up read. Use include_read=true when you want all Gmail messages instead of unread-only mail. Gmail list/read query filters support exact sender, sender domain, subject, and grouped boolean expressions compiled by the bridge planner. Calendar list/read queries use the q field and support the same boolean planner for grouped search terms. "
+    f"{GOOGLE_BRIDGE_QUERY_LANGUAGE_OVERVIEW}"
+    f"{GOOGLE_BRIDGE_QUERY_LANGUAGE_FIELD_SUPPORT} "
+    "Calendar list reads inspect all calendars on the connected account unless a specific calendar_id is supplied. "
+    "Use the account_email or google_subject returned by the list step when you do the follow-up read. For trash/delete, do not use read as a lookup step. Use the latest list result's message_id directly when possible. For Gmail reads, use list with query filters such as from:info@airbnb.com for exact sender search, from:airbnb.com for sender-domain search, subject:Airbnb for subject search, and label_ids or include_read for inbox/mailbox filtering. The bridge planner compiles grouped boolean expressions into one or more concrete Gmail queries and merges the results. Trash is the safe default; set delete_mode=delete only when you explicitly want permanent deletion. When deleting many messages by query, use action_kind=delete with operation=trash (or omit operation and let it default) plus the appropriate Gmail query. If you need multiple cleanup targets in one call, the bridge will fan out grouped `OR` clauses into multiple Gmail delete clauses as long as the overall expression stays within the clause cap. The bridge caps Google query fan-out at 10 expanded clauses by default; set `GOOGLE_BRIDGE_QUERY_CLAUSE_LIMIT` or `TOOLRUNNER_GMAIL_OR_CLAUSE_LIMIT` to adjust it. If the agent accidentally writes `from:@domain.com` or adds stray spaces after query tokens, the bridge normalizes that to the canonical Gmail form. Use account_scope=all when you want that query-based cleanup to fan out across every active connected account in the workspace. "
     "Calendar queries are local-time oriented: use the user's local time first, not GMT or Zulu, unless you convert from local time before querying. "
     "If a timezone is omitted, the bridge assumes the local Tango timezone from `TIME_ZONE` / `settings.TIME_ZONE`. "
     "If the user's local time is unknown, assume Eastern Time (EST/EDT as appropriate for daylight savings). "
@@ -41,7 +57,7 @@ def _google_bridge_step_schema() -> dict[str, object]:
                 "type": "string",
                 "enum": ["list", "read", "create", "update", "send", "trash", "delete"],
                 "default": "list",
-                "description": "Current supported values: read, list, draft, send, create, update, delete. Use read/list with query filters for Gmail searches: from:info@airbnb.com for exact sender, from:airbnb.com for sender-domain, subject:(\"Airbnb\") for subject, plus label_ids or include_read for mailbox filtering. Use create for Gmail drafts or Calendar creates, update for Calendar edits, send for Gmail delivery, trash to move a Gmail message to trash, and delete for permanent Gmail or Calendar deletion. For Gmail delete workflows, trash is the default safe behavior; set delete_mode=delete only when you explicitly want permanent deletion. OR is supported for Gmail list/read searches and bulk trash/delete cleanup only at the top level, where it is split into separate Gmail clauses before merging or deleting. Nested OR inside parentheses is rejected as malformed. For bulk cleanup, use the query that matches your intent: subject:(\"Airbnb\") for subject-based cleanup, from:info@airbnb.com for exact sender cleanup, and from:airbnb.com for sender-domain cleanup. In each case, use action_kind=delete with operation=trash (or omit operation and let it default) for trash-first cleanup, or operation=delete / delete_mode=delete for permanent deletion. If you need multiple cleanup targets in one call, you may join them with OR and the bridge will split them into separate Gmail clauses as long as each clause is a complete top-level search. The bridge caps Gmail OR fan-out at 10 top-level clauses by default; set TOOLRUNNER_GMAIL_OR_CLAUSE_LIMIT to adjust it. Use account_scope=all when you want that query-based cleanup to fan out across every active connected account in the workspace. For Gmail writes, create the draft first, then send that draft by supplying draft_id.",
+                "description": "Current supported values: read, list, draft, send, create, update, delete. Use read/list with query filters for Gmail searches: from:info@airbnb.com for exact sender, from:airbnb.com for sender-domain, subject:Airbnb for subject, plus label_ids or include_read for mailbox filtering. Use create for Gmail drafts or Calendar creates, update for Calendar edits, send for Gmail delivery, trash to move a Gmail message to trash, and delete for permanent Gmail or Calendar deletion. For Gmail delete workflows, trash is the default safe behavior; set delete_mode=delete only when you explicitly want permanent deletion. The bridge planner compiles grouped boolean expressions into one or more concrete Gmail clauses before merging or deleting results. For bulk cleanup, use the query that matches your intent: subject:Airbnb for subject-based cleanup, from:info@airbnb.com for exact sender cleanup, and from:airbnb.com for sender-domain cleanup. In each case, use action_kind=delete with operation=trash (or omit operation and let it default) for trash-first cleanup, or operation=delete / delete_mode=delete for permanent deletion. If you need multiple cleanup targets in one call, the bridge will fan out grouped OR clauses into multiple Gmail delete clauses as long as the overall expression stays within the clause cap. The bridge caps Google query fan-out at 10 expanded clauses by default; set GOOGLE_BRIDGE_QUERY_CLAUSE_LIMIT or TOOLRUNNER_GMAIL_OR_CLAUSE_LIMIT to adjust it. Use account_scope=all when you want that query-based cleanup to fan out across every active connected account in the workspace. For Gmail writes, create the draft first, then send that draft by supplying draft_id.",
             },
             "account_scope": {
                 "type": "string",
@@ -59,7 +75,7 @@ def _google_bridge_step_schema() -> dict[str, object]:
             },
             "query": {
                 "type": "string",
-                "description": "Gmail search query string. Use Gmail list to collect message IDs, sender, subject, date, and snippet. Bare Gmail list defaults to unread messages when no query or label filter is supplied. For Gmail reads, use query filters such as from:info@airbnb.com for exact sender, from:airbnb.com for sender-domain, subject:(\"Airbnb\") for subject search, plus label_ids or include_read for mailbox filtering. Gmail list/read also supports top-level OR splitting across those clauses, so you can combine multiple sender, sender-domain, or subject filters in one read query. Nested OR inside parentheses is rejected as malformed. For trash/delete, do not use read as a lookup step. OR is also supported for bulk trash/delete cleanup at the top level, where it is split into separate delete clauses. When deleting by query, action_kind=delete with operation=trash is the safe default. Use account_scope=all when you want the same query to apply across every active connected account. If you need multiple cleanup targets in one call, join them with ` OR ` and the bridge will split them into separate Gmail delete clauses as long as each clause is complete. Gmail OR fan-out is capped at 10 top-level clauses by default; set TOOLRUNNER_GMAIL_OR_CLAUSE_LIMIT to adjust it. If the agent accidentally writes `from:@domain.com` or adds stray spaces after query tokens, the bridge normalizes that to the canonical Gmail form.",
+                "description": "Google bridge query string. The query language supports AND, OR, NOT, and parentheses, and grouped OR is allowed inside fielded clauses such as from:(dsmith@aol.com OR dsmyth@aol.com) or to:(sktennis7@gmail.com OR kissinger.scott@gmail.com). Use | only for regex search tools, not Google bridge queries. Supported query fields vary by surface: Gmail list/read currently uses from, to, subject, label_ids, in, is, newer_than, and older_than; Calendar list/read supports q; future surfaces will register their own supported fields. The bridge compiles this query language into one or more concrete backend calls, so grouped OR clauses may fan out into multiple requests and NOT stays part of the compiled plan. Use Gmail list to collect message IDs, sender, subject, date, and snippet. Bare Gmail list defaults to unread messages when no query or label filter is supplied. For Gmail reads, use query filters such as from:info@airbnb.com for exact sender, from:airbnb.com for sender-domain, subject:Airbnb for subject search, plus label_ids or include_read for mailbox filtering. For Calendar list/read, use q for grouped event search terms such as q:(team sync OR planning). When the compiled query expands to multiple concrete searches, the bridge merges the results and deduplicates ids. For trash/delete, do not use read as a lookup step. When deleting by query, action_kind=delete with operation=trash is the safe default. Use account_scope=all when you want the same query to apply across every active connected account. Google query fan-out is capped at 10 expanded clauses by default; set GOOGLE_BRIDGE_QUERY_CLAUSE_LIMIT or TOOLRUNNER_GMAIL_OR_CLAUSE_LIMIT to adjust it. If the agent accidentally writes `from:@domain.com` or adds stray spaces after query tokens, the bridge normalizes that to the canonical Gmail form.",
             },
             "include_read": {
                 "type": "boolean",
@@ -111,7 +127,7 @@ def _google_bridge_step_schema() -> dict[str, object]:
                 "type": "integer",
                 "minimum": 1,
                 "default": 20,
-                "description": "Maximum rows to return for Gmail list or Calendar list. For Gmail, list defaults to unread messages and returns message IDs plus sender, subject, date, and snippet; set include_read=true to include already-read mail. Gmail list/read will page through results until this cap is reached, so you may set any positive number.",
+                "description": "Maximum rows to return for Gmail list or Calendar list. For Gmail, list defaults to unread messages and returns message IDs plus sender, subject, date, and snippet; set include_read=true to include already-read mail. Gmail list/read will page through results until this cap is reached, so you may set any positive number. Calendar list/read applies the same cap after query fan-out and calendar merging.",
             },
             "message_id": {
                 "type": "string",
@@ -119,7 +135,7 @@ def _google_bridge_step_schema() -> dict[str, object]:
             },
             "calendar_id": {
                 "type": "string",
-                "description": "Optional calendar identifier. Calendar list queries use local-time bounds. If you omit calendar_id for a Calendar list read, the bridge queries all calendars on the connected account. For create/update/delete writes, this targets the specific calendar. Use primary for the main calendar or all to request all calendars when listing.",
+                "description": "Optional calendar identifier. Calendar list queries use local-time bounds and support q for event search terms. If you omit calendar_id for a Calendar list read, the bridge queries all calendars on the connected account. For create/update/delete writes, this targets the specific calendar. Use primary for the main calendar or all to request all calendars when listing.",
             },
             "summary": {
                 "type": "string",
@@ -143,7 +159,7 @@ def _google_bridge_step_schema() -> dict[str, object]:
             },
             "time_zone": {
                 "type": "string",
-                "description": "Calendar mutation field. IANA time zone name for calendar writes. Use the user's local time zone; if unknown, default to the local Tango timezone from `TIME_ZONE` / `settings.TIME_ZONE`.",
+                "description": "Calendar mutation field. IANA time zone name for calendar writes. Use the user's local time zone; if unknown, default to the local Tango timezone from `TIME_ZONE` / `settings.TIME_ZONE` (America/New_York by default in this project).",
             },
             "attendees": {
                 "type": "array",
@@ -218,6 +234,39 @@ GOOGLE_BRIDGE_TOOL_EXAMPLES = [
         "resource_kind": "gmail",
         "action_kind": "read",
         "operation": "list",
+        "account_scope": "primary",
+        "email": "dev.agent.maestro@gmail.com",
+        "include_read": True,
+        "query": "from:(dsmith@aol.com OR dsmyth@aol.com)",
+        "max_results": 20,
+    },
+    {
+        "integration_kind": "google",
+        "resource_kind": "gmail",
+        "action_kind": "read",
+        "operation": "list",
+        "account_scope": "primary",
+        "email": "dev.agent.maestro@gmail.com",
+        "include_read": True,
+        "query": "to:(sktennis7@gmail.com OR kissinger.scott@gmail.com)",
+        "max_results": 20,
+    },
+    {
+        "integration_kind": "google",
+        "resource_kind": "gmail",
+        "action_kind": "read",
+        "operation": "list",
+        "account_scope": "primary",
+        "email": "dev.agent.maestro@gmail.com",
+        "include_read": True,
+        "query": "subject:(invoice OR receipt) AND NOT label_ids:promotions",
+        "max_results": 20,
+    },
+    {
+        "integration_kind": "google",
+        "resource_kind": "gmail",
+        "action_kind": "read",
+        "operation": "list",
         "account_scope": "all",
         "include_read": True,
         "query": "from:info@airbnb.com OR from:airbnb.com OR subject:(\"Airbnb\")",
@@ -253,6 +302,18 @@ GOOGLE_BRIDGE_TOOL_EXAMPLES = [
         "time_min": "2026-03-20T00:00:00-04:00",
         "time_max": "2026-03-21T00:00:00-04:00",
         "max_results": 5,
+    },
+    {
+        "integration_kind": "google",
+        "resource_kind": "calendar",
+        "action_kind": "read",
+        "operation": "list",
+        "account_scope": "primary",
+        "calendar_id": "primary",
+        "query": "q:(team sync OR planning)",
+        "time_min": "2026-03-20T00:00:00-04:00",
+        "time_max": "2026-03-21T00:00:00-04:00",
+        "max_results": 10,
     },
     {
         "integration_kind": "google",

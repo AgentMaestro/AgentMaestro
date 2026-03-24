@@ -173,6 +173,16 @@ def test_openai_previous_response_not_found_detection_handles_http_errors():
     assert client.is_previous_response_not_found(_FakeHttpPreviousResponseNotFound())
 
 
+def test_openai_previous_response_not_found_detection_handles_missing_tool_output():
+    client = OpenAIClient.__new__(OpenAIClient)
+
+    class _FakeMissingToolOutput(Exception):
+        def __str__(self):
+            return "No tool output found for function call call_abc123."
+
+    assert client.is_previous_response_not_found(_FakeMissingToolOutput())
+
+
 def test_openai_base_url_is_normalized_to_v1(monkeypatch):
     monkeypatch.setattr(settings, "OPENAI_BASE_URL", "https://api.openai.com", raising=False)
     monkeypatch.delenv("OPENAI_BASE_URL", raising=False)

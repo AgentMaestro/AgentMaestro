@@ -3,6 +3,7 @@ import json
 from typing import Any
 
 from django.core.management.base import BaseCommand
+from logging_utils import scrub_sensitive_text, scrub_sensitive_value
 
 from llm.services.toolrunner_bridge import run_tool
 
@@ -35,11 +36,11 @@ class Command(BaseCommand):
 
         async def _run():
             result = await run_tool("repo_tree", payload)
-            self.stdout.write("ok=%s" % result.get("ok"))
-            self.stdout.write("error=%s" % result.get("error"))
-            pretty = json.dumps(result.get("result"), indent=2, ensure_ascii=False)
-            self.stdout.write(pretty)
+            self.stdout.write(scrub_sensitive_text("ok=%s" % result.get("ok")))
+            self.stdout.write(scrub_sensitive_text("error=%s" % result.get("error")))
+            pretty = json.dumps(scrub_sensitive_value(result.get("result")), indent=2, ensure_ascii=False)
+            self.stdout.write(scrub_sensitive_text(pretty))
             meta = result.get("meta", {})
-            self.stdout.write("meta=%s" % json.dumps(meta, indent=2, ensure_ascii=False))
+            self.stdout.write(scrub_sensitive_text("meta=%s" % json.dumps(scrub_sensitive_value(meta), indent=2, ensure_ascii=False)))
 
         asyncio.run(_run())

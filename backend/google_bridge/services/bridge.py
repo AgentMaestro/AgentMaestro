@@ -12,6 +12,8 @@ from django.utils import timezone
 from core.services.timezones import get_local_timezone_name
 from google_bridge.models import GoogleAccount
 from google_bridge.services.client import GoogleBridgeClient
+from google_bridge.services.query_language import QueryLanguageError
+from google_bridge.services.query_planner import QueryPlannerError, plan_google_query
 
 
 class GoogleBridgeTaskError(RuntimeError):
@@ -189,7 +191,7 @@ def _execute_google_task_for_account(
             deleted_ids: list[str] = []
             if not message_id:
                 query = str(normalized.get("query") or "").strip()
-                queries = _expand_gmail_query_clauses(query)
+                queries = _google_query_clauses(normalized)
                 if not query:
                     raise GoogleBridgeTaskError(
                         "gmail delete tasks require message_id or a Gmail query. "
@@ -210,14 +212,22 @@ def _execute_google_task_for_account(
                     else:
                         client.delete_gmail_message(resolved_id)
                 if deleted_ids:
-                    data = {"deleted_message_ids": deleted_ids, "matched_queries": queries}
+                    data = {
+                        "deleted_message_ids": deleted_ids,
+                        "matched_queries": queries,
+                        "query_plan": normalized.get("_google_query_plan") or {},
+                    }
                     summary_text = (
                         _summarize_gmail_bulk_trash(deleted_ids)
                         if operation == "trash"
                         else _summarize_gmail_bulk_delete(deleted_ids)
                     )
                 else:
-                    data = {"deleted_message_ids": [], "matched_queries": queries}
+                    data = {
+                        "deleted_message_ids": [],
+                        "matched_queries": queries,
+                        "query_plan": normalized.get("_google_query_plan") or {},
+                    }
                     summary_text = _summarize_gmail_no_matches_for_cleanup(
                         queries=queries,
                         accounts=[{
@@ -252,9 +262,11 @@ def _execute_google_task_for_account(
         elif operation == "list":
             time_min = _normalize_calendar_timestamp(normalized.get("time_min"))
             time_max = _normalize_calendar_timestamp(normalized.get("time_max"))
+            queries = _google_query_clauses(normalized)
             data, summary_text = _execute_calendar_list_for_account(
                 client=client,
                 normalized=normalized,
+                queries=queries,
                 time_min=time_min,
                 time_max=time_max,
             )
@@ -328,35 +340,55 @@ def _execute_calendar_list_for_account(
     *,
     client: GoogleBridgeClient,
     normalized: dict[str, object],
+    queries: list[str],
     time_min: str,
     time_max: str,
 ) -> tuple[dict[str, object], str]:
     max_results = int(normalized.get("max_results") or 20)
     calendar_id = str(normalized.get("calendar_id") or "").strip()
     explicit_calendar_id = bool(normalized.get("_calendar_id_explicit"))
+    queries = [str(query or "").strip() for query in list(queries or [])]
+    if not queries:
+        queries = [""]
+    query_plan = normalized.get("_google_query_plan") or {}
     if calendar_id and calendar_id != "all" and (explicit_calendar_id or calendar_id != "primary"):
-        data = client.list_calendar_events(
-            calendar_id=calendar_id,
-            time_min=time_min,
-            time_max=time_max,
-            max_results=max_results,
-        )
-        items = [
-            {
-                **dict(item),
-                "calendar_id": calendar_id,
-            }
-            for item in list(data.get("items") or [])
-        ]
-        data = dict(data)
-        data["items"] = items
-        data["calendars"] = [
-            {
-                "id": calendar_id,
-                "summary": calendar_id,
-                "selected": True,
-            }
-        ]
+        items: list[dict[str, object]] = []
+        seen_event_keys: set[tuple[str, str]] = set()
+        for query in queries:
+            page = client.list_calendar_events(
+                calendar_id=calendar_id,
+                q=query,
+                time_min=time_min,
+                time_max=time_max,
+                max_results=max_results,
+            )
+            for item in list(page.get("items") or []):
+                event = dict(item)
+                event_id = str(event.get("id") or "").strip()
+                event_key = (calendar_id, event_id)
+                if event_key in seen_event_keys:
+                    continue
+                seen_event_keys.add(event_key)
+                items.append(
+                    {
+                        **event,
+                        "calendar_id": calendar_id,
+                    }
+                )
+        data = {
+            "kind": "calendar#events",
+            "items": items[:max_results],
+            "calendars": [
+                {
+                    "id": calendar_id,
+                    "summary": calendar_id,
+                    "selected": True,
+                }
+            ],
+            "resultSizeEstimate": len(items[:max_results]),
+            "query_plan": query_plan,
+            "matched_queries": [query for query in queries if query],
+        }
         return data, _summarize_calendar_list(data)
 
     calendar_list = client.list_calendar_list()
@@ -369,17 +401,12 @@ def _execute_calendar_list_for_account(
         calendars = [{"id": "primary", "summary": "primary", "selected": True}]
 
     merged_items: list[dict[str, object]] = []
+    seen_event_keys: set[tuple[str, str]] = set()
     calendar_summaries: list[dict[str, object]] = []
     for calendar in calendars:
         calendar_id_value = str(calendar.get("id") or "").strip()
         if not calendar_id_value:
             continue
-        events = client.list_calendar_events(
-            calendar_id=calendar_id_value,
-            time_min=time_min,
-            time_max=time_max,
-            max_results=max_results,
-        )
         calendar_summary = str(calendar.get("summary") or calendar_id_value).strip() or calendar_id_value
         calendar_summaries.append(
             {
@@ -389,21 +416,38 @@ def _execute_calendar_list_for_account(
                 "selected": bool(calendar.get("selected")),
             }
         )
-        for item in list(events.get("items") or []):
-            merged_items.append(
-                {
-                    **dict(item),
-                    "calendar_id": calendar_id_value,
-                    "calendar_summary": calendar_summary,
-                }
+        for query in queries:
+            events = client.list_calendar_events(
+                calendar_id=calendar_id_value,
+                q=query,
+                time_min=time_min,
+                time_max=time_max,
+                max_results=max_results,
             )
+            for item in list(events.get("items") or []):
+                event = dict(item)
+                event_id = str(event.get("id") or "").strip()
+                event_key = (calendar_id_value, event_id)
+                if event_key in seen_event_keys:
+                    continue
+                seen_event_keys.add(event_key)
+                merged_items.append(
+                    {
+                        **event,
+                        "calendar_id": calendar_id_value,
+                        "calendar_summary": calendar_summary,
+                    }
+                )
 
     merged_items.sort(key=_calendar_event_sort_key)
+    merged_items = merged_items[:max_results]
     data = {
         "kind": "calendar#events",
         "items": merged_items,
         "calendars": calendar_summaries,
         "resultSizeEstimate": len(merged_items),
+        "query_plan": query_plan,
+        "matched_queries": [query for query in queries if query],
     }
     return data, _summarize_calendar_list(data)
 
@@ -588,7 +632,7 @@ def _execute_merged_delete_task(
 ) -> tuple[dict[str, object], str]:
     account_summaries: list[dict[str, object]] = []
     deleted_message_ids: list[str] = []
-    queries = _expand_gmail_query_clauses(str(normalized.get("query") or "").strip())
+    queries = _google_query_clauses(normalized)
     for connection in accounts:
         data, summary_text = _execute_google_task_for_account(
             connection,
@@ -620,6 +664,7 @@ def _execute_merged_delete_task(
             "deleted_message_ids": [],
             "matched_queries": queries,
             "accounts": account_summaries,
+            "query_plan": normalized.get("_google_query_plan") or {},
         }
         summary_text = _summarize_gmail_no_matches_for_cleanup(queries=queries, accounts=account_summaries)
     else:
@@ -632,6 +677,7 @@ def _execute_merged_delete_task(
             "deleted_message_ids": deleted_message_ids,
             "matched_queries": queries,
             "accounts": account_summaries,
+            "query_plan": normalized.get("_google_query_plan") or {},
         },
         summary_text,
     )
@@ -644,14 +690,18 @@ def _execute_gmail_list_for_account(
     unread_only: bool,
 ) -> dict[str, object]:
     max_results = int(normalized.get("max_results") or 20)
-    queries = _expand_gmail_query_clauses(str(normalized.get("query") or "").strip())
+    queries = _google_query_clauses(normalized)
     raw_messages = _collect_gmail_messages_for_queries(
         client,
         queries=queries,
         label_ids=list(normalized.get("label_ids") or []),
         max_results_per_query=max_results,
     )
-    data = {"messages": raw_messages, "resultSizeEstimate": len(raw_messages)}
+    data = {
+        "messages": raw_messages,
+        "resultSizeEstimate": len(raw_messages),
+        "query_plan": normalized.get("_google_query_plan") or {},
+    }
     data = _enrich_gmail_list_messages(client, data)
     enriched_messages = list(data.get("messages") or [])
     enriched_messages.sort(key=_gmail_message_sort_key)
@@ -705,7 +755,6 @@ def _normalize_google_step(step: dict | None, *, defaults: dict[str, object] | N
     raw["email"] = str(raw.get("email") or "").strip()
     raw["delete_mode"] = str(raw.get("delete_mode") or "").strip().lower()
     if resource_kind == "gmail":
-        query_text = str(raw.get("query") or "").strip()
         if action_kind == "list":
             action_kind = "read"
         if action_kind not in {"read", "draft", "send", "delete"}:
@@ -713,8 +762,15 @@ def _normalize_google_step(step: dict | None, *, defaults: dict[str, object] | N
         if operation == "list" and not raw["_gmail_list_include_read"] and not str(raw.get("query") or "").strip() and not list(raw.get("label_ids") or []):
             raw["query"] = "is:unread"
             raw["_gmail_list_default_unread"] = True
-        if action_kind in {"read", "delete"} and query_text:
-            _expand_gmail_query_clauses(query_text)
+        if action_kind in {"read", "delete"} and str(raw.get("query") or "").strip():
+            query_plan = _plan_google_query(
+                str(raw.get("query") or "").strip(),
+                resource_kind=resource_kind,
+                action_kind=action_kind,
+                operation=operation,
+            )
+            raw["_google_query_plan"] = query_plan.to_dict()
+            raw["_google_query_clauses"] = list(query_plan.query_strings)
         if operation == "list" and action_kind == "draft":
             operation = "create"
         if operation == "list" and action_kind == "send":
@@ -743,6 +799,15 @@ def _normalize_google_step(step: dict | None, *, defaults: dict[str, object] | N
             action_kind = operation
         if action_kind not in {"read", "create", "update", "delete"}:
             raise GoogleBridgeTaskError(f"Google step {step_index} currently supports read, create, update, and delete actions for Calendar.")
+        if action_kind == "read" and str(raw.get("query") or "").strip():
+            query_plan = _plan_google_query(
+                str(raw.get("query") or "").strip(),
+                resource_kind=resource_kind,
+                action_kind=action_kind,
+                operation=operation,
+            )
+            raw["_google_query_plan"] = query_plan.to_dict()
+            raw["_google_query_clauses"] = list(query_plan.query_strings)
         if action_kind == "read":
             if operation == "read":
                 operation = "list"
@@ -1010,63 +1075,11 @@ def _summarize_gmail_no_matches_for_cleanup(*, queries: list[str], accounts: lis
 
 
 def _gmail_or_clause_limit() -> int:
-    try:
-        return max(1, int(getattr(settings, "GMAIL_OR_CLAUSE_LIMIT", 10) or 10))
-    except Exception:
-        return 10
+    return _google_query_clause_limit()
 
 
 def _expand_gmail_query_clauses(query: str) -> list[str]:
-    text = str(query or "").strip()
-    if not text:
-        return [""]
-    clauses: list[str] = []
-    buffer: list[str] = []
-    depth = 0
-    in_quotes = False
-    index = 0
-    while index < len(text):
-        if not in_quotes and text.startswith(" OR ", index):
-            if depth > 0:
-                raise GoogleBridgeTaskError(
-                    "Malformed Gmail query: OR inside parentheses is not supported. "
-                    "Use OR only between complete top-level clauses."
-                )
-            clause = _normalize_gmail_query_clause("".join(buffer).strip())
-            if not clause:
-                raise GoogleBridgeTaskError("Malformed Gmail query: empty OR clause.")
-            clauses.append(clause)
-            buffer = []
-            index += 4
-            continue
-        ch = text[index]
-        if ch == '"' and (index == 0 or text[index - 1] != "\\"):
-            in_quotes = not in_quotes
-        elif not in_quotes:
-            if ch == "(":
-                depth += 1
-            elif ch == ")":
-                if depth == 0:
-                    raise GoogleBridgeTaskError("Malformed Gmail query: unmatched closing parenthesis.")
-                depth -= 1
-        buffer.append(ch)
-        index += 1
-    if in_quotes:
-        raise GoogleBridgeTaskError("Malformed Gmail query: unmatched quote.")
-    if depth != 0:
-        raise GoogleBridgeTaskError("Malformed Gmail query: unmatched opening parenthesis.")
-    final_clause = _normalize_gmail_query_clause("".join(buffer).strip())
-    if not final_clause:
-        if clauses:
-            raise GoogleBridgeTaskError("Malformed Gmail query: empty OR clause.")
-        return [""]
-    clauses.append(final_clause)
-    clause_limit = _gmail_or_clause_limit()
-    if len(clauses) > clause_limit:
-        raise GoogleBridgeTaskError(
-            f"Malformed Gmail query: OR clauses are limited to {clause_limit} top-level clauses."
-        )
-    return clauses
+    return _google_query_clauses({"query": query})
 
 
 def _normalize_gmail_query_clause(query: str) -> str:
@@ -1083,6 +1096,42 @@ def _normalize_gmail_query_clause(query: str) -> str:
 
 def _expand_gmail_delete_queries(query: str) -> list[str]:
     return _expand_gmail_query_clauses(query)
+
+
+def _plan_google_query(query: str, *, resource_kind: str, action_kind: str, operation: str):
+    try:
+        return plan_google_query(
+            query,
+            resource_kind=resource_kind,
+            action_kind=action_kind,
+            operation=operation,
+        )
+    except (QueryLanguageError, QueryPlannerError) as exc:
+        raise GoogleBridgeTaskError(str(exc)) from exc
+
+
+def _google_query_clause_limit() -> int:
+    try:
+        return max(1, int(getattr(settings, "GOOGLE_BRIDGE_QUERY_CLAUSE_LIMIT", None) or getattr(settings, "GMAIL_OR_CLAUSE_LIMIT", 10) or 10))
+    except Exception:
+        return 10
+
+
+def _google_query_clauses(normalized: dict[str, object]) -> list[str]:
+    stored_plan = normalized.get("_google_query_plan")
+    if isinstance(stored_plan, dict):
+        stored_calls = list(stored_plan.get("calls") or [])
+        return [str(item.get("query") or "") for item in stored_calls]
+    query = str(normalized.get("query") or "").strip()
+    if not query:
+        return [""]
+    plan = _plan_google_query(
+        query,
+        resource_kind=str(normalized.get("resource_kind") or "gmail"),
+        action_kind=str(normalized.get("action_kind") or "read"),
+        operation=str(normalized.get("operation") or "list"),
+    )
+    return list(plan.query_strings)
 
 
 def _collect_gmail_messages_for_queries(

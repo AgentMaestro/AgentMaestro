@@ -90,6 +90,19 @@ When solving tasks:
 5. Respond to the user with the final answer.
 """.strip()
 
+
+TOOL_EXECUTION_MODEL = """
+Tool execution model:
+- Use parallel tool calls only when the calls are independent and do not depend on each other's results.
+- Use sequential tool calls when a later call needs the output, side effects, or approval outcome of an earlier call.
+- Parallel examples: search two unrelated paths, list symbols in two different files, or inspect unrelated references at the same time.
+- Sequential examples: write a file and then read it back, find a symbol and then jump to it, or stage paths and then commit them.
+- If a tool requires approval and the next step depends on that tool, wait for the approved result before issuing the dependent follow-up.
+- When reviewing prior tool results, inspect the inner payload for `requested_*`, `resolved_*`, and any `changed_paths` or tool-specific path summary fields when present.
+- Use the outer tool status and approval state to decide whether the next call is safe to parallelize.
+- Do not serialize independent work just because one tool in the run needs approval or mutation.
+""".strip()
+
 def _format_tool_hint(tool_names: Iterable[str]) -> str:
     names = [name for name in tool_names if name]
     if not names:
@@ -159,18 +172,30 @@ def _build_capability_notices(tool_names: Iterable[str]) -> list[str]:
             "- Search one path/name query at a time. For unrelated targets, make separate `search_files` calls; if you need alternation in a regex search, use `is_regex=true` with `|` rather than the word `OR`, for example `code_navigation.py|run_command_safe`.\n"
             "- In regex mode, exact path/name hits still sort ahead of fuzzy or partial matches.\n"
             "- Navigation scopes may be a file, directory, or repo root. `scope` is the canonical input name for navigation roots. Repo-relative scopes are preferred. Absolute paths are allowed only when the tool explicitly permits them and the path stays inside allowed roots.\n"
+            "- Path-aware tool results expose `requested_*` and `resolved_*` fields. Treat `requested_*` as the caller input and `resolved_*` as the actual execution target.\n"
+            "- For compact navigation results, use `requested_scope` and `resolved_scope` as the canonical scope fields.\n"
             "- Hidden files and directories are included unless the default ignore rules exclude them. Test paths are included by default unless a tool explicitly disables them.\n"
             "- Prefer these tools over manual broad file reads when you need to locate code quickly.\n"
             "- Use `search_code` for text or regex content searches; use the navigation tools when you need file- and symbol-level awareness.\n"
             "- Navigation tools use repo-relative paths by default. Only use an absolute path when you genuinely need to override the repo root, and do not pass empty strings for optional absolute-root fields.\n"
-            "- Run navigation tools sequentially when precision matters: wait for each result before issuing the next tool call.\n"
+            "- Use navigation tools sequentially when the next step depends on the previous result; otherwise independent navigation calls may be parallelized.\n"
             "- Use `compact=true` when you only need a quick standardized summary instead of the fuller legacy payload.\n"
-            "- In compact mode, expect the standardized envelope with `tool`, `compact`, `query`, `scope`, `items`, `returned_count`, `max_results_used`, `selection`, `selection_excerpt`, `stats`, and `truncated`; legacy top-level fields are not included.\n"
+            "- In compact mode, expect the standardized envelope with `tool`, `compact`, `query`, `requested_scope`, `resolved_scope`, `items`, `returned_count`, `max_results_used`, `selection`, `selection_excerpt`, `stats`, and `truncated`; legacy top-level fields are not included.\n"
             "- For symbol-oriented compact results, `items` and `selection` include structured metadata such as defining file, line, column, container/scope, and signature when available.\n"
             "- For `find_references` and `jump_to_symbol`, compact mode includes a short line-numbered excerpt by default, and `find_references` also surfaces the first hit in `selection` for quick triage.\n"
             "- Compact ordering is stable: search files ranks by score then path, symbol lookup ranks exact before fuzzy, and jump-to-symbol returns the best match first.\n"
             "- Ranking is exact matches first, then fuzzy, then partial or secondary matches.\n"
             "- A typical workflow is `search_files` -> `list_symbols` -> `find_symbol` -> `find_references` -> `file_read`."
+        )
+    if "google_bridge" in names:
+        sections.append(
+            "Capability: Google Bridge Query Language\n"
+            "- The `google_bridge` tool parses a generic boolean query language with `AND`, `OR`, `NOT`, and parentheses.\n"
+            "- Grouped alternation is allowed inside fielded clauses, for example `from:(dsmith@aol.com OR dsmyth@aol.com)` or `to:(sktennis7@gmail.com OR kissinger.scott@gmail.com)`.\n"
+            "- Use `|` only for regex-based code search tools; do not use it in Google bridge queries.\n"
+            "- Supported query fields vary by Google surface. Check the tool schema examples for Gmail and Calendar field support before generating a query.\n"
+            "- The bridge compiles queries into one or more concrete backend calls, so grouped `OR` clauses may fan out into multiple requests and `NOT` stays part of the compiled plan.\n"
+            "- Keep query intent inside the query language rather than splitting it into ad hoc text.\n"
         )
     if "schedule_task" in names:
         sections.append(
@@ -258,6 +283,7 @@ Runtime:
     if policy_section:
         sections.append(policy_section)
     sections.append(overlay)
+    sections.append(TOOL_EXECUTION_MODEL)
     sections.append(BOOTSTRAP_COMPLETE if agents_md_bootstrap_complete else BOOTSTRAP_PENDING)
     sections.append(runtime)
     sections.append(_build_agent_sandbox_notice(agent))

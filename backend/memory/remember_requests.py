@@ -1,16 +1,16 @@
 from __future__ import annotations
 
 import hashlib
-import logging
 import re
 from textwrap import shorten
 
 from django.contrib.auth import get_user_model
+from logging_utils import get_app_logger
 
 from memory.models import MemoryRecord
 from memory.services import remember
 
-logger = logging.getLogger(__name__)
+logger = get_app_logger(__name__)
 
 EXPLICIT_USER_REMEMBER_SOURCE_KIND = "explicit_user_remember"
 LOCAL_TIME_PREFERENCE_DEDUPE_KEY = "user-pref:local-time-reference"

@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-import logging
 from typing import Iterable, List
 
 from django.conf import settings
+from logging_utils import get_app_logger
 from llm.models import LLMModelProfile
 from runs.models import AgentRun, RunEvent
 from runs.services.event_builders import build_assistant_message_payload
@@ -13,7 +13,7 @@ from tools.policy import get_effective_tools
 from tools.services.approvals import request_tool_call_approval
 from tools.services.command_guardrails import ToolCommandGuardrailError
 
-logger = logging.getLogger(__name__)
+logger = get_app_logger(__name__)
 
 
 def resolve_provider_and_model(agent) -> tuple[str, str]:

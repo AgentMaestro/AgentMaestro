@@ -5,6 +5,7 @@ from typing import List
 
 from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
+from logging_utils import scrub_sensitive_text
 
 from llm.models import AgentRole, LLMModelProfile, LLMRun
 from llm.services.runner import LLMRunner
@@ -42,7 +43,7 @@ class Command(BaseCommand):
                 os.environ.pop("OPENAI_TRANSPORT", None)
             else:
                 os.environ["OPENAI_TRANSPORT"] = prev_transport
-        self.stdout.write(f"run_id={run_id}")
+        self.stdout.write(scrub_sensitive_text(f"run_id={run_id}"))
         try:
             run = LLMRun.objects.get(id=run_id)
         except LLMRun.DoesNotExist:
@@ -66,7 +67,7 @@ class Command(BaseCommand):
         if "probe" not in stdout.lower():
             self._fail(f"shell_exec stdout did not contain probe (stdout={stdout[:200]!r})", run)
 
-        self.stdout.write("Stage 2 WS tool smoke succeeded.")
+        self.stdout.write(scrub_sensitive_text("Stage 2 WS tool smoke succeeded."))
 
     def _fail(self, message: str, run: LLMRun) -> None:
         debug = self._format_debug(run)

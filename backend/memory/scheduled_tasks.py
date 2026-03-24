@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import logging
 import uuid
 from datetime import date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
@@ -9,6 +8,7 @@ from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.db import transaction
 from django.utils import timezone
+from logging_utils import get_app_logger
 
 from core.services.timezones import get_local_timezone_name
 from memory.models import MemoryRecord, RecurrenceRule, ScheduledTask
@@ -18,7 +18,7 @@ from runs.models import AgentRun
 from runs.services.headless import mark_headless_run_stale
 from runs.services.state import FINAL_RUN_STATUSES
 
-logger = logging.getLogger(__name__)
+logger = get_app_logger(__name__)
 
 MAX_RESULT_SUMMARY_CHARS = 2000
 DEFAULT_SCHEDULED_TASK_LIMIT = 10

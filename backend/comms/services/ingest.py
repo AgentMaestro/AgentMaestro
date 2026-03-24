@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import httpx
-import logging
 from typing import Iterable, Optional, Tuple
 
 from django.db import transaction
@@ -20,15 +19,26 @@ from control.models import ControlConversation, ControlMessage, IngestEvent
 from control.services.messaging import broadcast_control_message
 from comms.transports.base import NormalizedEvent
 from comms.transports.telegram import TelegramAdapter
-from comms.services.agent_chat_bridge import forward_transport_user_message, paired_agent_for_conversation
+from comms.services.agent_chat_bridge import (
+    forward_transport_user_message,
+    paired_agent_for_conversation,
+)
 from comms.services.outbound import send_telegram_message
 from agents.utils import set_agent_telegram_mirror_enabled
+from logging_utils import get_app_logger, scrub_sensitive_text, scrub_sensitive_value
 
-logger = logging.getLogger(__name__)
+logger = get_app_logger(__name__)
 
 
 def _identity_label(identity: ExternalIdentity, event_username: Optional[str] = None) -> str:
-    candidate = (identity.role_hint or event_username or identity.username or identity.display_name or identity.external_user_id or '').strip()
+    candidate = (
+        identity.role_hint
+        or event_username
+        or identity.username
+        or identity.display_name
+        or identity.external_user_id
+        or ""
+    ).strip()
     return candidate or str(identity.external_user_id)
 
 
@@ -65,16 +75,22 @@ def _existing_message_result(
     if not event.message_id:
         return None, None
 
-    conversation = CommsConversation.objects.filter(
-        endpoint=endpoint, external_conversation_id=event.chat_id
-    ).select_related("control_conversation").first()
+    conversation = (
+        CommsConversation.objects.filter(endpoint=endpoint, external_conversation_id=event.chat_id)
+        .select_related("control_conversation")
+        .first()
+    )
     if not conversation or not conversation.control_conversation:
         return None, None
 
-    message = CommsMessage.objects.filter(
-        conversation=conversation,
-        external_message_id=_normalize_user_id(event.message_id) or "",
-    ).order_by("-created_at").first()
+    message = (
+        CommsMessage.objects.filter(
+            conversation=conversation,
+            external_message_id=_normalize_user_id(event.message_id) or "",
+        )
+        .order_by("-created_at")
+        .first()
+    )
     if not message:
         return None, None
     return str(conversation.control_conversation.uuid), message.id
@@ -145,7 +161,8 @@ def ingest_normalized_event(
         payload["callback_data"] = event.callback_data
     if event.callback_query_id:
         payload["callback_query_id"] = event.callback_query_id
-    message_text = event.text or ""
+    message_text = scrub_sensitive_text(event.text or "")
+    payload = scrub_sensitive_value(payload)
 
     comms_message = CommsMessage.objects.create(
         conversation=conversation,
@@ -296,13 +313,20 @@ def ingest_normalized_event(
         if callback_message is not None:
             if event.callback_query_id and transport.key == "telegram":
                 try:
+
                     async def _answer_callback():
                         async with TelegramAdapter() as adapter:
                             await adapter.answer_callback_query(endpoint, event.callback_query_id)
+
                     from asgiref.sync import async_to_sync
+
                     async_to_sync(_answer_callback)()
                 except Exception as exc:  # pragma: no cover - best effort
-                    logger.debug("Unable to answer telegram callback query %s: %s", event.callback_query_id, exc)
+                    logger.debug(
+                        "Unable to answer telegram callback query %s: %s",
+                        event.callback_query_id,
+                        exc,
+                    )
             ingest_event.result_meta = {
                 "conversation_uuid": str(control_conversation.uuid),
                 "control_message_id": callback_message.id,
@@ -354,8 +378,8 @@ def _create_system_control_message(
         direction="system",
         author_type="system",
         author_label="system",
-        text=text,
-        payload=payload,
+        text=scrub_sensitive_text(text),
+        payload=scrub_sensitive_value(payload),
         source_transport=source_transport,
         source_conversation_id=source_conversation_id,
         source_message_id=source_message_id,

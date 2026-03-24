@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-import logging
-
 from agentmaestro.celery import app
 from asgiref.sync import async_to_sync
 from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
+from logging_utils import get_app_logger
 
 from comms.services.agent_chat_bridge import send_run_transport_message
 from agents.utils import normalize_provider_for_model
@@ -30,7 +29,7 @@ from runs.services.state import FINAL_RUN_STATUSES, transition_run
 from runs.services.steps import append_step
 from tools.policy import get_effective_tools
 
-logger = logging.getLogger(__name__)
+logger = get_app_logger(__name__)
 
 HEADLESS_RUN_COMPLETED_SOURCE_KIND = "headless_run_completed"
 HEADLESS_RUN_FAILED_SOURCE_KIND = "headless_run_failed"
@@ -717,9 +716,10 @@ def finalize_headless_run(
             new_status=AgentRun.Status.COMPLETED if success else AgentRun.Status.FAILED,
         )
         append_run_note(run, f"Headless run finished with status={'completed' if success else 'failed' }.")
-        logger.log(
-            logging.INFO if success else logging.WARNING,
-            "%s finalize run=%s parent_run=%s status=%s provider_response_id=%s error_summary=%s final_text_chars=%d",
+        log_message = (
+            "%s finalize run=%s parent_run=%s status=%s provider_response_id=%s error_summary=%s final_text_chars=%d"
+        )
+        log_args = (
             HEADLESS_RUN_LOG_PREFIX,
             run.id,
             run.parent_run_id or "",
@@ -728,6 +728,10 @@ def finalize_headless_run(
             _trim_text(error_text, 300),
             len(final_text or ""),
         )
+        if success:
+            logger.info(log_message, *log_args)
+        else:
+            logger.warning(log_message, *log_args)
 
         if scheduled_task is not None:
             scheduled_task.last_run = run
