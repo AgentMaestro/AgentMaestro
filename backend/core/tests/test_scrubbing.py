@@ -17,15 +17,15 @@ class ScrubbingTests(SimpleTestCase):
 
     def test_scrub_sensitive_value_recurses_through_structures(self):
         payload = {
-            "text": "xoxb-123456789012-abcdefghijklmnopqrstuv",
+            "text": "slack-token-TEST-123",
             "nested": {
                 "email": "person@example.com",
-                "secret": "ghp_123456789012345678901234567890123456",
+                "secret": "ghp_TEST_REDACTED_VALUE",
             },
         }
 
         sanitized = scrub_sensitive_value(payload)
 
         self.assertEqual(sanitized["nested"]["email"], "person@example.com")
-        self.assertNotIn("xoxb-123456789012-abcdefghijklmnopqrstuv", str(sanitized))
-        self.assertNotIn("ghp_123456789012345678901234567890123456", str(sanitized))
+        self.assertNotIn("slack-token-TEST-123", str(sanitized))
+        self.assertNotIn("ghp_TEST_REDACTED_VALUE", str(sanitized))
