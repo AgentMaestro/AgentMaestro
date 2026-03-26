@@ -238,7 +238,25 @@ def build_ws_request_input_items(
 
     last_user_text = str(last_user_text or "").strip()
     if last_user_text:
+        artifact_context_items: list[dict[str, object]] = []
+        artifact_context_previews: list[str] = []
+        for entry in history:
+            if entry.get("role") != "system":
+                continue
+            if str(entry.get("kind") or "").strip() != "artifact_context":
+                continue
+            content = (entry.get("content") or "").strip()
+            if not content:
+                continue
+            artifact_context_previews.append(" ".join(content.split())[:240])
+            artifact_context_item: dict[str, object] = {
+                "type": "message",
+                "role": "system",
+                "content": [{"type": "input_text", "text": content}],
+            }
+            artifact_context_items.append(artifact_context_item)
         items = [
+            *artifact_context_items,
             {
                 "type": "message",
                 "role": "user",
@@ -246,10 +264,12 @@ def build_ws_request_input_items(
             }
         ]
         logger.info(
-            "Built WS request input items run=%s mode=last_user_only items=%d previous_response_id=%s",
+            "Built WS request input items run=%s mode=last_user_only_with_artifact_context items=%d previous_response_id=%s artifact_context_items=%d artifact_context_preview=%s",
             run_id,
             len(items),
             previous_response_id,
+            len(artifact_context_items),
+            artifact_context_previews[:2],
         )
         return items
 

@@ -16,6 +16,10 @@ RESUMABLE_EVENT_TYPES = {
     "tool_call_status",
     "tool_call_completed",
     "tool_call_denied",
+    "artifact_context",
+    "artifact_removed",
+    "artifact_consumed",
+    "remote_ops_message",
 }
 
 
@@ -44,6 +48,8 @@ def filter_resumable_events(events: Iterable[RunEvent]) -> list[RunEvent]:
 
 def build_provider_input_from_events(events: Iterable[RunEvent]) -> list[dict]:
     items: list[dict] = []
+    removed_artifact_ids: set[str] = set()
+    consumed_artifact_ids: set[str] = set()
     for event in events:
         payload = event.payload or {}
         if event.event_type == "chat_message":
@@ -91,6 +97,54 @@ def build_provider_input_from_events(events: Iterable[RunEvent]) -> list[dict]:
                     "provider_call_id": payload.get("provider_call_id"),
                 }
             )
+        elif event.event_type == "remote_ops_message":
+            text = str(payload.get("text") or "").strip()
+            kind = str(payload.get("kind") or "").strip()
+            if text and kind not in {"artifact_upload", "artifact_delete"}:
+                items.append({"role": "system", "content": text})
+        elif event.event_type == "artifact_context":
+            artifact_id = str(payload.get("artifact_id") or "").strip()
+            if artifact_id and (artifact_id in removed_artifact_ids or artifact_id in consumed_artifact_ids):
+                logger.debug(
+                    "Skipping removed artifact_context seq=%s artifact_id=%s",
+                    event.seq,
+                    artifact_id,
+                )
+                continue
+            text = str(payload.get("text") or "").strip()
+            if text:
+                items.append(
+                    {
+                        "role": "system",
+                        "content": text,
+                        "artifact_id": artifact_id or None,
+                    }
+                )
+        elif event.event_type == "artifact_removed":
+            artifact_id = str(payload.get("artifact_id") or "").strip()
+            if artifact_id:
+                removed_artifact_ids.add(artifact_id)
+                items = [
+                    item
+                    for item in items
+                    if str(item.get("artifact_id") or "").strip() != artifact_id
+                ]
+        elif event.event_type == "artifact_consumed":
+            artifact_ids = [
+                str(value or "").strip()
+                for value in (payload.get("artifact_ids") or [])
+                if str(value or "").strip()
+            ] if isinstance(payload.get("artifact_ids"), list) else []
+            artifact_id = str(payload.get("artifact_id") or "").strip()
+            if artifact_id:
+                artifact_ids.append(artifact_id)
+            if artifact_ids:
+                consumed_artifact_ids.update(artifact_ids)
+                items = [
+                    item
+                    for item in items
+                    if str(item.get("artifact_id") or "").strip() not in consumed_artifact_ids
+                ]
         elif event.event_type == "tool_call_requested":
             # Preserve requested args for debugging or replay metadata.
             if payload.get("args"):

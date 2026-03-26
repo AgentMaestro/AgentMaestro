@@ -9,12 +9,15 @@
     const timelineStrip = document.getElementById("timelineStrip");
     const stepSlider = document.getElementById("stepSlider");
     const timelinePosition = document.getElementById("timelinePosition");
+    const attachmentPosition = document.getElementById("attachmentPosition");
     const detailRail = document.getElementById("detailRail");
+    const attachmentRail = document.getElementById("attachmentRail");
     const windowLabel = document.getElementById("windowLabel");
 
     const state = {
         run: null,
         steps: [],
+        events: [],
         stepByIndex: new Map(),
         selectedIndex: 0,
     };
@@ -77,6 +80,12 @@
         }
     };
 
+    const setAttachmentLine = (text) => {
+        if (attachmentPosition) {
+            attachmentPosition.textContent = text;
+        }
+    };
+
     const normalizeStep = (step) => {
         const payload = step && typeof step.payload === "object" && step.payload !== null ? step.payload : {};
         return {
@@ -86,6 +95,18 @@
             payload,
             created_at: step?.created_at || "",
             updated_at: step?.updated_at || "",
+        };
+    };
+
+    const normalizeEvent = (event) => {
+        const payload = event && typeof event.payload === "object" && event.payload !== null ? event.payload : {};
+        return {
+            ...event,
+            seq: Number(event?.seq || 0),
+            event_type: String(event?.event_type || "UNKNOWN").toLowerCase(),
+            payload,
+            created_at: event?.created_at || "",
+            updated_at: event?.updated_at || "",
         };
     };
 
@@ -138,6 +159,164 @@
             return isFailure(step) ? "failure" : "success";
         }
         return "info";
+    };
+
+    const formatArtifactLabel = (payload) => {
+        const artifact = payload?.artifact && typeof payload.artifact === "object" ? payload.artifact : {};
+        const consumedArtifact = Array.isArray(payload?.consumed_artifacts) && payload.consumed_artifacts.length
+            ? payload.consumed_artifacts[0]
+            : {};
+        return (
+            artifact.filename ||
+            artifact.name ||
+            consumedArtifact.filename ||
+            consumedArtifact.name ||
+            payload.filename ||
+            payload.artifact_name ||
+            payload.name ||
+            payload.attachment_id ||
+            payload.artifact_id ||
+            "attachment"
+        );
+    };
+
+    const attachmentToneForEvent = (event) => {
+        if (event.event_type === "artifact_consumed") {
+            return "consumed";
+        }
+        if (event.event_type === "artifact_removed") {
+            return "removed";
+        }
+        return "context";
+    };
+
+    const summarizeAttachmentEvent = (event) => {
+        const payload = event.payload || {};
+        const artifact = payload.artifact && typeof payload.artifact === "object" ? payload.artifact : {};
+        if (event.event_type === "artifact_context") {
+            return truncate(
+                payload.text ||
+                    artifact.context_text ||
+                    artifact.text ||
+                    artifact.preview_text_snippet ||
+                    "",
+                360
+            );
+        }
+        if (event.event_type === "artifact_consumed") {
+            return "Attachment context was consumed and removed from the prompt queue.";
+        }
+        if (event.event_type === "artifact_removed") {
+            return "Attachment was deleted from storage and removed from the queue.";
+        }
+        return truncate(payload.text || payload.message || "", 360);
+    };
+
+    const collectAttachmentMeta = (event) => {
+        const payload = event.payload || {};
+        const artifact = payload.artifact && typeof payload.artifact === "object" ? payload.artifact : {};
+        const consumedArtifact = Array.isArray(payload.consumed_artifacts) && payload.consumed_artifacts.length
+            ? payload.consumed_artifacts[0]
+            : {};
+        const meta = [];
+        const push = (label, value) => {
+            const text = truncate(value, 140);
+            if (text) {
+                meta.push({label, value: text});
+            }
+        };
+
+        push("Created", formatTimestamp(event.created_at));
+        push("Event", event.event_type);
+        push("Attachment", formatArtifactLabel(payload));
+        push("Attachment ID", payload.attachment_id || payload.artifact_id || artifact.attachment_id || artifact.id || consumedArtifact.attachment_id || consumedArtifact.id || "");
+        push("Filename", artifact.filename || artifact.name || consumedArtifact.filename || consumedArtifact.name || payload.filename || payload.artifact_name || "");
+        push("MIME", artifact.mime_type || consumedArtifact.mime_type || payload.mime_type || "");
+        push("Size", artifact.size_bytes || consumedArtifact.size_bytes || payload.size_bytes || "");
+        push("SHA256", artifact.sha256 || consumedArtifact.sha256 || payload.sha256 || "");
+        push("Consumed", artifact.consumed ? "yes" : payload.deleted ? "yes" : event.event_type === "artifact_consumed" ? "yes" : "");
+        push("Deleted", payload.deleted ? "yes" : "");
+        push("Deleted at", payload.deleted_at || "");
+        push("Source", artifact.source_channel || consumedArtifact.source_channel || payload.source_channel || "");
+        return meta;
+    };
+
+    const renderAttachmentCard = (event) => {
+        const payload = event.payload || {};
+        const artifact = payload.artifact && typeof payload.artifact === "object" ? payload.artifact : {};
+        const card = createEl("article", "attachment-card");
+        card.dataset.tone = attachmentToneForEvent(event);
+
+        const header = createEl("div", "attachment-card-header");
+        const titleBlock = createEl("div");
+        const titleText =
+            event.event_type === "artifact_context"
+                ? "Attachment context delivered"
+                : event.event_type === "artifact_consumed"
+                    ? "Attachment queue consumed"
+                    : event.event_type === "artifact_removed"
+                        ? "Attachment removed"
+                        : "Attachment event";
+        titleBlock.append(
+            createEl("div", "attachment-card-title", titleText),
+            createEl("div", "attachment-card-subtitle", formatArtifactLabel(payload))
+        );
+        header.append(
+            titleBlock,
+            createEl(
+                "span",
+                "attachment-card-status",
+                event.event_type.replace(/_/g, " ").toUpperCase()
+            )
+        );
+
+        const body = createEl("div", "attachment-card-body");
+        body.append(createEl("p", "attachment-card-summary", summarizeAttachmentEvent(event)));
+
+        const meta = createEl("div", "attachment-meta");
+        collectAttachmentMeta(event).forEach((entry) => {
+            const row = createEl("div", "attachment-meta-row");
+            row.append(
+                createEl("div", "attachment-meta-key", entry.label),
+                createEl("div", "attachment-meta-value", entry.value)
+            );
+            meta.append(row);
+        });
+        body.append(meta);
+
+        const payloadValue =
+            event.event_type === "artifact_context"
+                ? artifact.context_text || payload.text || artifact.text || ""
+                : JSON.stringify(payload, null, 2);
+        if (payloadValue) {
+            const details = createEl("details", "payload-details");
+            const summary = createEl("summary", "", "Attachment payload JSON");
+            const pre = createEl("pre", "attachment-payload", payloadValue);
+            details.append(summary, pre);
+            body.append(details);
+        }
+
+        card.append(header, body);
+        return card;
+    };
+
+    const renderAttachmentEvents = () => {
+        if (!attachmentRail) {
+            return;
+        }
+        attachmentRail.textContent = "";
+        const attachmentEvents = state.events.filter((event) =>
+            ["artifact_context", "artifact_consumed", "artifact_removed"].includes(event.event_type)
+        );
+        if (!attachmentEvents.length) {
+            attachmentRail.append(createEl("div", "empty-state", "No attachment events recorded yet."));
+            setAttachmentLine("No attachment events loaded.");
+            return;
+        }
+        attachmentEvents.forEach((event) => {
+            attachmentRail.append(renderAttachmentCard(event));
+        });
+        setAttachmentLine(`Loaded ${attachmentEvents.length} attachment events.`);
     };
 
     const summarizeStep = (step) => {
@@ -363,6 +542,7 @@
     const renderAll = () => {
         renderTimelineStrip();
         renderFocusedWindow();
+        renderAttachmentEvents();
         if (stepSlider) {
             stepSlider.disabled = state.steps.length === 0;
             if (state.steps.length > 0) {
@@ -390,6 +570,9 @@
         state.run = snapshot?.run || {};
         state.steps = Array.isArray(snapshot?.steps)
             ? snapshot.steps.map(normalizeStep).sort((a, b) => a.step_index - b.step_index)
+            : [];
+        state.events = Array.isArray(snapshot?.events_since_seq)
+            ? snapshot.events_since_seq.map(normalizeEvent).sort((a, b) => a.seq - b.seq)
             : [];
         state.stepByIndex = new Map(state.steps.map((step) => [step.step_index, step]));
 

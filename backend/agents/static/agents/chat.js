@@ -14,6 +14,12 @@
     const runStatusEl = shell.querySelector("[data-run-status]");
     const telegramMirrorToggle = shell.querySelector("[data-telegram-mirror-toggle]");
     const telegramMirrorToggleUrl = shell.dataset.telegramToggleUrl || "";
+    const artifactUploadUrl = shell.dataset.artifactUploadUrl || "";
+    const artifactUploadTrigger = shell.querySelector("[data-artifact-upload-trigger]");
+    const artifactUploadInput = shell.querySelector("[data-artifact-upload-input]");
+    const artifactListEl = shell.querySelector("[data-run-artifacts-list]");
+    const artifactEmptyEl = shell.querySelector("[data-run-artifacts-empty]");
+    const artifactCountEl = shell.querySelector("[data-pending-artifact-count]");
     const runTimelineBaseUrl = (shell.dataset.runTimelineBaseUrl || "/ui/run/").trim() || "/ui/run/";
     const approvalGrantsListEl = shell.querySelector("[data-approval-grants-list]");
     const approvalGrantsEmptyEl = shell.querySelector("[data-approval-grants-empty]");
@@ -38,6 +44,8 @@
     let runtimeTransportLabel =
         (shell.dataset.llmTransportLabel || "").trim() || (runtimeTransport.toLowerCase() === "ws" ? "WS" : "HTTP");
     let telegramMirrorEnabled = (shell.dataset.telegramMirrorEnabled || "false").trim() === "true";
+    let artifactUploadBusy = false;
+    let currentArtifactQueue = [];
     const normalizeTransportLabel = (value, fallbackValue = "") => {
         const candidate = String(value || fallbackValue || "").trim().toUpperCase();
         if (candidate.includes("HTTP")) {
@@ -96,6 +104,7 @@
             return false;
         }
     })();
+    const startFreshOnReload = Boolean(isBrowserReload);
     if (!wsUrl) {
         return;
     }
@@ -631,7 +640,7 @@
 
     // Prefer the server-reported dashboard run over any stale session-stored run.
     // The stored value is still used later as a reconnect fallback when no current run exists.
-    updateRunTimelineLink(currentRunId || null);
+    updateRunTimelineLink(startFreshOnReload ? null : currentRunId || null);
 
     const ensureRunId = async ({fromRunId = "", rotationReason = ""} = {}) => {
         if (!isBrowserReload && !activeRunId && currentRunId && !fromRunId) {
@@ -696,6 +705,7 @@
         if (!socket || socket.readyState !== WebSocket.OPEN) {
             return false;
         }
+        const hadQueuedArtifacts = currentArtifactQueue.length > 0;
         appendMessage({
             role: "operator",
             direction: "out",
@@ -705,11 +715,230 @@
             author: userName,
         });
         markPromptSentNow();
-        socket.send(JSON.stringify({type: "chat.message", text}));
+        try {
+            socket.send(JSON.stringify({type: "chat.message", text}));
+        } catch (error) {
+            warn("Unable to send chat message", error);
+            return false;
+        }
+        if (hadQueuedArtifacts) {
+            renderArtifacts([]);
+        }
         if (activeRunStatus === "RUNNING") {
             renderThinkingPlaceholder("thinking");
         }
         return true;
+    };
+
+    const setArtifactUploadState = (busy, label = "") => {
+        artifactUploadBusy = Boolean(busy);
+        if (artifactUploadTrigger) {
+            artifactUploadTrigger.disabled = artifactUploadBusy;
+            artifactUploadTrigger.textContent = label || (artifactUploadBusy ? "Uploading..." : "Attach file");
+        }
+        if (artifactUploadInput) {
+            artifactUploadInput.disabled = artifactUploadBusy;
+        }
+    };
+
+    const renderArtifacts = (artifacts) => {
+        if (!artifactListEl) {
+            return;
+        }
+        artifactListEl.textContent = "";
+        const items = Array.isArray(artifacts) ? artifacts : [];
+        currentArtifactQueue = items.slice();
+        if (artifactCountEl) {
+            artifactCountEl.textContent = String(items.length);
+        }
+        if (!items.length) {
+            if (artifactEmptyEl) {
+                artifactEmptyEl.hidden = false;
+                artifactListEl.append(artifactEmptyEl);
+            } else {
+                const empty = document.createElement("div");
+                empty.className = "chat-artifacts-empty";
+                empty.textContent = "No pending attachments.";
+                artifactListEl.append(empty);
+            }
+            return;
+        }
+        if (artifactEmptyEl) {
+            artifactEmptyEl.hidden = true;
+        }
+        items.forEach((artifact) => {
+            const row = document.createElement("div");
+            row.className = "chat-artifact-item";
+
+            const link = document.createElement("a");
+            link.className = "chat-artifact-item-link";
+            link.href = artifact.download_url || "#";
+            link.target = "_blank";
+            link.rel = "noopener";
+
+            const name = document.createElement("span");
+            name.className = "chat-artifact-item-name";
+            name.textContent = artifact.name || "attachment";
+
+            const meta = document.createElement("span");
+            meta.className = "chat-artifact-item-meta";
+            const sizeBytes = Number(artifact.size_bytes || 0);
+            meta.textContent = sizeBytes ? `${sizeBytes.toLocaleString("en-US")} bytes` : "";
+
+            link.append(name);
+            if (meta.textContent) {
+                link.append(meta);
+            }
+
+            const deleteButton = document.createElement("button");
+            deleteButton.type = "button";
+            deleteButton.className = "chat-artifact-delete";
+            deleteButton.textContent = "X";
+            deleteButton.setAttribute("aria-label", `Delete ${artifact.name || "attachment"}`);
+            deleteButton.dataset.artifactDeleteUrl = artifact.delete_url || "";
+            deleteButton.dataset.artifactName = artifact.name || "attachment";
+
+            row.append(link, deleteButton);
+            artifactListEl.append(row);
+        });
+    };
+
+    const seedPendingArtifactQueueFromDOM = () => {
+        if (!artifactListEl) {
+            return;
+        }
+        const existingItems = artifactListEl.querySelectorAll(".chat-artifact-item");
+        currentArtifactQueue = Array.from({length: existingItems.length}, () => ({}));
+        if (artifactCountEl) {
+            artifactCountEl.textContent = String(existingItems.length);
+        }
+    };
+
+    const clearReloadedRunView = () => {
+        if (!startFreshOnReload) {
+            return;
+        }
+        activeRunId = null;
+        if (messagesEl) {
+            messagesEl.textContent = "";
+        }
+        renderArtifacts([]);
+        log("Detected browser reload; cleared prior run view and will start fresh.");
+    };
+
+    const deleteArtifact = async (artifact) => {
+        const deleteUrl = artifact?.delete_url || "";
+        if (!deleteUrl) {
+            return false;
+        }
+        const artifactName = artifact?.name || "attachment";
+        if (typeof window.confirm === "function") {
+            const accepted = window.confirm(`Delete ${artifactName}?`);
+            if (!accepted) {
+                return false;
+            }
+        }
+        setArtifactUploadState(true, "Deleting...");
+        try {
+            const response = await fetch(deleteUrl, {
+                method: "POST",
+                credentials: "same-origin",
+                headers: {
+                    Accept: "application/json",
+                    "X-CSRFToken": getCookie("csrftoken"),
+                },
+            });
+            if (!response.ok) {
+                throw new Error(`Delete failed (${response.status})`);
+            }
+            const payload = await response.json();
+            renderArtifacts(payload.artifacts || []);
+            return true;
+        } catch (error) {
+            warn("Unable to delete artifact", error);
+            appendSystemMessage("Unable to delete attachment.", "error");
+            return false;
+        } finally {
+            setArtifactUploadState(false);
+        }
+    };
+
+    artifactListEl?.addEventListener("click", (event) => {
+        const target = event.target;
+        if (!(target instanceof Element)) {
+            return;
+        }
+        const button = target.closest("[data-artifact-delete-url]");
+        if (!button || !artifactListEl.contains(button)) {
+            return;
+        }
+        const deleteUrl = button.getAttribute("data-artifact-delete-url") || "";
+        const artifactName = button.getAttribute("data-artifact-name") || "attachment";
+        if (!deleteUrl) {
+            return;
+        }
+        deleteArtifact({delete_url: deleteUrl, name: artifactName});
+    });
+
+    const uploadArtifacts = async (files) => {
+        if (!artifactUploadUrl || !files || !files.length) {
+            return false;
+        }
+        setArtifactUploadState(true);
+        try {
+            let runId = activeRunId;
+            if (runId && shouldRotateRunForNextPrompt()) {
+                const rotated = await rotateToFreshRun({
+                    reason: "Starting a fresh run for uploaded files.",
+                    rotationCode: "artifact_upload",
+                });
+                if (!rotated) {
+                    throw new Error("Unable to start a run for file upload");
+                }
+                runId = activeRunId;
+            } else if (!runId) {
+                const ensuredRunId = await ensureRunId();
+                runId = ensuredRunId || activeRunId;
+            }
+            if (!runId) {
+                throw new Error("No active run available for file upload");
+            }
+            const formData = new FormData();
+            formData.append("run_id", runId);
+            Array.from(files).forEach((file) => {
+                formData.append("files", file, file.name);
+            });
+            const response = await fetch(artifactUploadUrl, {
+                method: "POST",
+                credentials: "same-origin",
+                headers: {
+                    Accept: "application/json",
+                    "X-CSRFToken": getCookie("csrftoken"),
+                },
+                body: formData,
+            });
+            if (!response.ok) {
+                throw new Error(`Upload failed (${response.status})`);
+            }
+            const payload = await response.json();
+            if (payload?.run_id) {
+                activeRunId = String(payload.run_id);
+                storeRunId(activeRunId);
+                updateRunTimelineLink(activeRunId);
+                log("uploadArtifacts: pinned activeRunId to upload response run_id =", activeRunId);
+            }
+            renderArtifacts(payload.artifacts || []);
+            if (artifactUploadInput) {
+                artifactUploadInput.value = "";
+            }
+            return true;
+        } catch (error) {
+            warn("Unable to upload artifacts", error);
+            appendSystemMessage("Unable to upload file(s).", "error");
+            return false;
+        } finally {
+            setArtifactUploadState(false);
+        }
     };
 
     const rotateToFreshRun = async ({queuedText = null, reason = "", rotationCode = "unexpected_result"} = {}) => {
@@ -1718,6 +1947,10 @@
                 setStatus("Connected");
                 log("[tool_denied] run_id=", activeRunId, payload);
                 return;
+            case "artifact_consumed":
+                renderArtifacts(payload.artifacts || []);
+                log("[artifact_consumed] run_id=", activeRunId, payload);
+                return;
             case "approval_grants":
                 setApprovalGrants(payload.grants || []);
                 log("[approval_grants] run_id=", activeRunId, payload);
@@ -1916,7 +2149,9 @@
     };
 
     const initializeRunAndConnect = async () => {
-        syncCurrentRunId();
+        if (!startFreshOnReload) {
+            syncCurrentRunId();
+        }
         await ensureRunId();
         connect();
     };
@@ -1994,6 +2229,21 @@
         }
     });
 
+    artifactUploadTrigger?.addEventListener("click", () => {
+        artifactUploadInput?.click();
+    });
+
+    artifactUploadInput?.addEventListener("change", () => {
+        const files = artifactUploadInput.files || [];
+        if (!files.length) {
+            return;
+        }
+        uploadArtifacts(files);
+    });
+
+    clearReloadedRunView();
+    seedPendingArtifactQueueFromDOM();
     setRunStatus(activeRunStatus);
+    setArtifactUploadState(false);
     initializeRunAndConnect();
 })();

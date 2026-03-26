@@ -1,5 +1,6 @@
 from decimal import Decimal
 from collections import OrderedDict
+from pathlib import Path
 from django import forms
 from django.conf import settings
 from django.contrib import messages
@@ -7,7 +8,7 @@ from django.contrib.auth import get_user_model
 from django.contrib.auth.decorators import login_required
 from django.core.exceptions import PermissionDenied
 from django.db import transaction
-from django.http import JsonResponse
+from django.http import FileResponse, Http404, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.utils import timezone
@@ -32,9 +33,18 @@ from .forms import (
     AgentWorkspaceForm,
 )
 from .models import Agent
-from runs.models import AgentRun
+from runs.models import AgentRun, Artifact
+from runs.services.artifact_context import build_artifact_context_payload
+from runs.services.artifacts import (
+    delete_run_artifact,
+    pending_artifacts,
+    render_artifact_summary,
+    serialize_artifact,
+    store_run_artifact,
+)
 from runs.services.handoff import apply_successor_handoff
 from runs.services.memory import get_or_create_run_memory
+from runs.services.events import append_event
 from tools.models import AgentToolGrant, ToolDefinition
 from tools.policy import RISK_ORDER, get_effective_tools, visible_tools_for_user
 from llm.models import LLMModelProfile
@@ -592,6 +602,13 @@ def agent_detail(request, slug: str):
 
     effective_tools = get_effective_tools(agent, request.user)
     telegram_endpoint = find_agent_telegram_endpoint(agent)
+    current_run_artifacts = []
+    if current_run is not None:
+        current_pending_artifacts = pending_artifacts(current_run.artifacts.order_by("created_at"))
+        current_run_artifacts = [
+            _serialize_agent_artifact(agent.slug, artifact)
+            for artifact in current_pending_artifacts[:20]
+        ]
     context = {
         "agent": agent,
         "workspace": agent.workspace,
@@ -609,8 +626,23 @@ def agent_detail(request, slug: str):
         "llm_transport": transport,
         "llm_transport_label": transport_label,
         "current_run_id": str(current_run.id) if current_run else "",
+        "current_run_artifacts": current_run_artifacts,
+        "artifact_upload_url": reverse("agents:agent_artifact_upload", kwargs={"slug": agent.slug}),
     }
     return render(request, "agents/agent_detail.html", context)
+
+
+def _serialize_agent_artifact(agent_slug: str, artifact: Artifact) -> dict[str, object]:
+    payload = serialize_artifact(artifact)
+    payload["download_url"] = reverse(
+        "agents:agent_artifact_download",
+        kwargs={"slug": agent_slug, "artifact_id": artifact.id},
+    )
+    payload["delete_url"] = reverse(
+        "agents:agent_artifact_delete",
+        kwargs={"slug": agent_slug, "artifact_id": artifact.id},
+    )
+    return payload
 
 
 @login_required
@@ -632,6 +664,166 @@ def agent_telegram_mirror_toggle(request, slug: str):
     enabled = str(raw_enabled).strip().lower() in {"1", "true", "yes", "on"}
     updated = set_agent_telegram_mirror_enabled(agent, enabled)
     return JsonResponse({"ok": True, "enabled": enabled, "updated": updated})
+
+
+@login_required
+@require_http_methods(["POST"])
+def agent_artifact_upload(request, slug: str):
+    agent = get_object_or_404(Agent.objects.select_related("workspace", "owner"), slug=slug)
+    if not _can_access_agent(request.user, agent):
+        raise PermissionDenied("Workspace access required to view this agent.")
+
+    run_id = str(request.POST.get("run_id") or "").strip()
+    if not run_id:
+        return JsonResponse({"ok": False, "error": "Missing run_id."}, status=400)
+
+    run = get_object_or_404(
+        AgentRun.objects.select_related("agent", "workspace"),
+        id=run_id,
+        agent=agent,
+        workspace=agent.workspace,
+    )
+
+    uploaded_files = list(request.FILES.getlist("files") or [])
+    if not uploaded_files and request.FILES.get("file") is not None:
+        uploaded_files = [request.FILES["file"]]
+    if not uploaded_files:
+        return JsonResponse({"ok": False, "error": "No files uploaded."}, status=400)
+
+    artifacts: list[Artifact] = []
+    for uploaded_file in uploaded_files:
+        artifact = store_run_artifact(
+            run,
+            uploaded_file,
+            metadata={
+                "uploaded_by_user_id": request.user.id,
+                "uploaded_by_username": request.user.get_username(),
+            },
+        )
+        artifacts.append(artifact)
+
+    summary_text = render_artifact_summary(artifacts)
+    context_payload = build_artifact_context_payload(artifacts)
+    append_event(
+        run_id=str(run.id),
+        event_type="remote_ops_message",
+        payload={
+            "text": summary_text,
+            "author_label": "artifact",
+            "kind": "artifact_upload",
+            "timestamp": timezone.now().isoformat(),
+            "artifact_ids": [str(artifact.id) for artifact in artifacts],
+            "artifacts": [_serialize_agent_artifact(agent.slug, artifact) for artifact in artifacts],
+        },
+    )
+    for item in context_payload.get("artifacts") or []:
+        context_text = str(item.get("context_text") or item.get("text") or "").strip()
+        append_event(
+            run_id=str(run.id),
+            event_type="artifact_context",
+            payload={
+                "artifact_id": str(item.get("id") or ""),
+                "artifact_path": str(item.get("artifact_path") or item.get("storage_path") or ""),
+                "text": context_text,
+                "artifact": item,
+                "artifact_count": context_payload.get("artifact_count") or 0,
+                "timestamp": timezone.now().isoformat(),
+            },
+        )
+
+    return JsonResponse(
+        {
+            "ok": True,
+            "run_id": str(run.id),
+            "message": summary_text,
+            "artifacts": [
+                _serialize_agent_artifact(agent.slug, artifact)
+                for artifact in pending_artifacts(run.artifacts.order_by("created_at"))[:20]
+            ],
+        }
+    )
+
+
+@login_required
+def agent_artifact_download(request, slug: str, artifact_id: str):
+    agent = get_object_or_404(Agent.objects.select_related("workspace", "owner"), slug=slug)
+    if not _can_access_agent(request.user, agent):
+        raise PermissionDenied("Workspace access required to view this agent.")
+
+    artifact = get_object_or_404(
+        Artifact.objects.select_related("run", "run__agent"),
+        id=artifact_id,
+        run__agent=agent,
+    )
+    artifact_path = Path(artifact.storage_path)
+    if not artifact_path.exists():
+        raise Http404("Artifact file not available")
+    download_name = str(artifact.metadata.get("original_name") or artifact.name or artifact_path.name)
+    return FileResponse(
+        artifact_path.open("rb"),
+        as_attachment=True,
+        filename=download_name,
+    )
+
+
+@login_required
+@require_http_methods(["POST"])
+def agent_artifact_delete(request, slug: str, artifact_id: str):
+    agent = get_object_or_404(Agent.objects.select_related("workspace", "owner"), slug=slug)
+    if not _can_access_agent(request.user, agent):
+        raise PermissionDenied("Workspace access required to view this agent.")
+
+    artifact = get_object_or_404(
+        Artifact.objects.select_related("run", "run__agent"),
+        id=artifact_id,
+        run__agent=agent,
+    )
+    run = artifact.run
+    artifact_payload = _serialize_agent_artifact(agent.slug, artifact)
+    delete_run_artifact(artifact)
+    append_event(
+        run_id=str(run.id),
+        event_type="artifact_removed",
+        payload={
+            "artifact_id": artifact_payload["id"],
+            "attachment_id": artifact_payload.get("attachment_id") or artifact_payload["id"],
+            "artifact_name": artifact_payload["name"],
+            "filename": artifact_payload["name"],
+            "mime_type": artifact_payload.get("mime_type") or "",
+            "size_bytes": artifact_payload.get("size_bytes") or 0,
+            "sha256": artifact_payload.get("sha256") or "",
+            "canonical_path": artifact_payload.get("canonical_path") or artifact_payload.get("storage_path") or "",
+            "provided_in_prompt": artifact_payload.get("provided_in_prompt") or False,
+            "source_channel": artifact_payload.get("source_channel") or "",
+            "deleted": True,
+            "deleted_at": timezone.now().isoformat(),
+            "deletion_confirmed_by_user": True,
+            "timestamp": timezone.now().isoformat(),
+        },
+    )
+    append_event(
+        run_id=str(run.id),
+        event_type="remote_ops_message",
+        payload={
+            "text": f"Removed attachment: {artifact_payload['name']}",
+            "author_label": "artifact",
+            "kind": "artifact_delete",
+            "timestamp": timezone.now().isoformat(),
+            "artifact_id": artifact_payload["id"],
+        },
+    )
+    remaining = [
+        _serialize_agent_artifact(agent.slug, current_artifact)
+        for current_artifact in pending_artifacts(run.artifacts.order_by("created_at"))[:20]
+    ]
+    return JsonResponse(
+        {
+            "ok": True,
+            "run_id": str(run.id),
+            "message": f"Removed attachment: {artifact_payload['name']}",
+            "artifacts": remaining,
+        }
+    )
 
 
 def _serialize_effective_tools(effective_tools: list) -> list[dict[str, object]]:

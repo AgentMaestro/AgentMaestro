@@ -358,6 +358,153 @@ async def test_build_ws_input_items_resends_system_context_on_first_turn_after_c
 
 @pytest.mark.asyncio
 @pytest.mark.django_db(transaction=True)
+async def test_build_ws_input_items_drops_removed_artifact_context_after_hydration():
+    user = get_user_model().objects.create_user(username="ws-removed-artifact-user")
+    workspace = Workspace.objects.create(name="ws-removed-artifact-ws")
+    agent = Agent.objects.create(
+        workspace=workspace,
+        owner=user,
+        name="Removed Artifact Agent",
+        description="Drop deleted attachment context.",
+        soul="Preserve file context only while present.",
+    )
+    run = AgentRun.objects.create(
+        workspace=workspace,
+        agent=agent,
+        started_by=user,
+        status=AgentRun.Status.RUNNING,
+        channel=AgentRun.Channel.DASHBOARD,
+        input_text="prompt",
+    )
+    artifact_id = "artifact-removed-123"
+    append_event(
+        run_id=str(run.id),
+        event_type="artifact_context",
+        payload={
+            "artifact_id": artifact_id,
+            "artifact_path": r"C:\Dev\AgentMaestro\backend\run_artifacts\run-1\artifact-removed-123\notes.txt",
+            "text": "ATTACHED FILE CONTEXT\nFilename: notes.txt\nFull path: C:\\Dev\\AgentMaestro\\backend\\run_artifacts\\run-1\\artifact-removed-123\\notes.txt\nType: FILE\nExtracted content:\nhello world\nInstruction: Use this content directly. Do not infer that only the filename was provided.",
+        },
+        broadcast_to_run=False,
+    )
+    append_event(
+        run_id=str(run.id),
+        event_type="artifact_removed",
+        payload={"artifact_id": artifact_id, "artifact_name": "notes.txt"},
+        broadcast_to_run=False,
+    )
+
+    consumer = AgentChatConsumer(
+        scope={"type": "websocket", "user": user, "url_route": {"kwargs": {"slug": agent.slug}}}
+    )
+    consumer.agent = agent
+    consumer.run = run
+    consumer.run_id = str(run.id)
+    consumer.model_name = "gpt-5-mini"
+    consumer.transport = "ws"
+    consumer.use_ws = True
+    consumer.session = SimpleNamespace(previous_response_id="resp-123")
+    consumer.history = [{"role": "user", "content": "What context were you given?"}]
+    consumer._include_system_context = False
+
+    await consumer._hydrate_artifact_context_from_events()
+    items = consumer._build_ws_input_items()
+
+    assert items == [
+        {
+            "type": "message",
+            "role": "user",
+            "content": [{"type": "input_text", "text": "What context were you given?"}],
+        }
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.django_db(transaction=True)
+async def test_dispatch_to_provider_refreshes_removed_artifact_context(monkeypatch):
+    user = get_user_model().objects.create_user(username="ws-refresh-removed-artifact-user")
+    workspace = Workspace.objects.create(name="ws-refresh-removed-artifact-ws")
+    agent = Agent.objects.create(
+        workspace=workspace,
+        owner=user,
+        name="Refresh Removed Artifact Agent",
+        description="Refresh deleted attachment context before dispatch.",
+        soul="Preserve file context only while present.",
+    )
+    run = AgentRun.objects.create(
+        workspace=workspace,
+        agent=agent,
+        started_by=user,
+        status=AgentRun.Status.RUNNING,
+        channel=AgentRun.Channel.DASHBOARD,
+        input_text="prompt",
+    )
+    artifact_id = "artifact-refresh-123"
+    artifact_text = (
+        "ATTACHED FILE CONTEXT\n"
+        "Filename: notes.txt\n"
+        "Full path: C:\\Dev\\AgentMaestro\\backend\\run_artifacts\\run-1\\artifact-refresh-123\\notes.txt\n"
+        "Type: FILE\n"
+        "Extracted content:\n"
+        "hello world\n"
+        "Instruction: Use this content directly. Do not infer that only the filename was provided."
+    )
+    append_event(
+        run_id=str(run.id),
+        event_type="artifact_context",
+        payload={
+            "artifact_id": artifact_id,
+            "artifact_path": r"C:\Dev\AgentMaestro\backend\run_artifacts\run-1\artifact-refresh-123\notes.txt",
+            "text": artifact_text,
+        },
+        broadcast_to_run=False,
+    )
+    append_event(
+        run_id=str(run.id),
+        event_type="artifact_removed",
+        payload={"artifact_id": artifact_id, "artifact_name": "notes.txt"},
+        broadcast_to_run=False,
+    )
+
+    consumer = AgentChatConsumer(
+        scope={"type": "websocket", "user": user, "url_route": {"kwargs": {"slug": agent.slug}}}
+    )
+    consumer.agent = agent
+    consumer.run = run
+    consumer.run_id = str(run.id)
+    consumer.model_name = "gpt-5-mini"
+    consumer.transport = "ws"
+    consumer.use_ws = True
+    consumer.session = SimpleNamespace(previous_response_id="resp-123")
+    consumer.history = [
+        {
+            "role": "system",
+            "content": artifact_text,
+            "kind": "artifact_context",
+            "artifact_id": artifact_id,
+            "artifact_path": r"C:\Dev\AgentMaestro\backend\run_artifacts\run-1\artifact-refresh-123\notes.txt",
+        },
+        {"role": "user", "content": "What context were you given?"},
+    ]
+    consumer._include_system_context = False
+
+    captured_history = {}
+
+    async def fake_dispatch_ws():
+        captured_history["entries"] = list(consumer.history)
+        return None
+
+    consumer._dispatch_to_provider_ws = fake_dispatch_ws
+
+    await consumer._dispatch_to_provider()
+
+    assert all(entry.get("artifact_id") != artifact_id for entry in captured_history["entries"])
+    assert all(entry.get("artifact_id") != artifact_id for entry in consumer.history)
+    assert any(entry.get("role") == "user" for entry in consumer.history)
+
+
+@pytest.mark.asyncio
+@pytest.mark.django_db(transaction=True)
 async def test_sync_outstanding_provider_call_state_restores_pending_tool_calls():
     user = get_user_model().objects.create_user(username="ws-pending-user")
     workspace = Workspace.objects.create(name="ws-pending-ws")

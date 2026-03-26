@@ -1,6 +1,0 @@
-*** Begin Patch
-*** Update File: llm/services/providers/gemini_http.py
-@@
--logger = logging.getLogger(__name__)
-+logger = logging.getLogger(__name__)
-*** End Patch

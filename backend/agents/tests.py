@@ -5,9 +5,12 @@ from django.contrib.sessions.middleware import SessionMiddleware
 from django.db import IntegrityError
 from django.test import RequestFactory, TestCase
 from django.urls import reverse
+from django.core.files.uploadedfile import SimpleUploadedFile
+from django.utils import timezone
 
 from core.models import Workspace
 from llm.models import ModelsAvailable
+from runs.models import AgentRun, Artifact, RunEvent
 
 from .admin import AgentAdmin
 from .consumers import _scrub_input_text
@@ -239,6 +242,115 @@ class AgentDetailViewTests(TestCase):
         self.client.force_login(other)
         response = self.client.get(reverse("agents:agent_detail", kwargs={"slug": self.agent.slug}))
         self.assertEqual(response.status_code, 403)
+
+
+class AgentArtifactViewTests(TestCase):
+    def setUp(self):
+        self.owner = get_user_model().objects.create_user(username="artifact-owner")
+        self.workspace = Workspace.objects.create(name="Artifact Workspace")
+        self.agent = Agent.objects.create(
+            workspace=self.workspace,
+            owner=self.owner,
+            name="Artifact Agent",
+            soul="Handle files.",
+        )
+        self.run = AgentRun.objects.create(
+            workspace=self.workspace,
+            agent=self.agent,
+            started_by=self.owner,
+            status=AgentRun.Status.RUNNING,
+            channel=AgentRun.Channel.DASHBOARD,
+            started_at=timezone.now(),
+        )
+        self.client.force_login(self.owner)
+
+    def test_upload_creates_artifact_and_run_message(self):
+        upload = SimpleUploadedFile("notes with spaces.txt", b"hello world", content_type="text/plain")
+        response = self.client.post(
+            reverse("agents:agent_artifact_upload", kwargs={"slug": self.agent.slug}),
+            data={"run_id": str(self.run.id), "files": upload},
+        )
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertTrue(payload["ok"])
+        self.assertEqual(str(self.run.id), payload["run_id"])
+        self.assertEqual(1, len(payload["artifacts"]))
+
+        artifact = Artifact.objects.get(run=self.run)
+        self.assertEqual("notes with spaces.txt", artifact.name)
+        self.assertTrue(artifact.storage_path)
+        self.assertTrue(artifact.metadata["size_bytes"] > 0)
+        self.assertTrue(artifact.metadata["original_name"].endswith(".txt"))
+        self.assertTrue(artifact.metadata["sha256"])
+        self.assertTrue(artifact.metadata["provided_in_prompt"])
+        self.assertEqual("upload", artifact.metadata["source_channel"])
+        self.assertEqual(self.owner.id, artifact.metadata["submitted_by_user_id"])
+
+        event = RunEvent.objects.filter(run=self.run, event_type="remote_ops_message").order_by("-seq").first()
+        self.assertIsNotNone(event)
+        self.assertIn("Attached 1 file(s):", event.payload["text"])
+
+        context_event = RunEvent.objects.filter(run=self.run, event_type="artifact_context").order_by("-seq").first()
+        self.assertIsNotNone(context_event)
+        self.assertIn("ATTACHED FILE CONTEXT", context_event.payload["text"])
+        self.assertIn("ATTACHMENT METADATA", context_event.payload["text"])
+        self.assertIn("attachment_id:", context_event.payload["text"])
+        self.assertIn("sha256:", context_event.payload["text"])
+        self.assertIn("provided_in_prompt: true", context_event.payload["text"])
+        self.assertIn("Full path:", context_event.payload["text"])
+        self.assertIn("hello world", context_event.payload["text"])
+        self.assertTrue(context_event.payload["artifact_path"])
+
+    def test_download_returns_attachment(self):
+        upload = SimpleUploadedFile("report.txt", b"report body", content_type="text/plain")
+        response = self.client.post(
+            reverse("agents:agent_artifact_upload", kwargs={"slug": self.agent.slug}),
+            data={"run_id": str(self.run.id), "files": upload},
+        )
+        self.assertEqual(response.status_code, 200)
+        uploaded_artifact = Artifact.objects.get(run=self.run)
+        download = self.client.get(
+            reverse(
+                "agents:agent_artifact_download",
+                kwargs={"slug": self.agent.slug, "artifact_id": uploaded_artifact.id},
+            )
+        )
+        self.assertEqual(download.status_code, 200)
+        self.assertIn("attachment", download.headers["Content-Disposition"].lower())
+        self.assertIn("report.txt", download.headers["Content-Disposition"])
+
+    def test_delete_removes_artifact_from_run(self):
+        upload = SimpleUploadedFile("remove-me.txt", b"remove me", content_type="text/plain")
+        response = self.client.post(
+            reverse("agents:agent_artifact_upload", kwargs={"slug": self.agent.slug}),
+            data={"run_id": str(self.run.id), "files": upload},
+        )
+        self.assertEqual(response.status_code, 200)
+        artifact = Artifact.objects.get(run=self.run)
+
+        delete_response = self.client.post(
+            reverse(
+                "agents:agent_artifact_delete",
+                kwargs={"slug": self.agent.slug, "artifact_id": artifact.id},
+            )
+        )
+        self.assertEqual(delete_response.status_code, 200)
+        payload = delete_response.json()
+        self.assertTrue(payload["ok"])
+        self.assertEqual([], payload["artifacts"])
+        self.assertFalse(Artifact.objects.filter(id=artifact.id).exists())
+
+        removed_event = RunEvent.objects.filter(run=self.run, event_type="artifact_removed").order_by("-seq").first()
+        self.assertIsNotNone(removed_event)
+        self.assertEqual(str(artifact.id), removed_event.payload["artifact_id"])
+        self.assertTrue(removed_event.payload["deleted"])
+        self.assertTrue(removed_event.payload["deletion_confirmed_by_user"])
+        self.assertEqual("upload", removed_event.payload["source_channel"])
+        self.assertTrue(removed_event.payload["sha256"])
+
+        notice_event = RunEvent.objects.filter(run=self.run, event_type="remote_ops_message").order_by("-seq").first()
+        self.assertIsNotNone(notice_event)
+        self.assertIn("Removed attachment:", notice_event.payload["text"])
 
 
 class AgentAdminToolSyncTests(TestCase):

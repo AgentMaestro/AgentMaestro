@@ -5,6 +5,7 @@ from agentmaestro.celery import app
 from django.conf import settings
 from logging_utils import get_app_logger
 from runs.models import AgentRun
+from runs.services.artifacts import purge_consumed_artifacts
 from runs.services.checkpoints import archive_completed_runs
 from runs.services.headless import execute_headless_run as execute_headless_run_service
 from runs.services.recovery import handle_run_failure
@@ -46,6 +47,14 @@ def archive_completed_runs_task():
         limit=getattr(settings, "ARCHIVE_LIMIT", None),
         compact=getattr(settings, "ARCHIVE_COMPACT_EVENTS", True),
         event_types=getattr(settings, "VERBOSE_EVENT_TYPES", None),
+    )
+
+
+@app.task(name="runs.tasks.purge_consumed_artifacts")
+def purge_consumed_artifacts_task():
+    return purge_consumed_artifacts(
+        older_than_days=getattr(settings, "ARTIFACT_RETENTION_DAYS", 30),
+        limit=getattr(settings, "ARTIFACT_PURGE_LIMIT", None),
     )
 
 

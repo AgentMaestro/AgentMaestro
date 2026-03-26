@@ -418,7 +418,8 @@ class OpenAIResponsesWebSocketSession:
         if not response_ref:
             response_ref = event.get("response_id") or event.get("id") or ""
         previous_ref = self.previous_response_id or ""
-        logger.info(
+        log_fn = logger.debug if str(event_type or "").endswith(".delta") else logger.info
+        log_fn(
             "%s event run=%s model=%s type=%s response_id=%s previous_response_id_sent=%s",
             OPENAI_WS_LOG_PREFIX,
             self._run_id,

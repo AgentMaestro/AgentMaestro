@@ -3,6 +3,7 @@ import json
 import re
 import time
 import uuid
+from collections import Counter
 from pathlib import Path
 from types import SimpleNamespace
 from urllib.parse import parse_qs
@@ -23,12 +24,13 @@ from llm.services.registry import get_client
 from llm.services.tool_code import extract_code_like_tool_calls
 from llm.system_context import build_system_context
 from memory.remember_requests import capture_explicit_user_memory_request
-from runs.models import AgentRun, AgentStep, RunEvent
+from runs.models import AgentRun, AgentStep, Artifact, RunEvent
 from runs.services.event_builders import (
     build_assistant_message_payload,
     build_chat_message_payload,
 )
 from runs.services.events import append_event
+from runs.services.artifacts import pending_artifacts, serialize_artifact
 from runs.services.handoff import build_handoff_system_note, get_run_handoff_payload
 from runs.services.input_items import build_input_items, build_ws_request_input_items
 from runs.services.memory import get_or_create_run_memory
@@ -407,6 +409,63 @@ def _get_last_assistant_model_for_run(run_id: str) -> str | None:
 
 
 @database_sync_to_async
+def _get_artifact_context_events(run_id: str) -> list[dict[str, object]]:
+    if not run_id:
+        return []
+    return list(
+        RunEvent.objects.filter(
+            run_id=run_id,
+            event_type__in=["artifact_context", "artifact_removed", "artifact_consumed"],
+        )
+        .order_by("seq")
+        .values("event_type", "payload", "seq")
+    )
+
+
+@database_sync_to_async
+def _consume_artifact_contexts(run_id: str, artifact_ids: list[str]) -> dict[str, object] | None:
+    normalized_ids = [str(artifact_id or "").strip() for artifact_id in artifact_ids if str(artifact_id or "").strip()]
+    if not run_id or not normalized_ids:
+        return None
+    consumed_at = timezone.now().isoformat()
+    consumed_artifacts = [
+        serialize_artifact(artifact)
+        for artifact in Artifact.objects.filter(run_id=run_id, id__in=normalized_ids).order_by("created_at")
+    ]
+    marked_count = 0
+    for artifact in Artifact.objects.filter(run_id=run_id, id__in=normalized_ids):
+        metadata = dict(artifact.metadata or {})
+        if str(metadata.get("consumed_at") or "").strip():
+            continue
+        metadata["consumed_at"] = consumed_at
+        artifact.metadata = metadata
+        artifact.save(update_fields=["metadata", "updated_at"])
+        marked_count += 1
+    remaining = pending_artifacts(Artifact.objects.filter(run_id=run_id).order_by("created_at"))[:20]
+    remaining_payload = [serialize_artifact(artifact) for artifact in remaining]
+    append_event(
+        run_id=run_id,
+        event_type="artifact_consumed",
+        payload={
+            "artifact_ids": normalized_ids,
+            "artifact_count": len(normalized_ids),
+            "consumed_artifacts": consumed_artifacts,
+            "artifacts": remaining_payload,
+            "timestamp": consumed_at,
+        },
+        broadcast_to_run=True,
+    )
+    return {
+        "artifact_ids": normalized_ids,
+        "artifact_count": len(normalized_ids),
+        "consumed_artifacts": consumed_artifacts,
+        "remaining_artifacts": remaining_payload,
+        "consumed_at": consumed_at,
+        "marked_count": marked_count,
+    }
+
+
+@database_sync_to_async
 def _bootstrap_memory_for_first_turn(run_id: str, agent_id: str, user_text: str):
     if not run_id or not agent_id:
         return None
@@ -588,6 +647,8 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
         self._awaiting_tool_output = False
         self._agents_md_bootstrap_complete = False
         self._response_chain_previous_id: str = ""
+        self._artifact_context_ids: set[str] = set()
+        self._consumed_artifact_context_ids: set[str] = set()
         self._system_context_marker = "_agentmaestro_system_context"
         self._model_candidates: list[dict[str, object]] = []
         self._active_model_candidate_index: int = 0
@@ -998,6 +1059,7 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
                 {"role": "system", "content": handoff_system_note, "_handoff_context": True}
             )
         self._ensure_system_context()
+        await self._hydrate_artifact_context_from_events()
 
         run_group = _run_group(self.run_id)
         approvals_group = _approvals_group(workspace_id)
@@ -1348,6 +1410,7 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
                 )
         bootstrap_result = None
         if self.run_id and self.agent:
+            await self._hydrate_artifact_context_from_events()
             bootstrap_result = await _bootstrap_memory_for_first_turn(
                 str(self.run_id),
                 str(self.agent.id),
@@ -1425,6 +1488,8 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
         await self._dispatch_to_provider()
 
     async def _dispatch_to_provider(self):
+        if self.run_id:
+            await self._hydrate_artifact_context_from_events()
         self._ensure_system_context()
         async with self._send_lock:
             if self.use_ws:
@@ -1536,6 +1601,12 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
                     len(self._tool_output_payloads),
                     timezone.now().isoformat(),
                 )
+            logger.info(
+                "Transport input summary run=%s transport=%s summary=%s",
+                self.run_id,
+                self._transport_label(),
+                self._summarize_ws_input_items(input_items),
+            )
             await self._log_transport_traffic(
                 f"{self._transport_label()} SEND",
                 payload_snapshot,
@@ -1582,6 +1653,25 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
                         await _set_run_previous_response_id(
                             self.run_id or "", normalized_response_id
                         )
+                if self.run_id and self._artifact_context_ids:
+                    consumed_context = await _consume_artifact_contexts(
+                        str(self.run_id),
+                        sorted(self._artifact_context_ids),
+                    )
+                    if consumed_context:
+                        consumed_ids = {
+                            str(value or "").strip()
+                            for value in consumed_context.get("artifact_ids") or []
+                            if str(value or "").strip()
+                        }
+                        if consumed_ids:
+                            self._consumed_artifact_context_ids.update(consumed_ids)
+                            self._artifact_context_ids.difference_update(consumed_ids)
+                            self.history = [
+                                entry
+                                for entry in self.history
+                                if str(entry.get("artifact_id") or "").strip() not in consumed_ids
+                            ]
                 if self._last_tool_call_id:
                     self._clear_tool_output_context()
                 self._include_system_context = False
@@ -1838,6 +1928,25 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
                             await _set_run_previous_response_id(
                                 self.run_id or "", normalized_response_id
                             )
+                if self.run_id and self._artifact_context_ids:
+                    consumed_context = await _consume_artifact_contexts(
+                        str(self.run_id),
+                        sorted(self._artifact_context_ids),
+                    )
+                    if consumed_context:
+                        consumed_ids = {
+                            str(value or "").strip()
+                            for value in consumed_context.get("artifact_ids") or []
+                            if str(value or "").strip()
+                        }
+                        if consumed_ids:
+                            self._consumed_artifact_context_ids.update(consumed_ids)
+                            self._artifact_context_ids.difference_update(consumed_ids)
+                            self.history = [
+                                entry
+                                for entry in self.history
+                                if str(entry.get("artifact_id") or "").strip() not in consumed_ids
+                            ]
                 tool_calls = response.get("tool_calls") or []
                 assistant_text = response.get("text") or ""
                 if not tool_calls and assistant_text:
@@ -2177,6 +2286,85 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
         self.history.insert(
             0, {"role": "system", "content": context, self._system_context_marker: True}
         )
+
+    async def _hydrate_artifact_context_from_events(self) -> None:
+        if not self.run_id:
+            return
+        try:
+            events = await _get_artifact_context_events(str(self.run_id))
+        except RuntimeError as exc:
+            if "Database access not allowed" in str(exc):
+                logger.debug(
+                    "Skipping artifact context hydration because database access is unavailable run=%s",
+                    self.run_id,
+                )
+                return
+            raise
+        removed_artifact_ids: set[str] = set()
+        consumed_artifact_ids: set[str] = set()
+        for row in events:
+            event_type = str(row.get("event_type") or "").strip()
+            payload = row.get("payload") if isinstance(row.get("payload"), dict) else {}
+            artifact_id = str(payload.get("artifact_id") or "").strip()
+            artifact_ids = [
+                str(value or "").strip()
+                for value in (payload.get("artifact_ids") or [])
+                if str(value or "").strip()
+            ] if isinstance(payload.get("artifact_ids"), list) else []
+            if event_type == "artifact_removed":
+                if artifact_id:
+                    removed_artifact_ids.add(artifact_id)
+                    self._artifact_context_ids.discard(artifact_id)
+                    self.history = [
+                        entry
+                        for entry in self.history
+                        if str(entry.get("artifact_id") or "").strip() != artifact_id
+                    ]
+                continue
+            if event_type == "artifact_consumed":
+                if artifact_id:
+                    consumed_artifact_ids.add(artifact_id)
+                for value in artifact_ids:
+                    consumed_artifact_ids.add(value)
+                self._consumed_artifact_context_ids.update(consumed_artifact_ids)
+                if consumed_artifact_ids:
+                    self._artifact_context_ids.difference_update(consumed_artifact_ids)
+                    self.history = [
+                        entry
+                        for entry in self.history
+                        if str(entry.get("artifact_id") or "").strip() not in consumed_artifact_ids
+                    ]
+                continue
+            if (
+                not artifact_id
+                or artifact_id in self._artifact_context_ids
+                or artifact_id in removed_artifact_ids
+                or artifact_id in consumed_artifact_ids
+                or artifact_id in self._consumed_artifact_context_ids
+            ):
+                continue
+            text = str(payload.get("text") or "").strip()
+            if not text:
+                continue
+            artifact_path = str(payload.get("artifact_path") or "").strip()
+            self.history.append(
+                {
+                    "role": "system",
+                    "content": text,
+                    "kind": "artifact_context",
+                    "artifact_id": artifact_id,
+                    "artifact_path": artifact_path,
+                    "artifact_count": payload.get("artifact_count"),
+                }
+            )
+            self._artifact_context_ids.add(artifact_id)
+            logger.info(
+                "Hydrated artifact context into history run=%s artifact_id=%s artifact_path=%s text_len=%d",
+                self.run_id,
+                artifact_id,
+                artifact_path,
+                len(text),
+            )
 
     async def _flush_pending_tool_results(self, limit: int = 20) -> None:
         if not self.run_id:
@@ -2641,14 +2829,100 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
             )
             return
 
+        if event_type == "artifact_context":
+            text = str(data.get("text") or "").strip()
+            artifact_id = str(data.get("artifact_id") or "").strip()
+            artifact_path = str(data.get("artifact_path") or "").strip()
+            if text:
+                if artifact_id:
+                    self._artifact_context_ids.add(artifact_id)
+                self.history.append(
+                    {
+                        "role": "system",
+                        "content": text,
+                        "kind": "artifact_context",
+                        "artifact_id": artifact_id,
+                        "artifact_path": artifact_path,
+                        "artifact_count": data.get("artifact_count"),
+                    }
+                )
+            logger.info(
+                "4:  Event type -> artifact_context AgentChatConsumer.push captured run=%s artifact_count=%s text_len=%s artifact_path=%s",
+                getattr(self, "run_id", None),
+                data.get("artifact_count"),
+                len(text),
+                artifact_path,
+            )
+            return
+
         if event_type == "remote_ops_message":
+            text = str(data.get("text") or "")
+            kind = str(data.get("kind") or "remote_ops").strip()
+            if text and kind not in {"artifact_upload", "artifact_delete"}:
+                self.history.append(
+                    {
+                        "role": "system",
+                        "content": text,
+                        "kind": kind,
+                    }
+                )
             await self.send_json(
                 {
                     "type": "message",
                     "role": "system",
                     "author": str(data.get("author_label") or "system").strip().lower(),
-                    "kind": str(data.get("kind") or "remote_ops"),
-                    "text": data.get("text") or "",
+                    "kind": kind,
+                    "text": text,
+                    "timestamp": data.get("timestamp") or timezone.now().isoformat(),
+                }
+            )
+            return
+
+        if event_type == "artifact_removed":
+            artifact_id = str(data.get("artifact_id") or "").strip()
+            if artifact_id:
+                self._artifact_context_ids.discard(artifact_id)
+                self._consumed_artifact_context_ids.discard(artifact_id)
+                self.history = [
+                    entry
+                    for entry in self.history
+                    if str(entry.get("artifact_id") or "").strip() != artifact_id
+                ]
+            logger.info(
+                "4:  Event type -> artifact_removed AgentChatConsumer.push captured run=%s artifact_id=%s",
+                getattr(self, "run_id", None),
+                artifact_id,
+            )
+            return
+
+        if event_type == "artifact_consumed":
+            artifact_ids = [
+                str(value or "").strip()
+                for value in (data.get("artifact_ids") or [])
+                if str(value or "").strip()
+            ] if isinstance(data.get("artifact_ids"), list) else []
+            artifact_id = str(data.get("artifact_id") or "").strip()
+            if artifact_id:
+                artifact_ids.append(artifact_id)
+            if artifact_ids:
+                artifact_id_set = set(artifact_ids)
+                self._artifact_context_ids.difference_update(artifact_id_set)
+                self._consumed_artifact_context_ids.update(artifact_id_set)
+                self.history = [
+                    entry
+                    for entry in self.history
+                    if str(entry.get("artifact_id") or "").strip() not in artifact_id_set
+                ]
+            logger.info(
+                "4:  Event type -> artifact_consumed AgentChatConsumer.push captured run=%s artifact_ids=%s",
+                getattr(self, "run_id", None),
+                artifact_ids,
+            )
+            await self.send_json(
+                {
+                    "type": "artifact_consumed",
+                    "artifact_ids": artifact_ids,
+                    "artifacts": data.get("artifacts") or [],
                     "timestamp": data.get("timestamp") or timezone.now().isoformat(),
                 }
             )
@@ -2714,6 +2988,90 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
             if content:
                 return content
         return None
+
+    @staticmethod
+    def _extract_input_item_text(item: dict[str, object]) -> str:
+        content_items = item.get("content", [])
+        if isinstance(content_items, list):
+            text = " ".join(
+                str(entry.get("text") or "")
+                for entry in content_items
+                if isinstance(entry, dict)
+            ).strip()
+            if text:
+                return text
+        output_text = str(item.get("output") or "").strip()
+        if output_text:
+            return output_text
+        return str(item.get("content") or "").strip()
+
+    @staticmethod
+    def _summarize_ws_input_items(input_items: list[dict[str, object]]) -> dict[str, object]:
+        role_counts: Counter[str] = Counter()
+        type_counts: Counter[str] = Counter()
+        role_text_counts: dict[str, Counter[str]] = {
+            "system": Counter(),
+            "user": Counter(),
+            "assistant": Counter(),
+            "tool": Counter(),
+        }
+        artifact_context_texts: Counter[str] = Counter()
+
+        for item in input_items:
+            role = str(item.get("role") or "").strip() or "<missing>"
+            item_type = str(item.get("type") or "").strip() or "<missing>"
+            role_counts[role] += 1
+            type_counts[item_type] += 1
+
+            text = AgentChatConsumer._extract_input_item_text(item)
+            normalized_text = " ".join(text.split())
+            if not normalized_text:
+                continue
+            if role in role_text_counts:
+                role_text_counts[role][normalized_text] += 1
+            if role == "system" and normalized_text.startswith("ATTACHED FILE CONTEXT"):
+                artifact_context_texts[normalized_text] += 1
+
+        duplicate_text_entries = sum(
+            count - 1
+            for role_counts_by_text in role_text_counts.values()
+            for count in role_counts_by_text.values()
+            if count > 1
+        )
+        repeated_artifact_context_items = sum(
+            count - 1 for count in artifact_context_texts.values() if count > 1
+        )
+
+        return {
+            "items": len(input_items),
+            "role_counts": dict(role_counts),
+            "type_counts": dict(type_counts),
+            "system_items": role_counts.get("system", 0),
+            "user_items": role_counts.get("user", 0),
+            "assistant_items": role_counts.get("assistant", 0),
+            "tool_items": role_counts.get("tool", 0),
+            "function_call_output_items": type_counts.get("function_call_output", 0),
+            "artifact_context_items": role_counts.get("system", 0)
+            and sum(
+                1
+                for item in input_items
+                if str(item.get("role") or "").strip() == "system"
+                and AgentChatConsumer._extract_input_item_text(item)
+                .lstrip()
+                .startswith("ATTACHED FILE CONTEXT")
+            ),
+            "repeated_artifact_context_items": repeated_artifact_context_items,
+            "repeated_user_text_entries": sum(
+                count - 1 for count in role_text_counts["user"].values() if count > 1
+            ),
+            "repeated_system_text_entries": sum(
+                count - 1 for count in role_text_counts["system"].values() if count > 1
+            ),
+            "repeated_tool_text_entries": sum(
+                count - 1 for count in role_text_counts["tool"].values() if count > 1
+            ),
+            "duplicate_text_entries": duplicate_text_entries,
+        }
 
     def _summarize_input_items(self, input_items: list[dict[str, object]]) -> str:
         snippets: list[str] = []

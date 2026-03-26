@@ -185,6 +185,72 @@
     }
     .archive-meta { display: grid; gap: 4px; }
     .archive-link { color: #7dd3fc; font-weight: 700; text-decoration: none; }
+    .attachment-panel {
+      margin-top: 18px;
+      border-radius: 22px;
+      border: 1px solid rgba(125, 211, 252, 0.18);
+      background: linear-gradient(180deg, rgba(8, 47, 73, 0.35), rgba(15, 23, 42, 0.82));
+      box-shadow: 0 14px 30px rgba(2, 6, 23, 0.24);
+      padding: 22px 24px;
+    }
+    .attachment-panel .panel-head {
+      display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; flex-wrap: wrap;
+    }
+    .attachment-panel .panel-head p { margin: 8px 0 0; color: rgba(191, 219, 254, 0.78); max-width: 72ch; }
+    .attachment-rail {
+      margin-top: 14px;
+      display: grid;
+      gap: 12px;
+    }
+    .attachment-card {
+      border-radius: 18px;
+      border: 1px solid rgba(125, 211, 252, 0.18);
+      background: rgba(15, 23, 42, 0.72);
+      padding: 16px 18px;
+      color: rgba(226, 232, 240, 0.96);
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
+    }
+    .attachment-card[data-tone="context"] { border-color: rgba(96, 165, 250, 0.28); background: rgba(15, 23, 42, 0.88); }
+    .attachment-card[data-tone="consumed"] { border-color: rgba(34, 197, 94, 0.28); background: rgba(6, 78, 59, 0.22); }
+    .attachment-card[data-tone="removed"] { border-color: rgba(248, 113, 113, 0.3); background: rgba(127, 29, 29, 0.22); }
+    .attachment-card-header { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; flex-wrap: wrap; }
+    .attachment-card-title { font-size: 1.02rem; font-weight: 800; }
+    .attachment-card-subtitle { margin-top: 4px; color: rgba(191, 219, 254, 0.78); }
+    .attachment-card-status {
+      display: inline-flex; align-items: center; justify-content: center;
+      border-radius: 999px; padding: 4px 10px; font-size: 0.75rem; font-weight: 800;
+      letter-spacing: 0.08em; text-transform: uppercase;
+      background: rgba(56, 189, 248, 0.12);
+      color: #bae6fd;
+      border: 1px solid rgba(56, 189, 248, 0.2);
+      white-space: nowrap;
+    }
+    .attachment-card[data-tone="consumed"] .attachment-card-status { background: rgba(34, 197, 94, 0.12); color: #bbf7d0; border-color: rgba(34, 197, 94, 0.2); }
+    .attachment-card[data-tone="removed"] .attachment-card-status { background: rgba(248, 113, 113, 0.12); color: #fecaca; border-color: rgba(248, 113, 113, 0.2); }
+    .attachment-card-body { margin-top: 14px; display: grid; gap: 12px; }
+    .attachment-card-summary { margin: 0; color: rgba(241, 245, 249, 0.92); line-height: 1.45; }
+    .attachment-meta { display: grid; gap: 8px; }
+    .attachment-meta-row {
+      display: grid; grid-template-columns: 180px 1fr; gap: 10px; align-items: start;
+      padding: 8px 10px; border-radius: 12px; background: rgba(255, 255, 255, 0.03);
+    }
+    .attachment-meta-key { color: rgba(148, 163, 184, 0.95); font-size: 0.82rem; text-transform: uppercase; letter-spacing: 0.08em; font-weight: 800; }
+    .attachment-meta-value { color: rgba(248, 250, 252, 0.95); word-break: break-word; }
+    .attachment-payload {
+      margin: 0;
+      padding: 14px;
+      border-radius: 14px;
+      overflow: auto;
+      background: rgba(2, 6, 23, 0.62);
+      border: 1px solid rgba(125, 211, 252, 0.12);
+      color: rgba(224, 242, 254, 0.95);
+      font-size: 0.84rem;
+      line-height: 1.45;
+      white-space: pre-wrap;
+    }
+    @media (max-width: 720px) {
+      .attachment-meta-row { grid-template-columns: 1fr; }
+    }
     .loading-state, .error-state, .empty-state {
       border-radius: 16px; border: 1px solid rgba(255, 255, 255, 0.08); background: rgba(255, 255, 255, 0.03); padding: 14px 16px;
       color: rgba(248, 250, 252, 0.74);
@@ -252,6 +318,17 @@
         <div id="detailRail" class="detail-rail"><div class="loading-state">Loading AgentSteps from the snapshot…</div></div>
       </section>
 
+      <section class="attachment-panel">
+        <div class="panel-head">
+          <div>
+            <h2>Attachment events</h2>
+            <p>Attachment context is rendered here as its own card stream. These entries show when context was delivered, consumed, or removed from the chat queue.</p>
+          </div>
+          <div id="attachmentPosition" class="timeline-position">Loading attachment events…</div>
+        </div>
+        <div id="attachmentRail" class="attachment-rail"><div class="loading-state">Loading attachment events from the snapshot…</div></div>
+      </section>
+
       <section class="archives-panel">
         <div class="panel-head">
           <div>
@@ -286,6 +363,6 @@
       agentUrl: "{% url 'agents:agent_detail' slug=run.agent.slug %}",
     };
   </script>
-  <script src="{% static 'ui/js/run_timeline.js' %}?v=20260320-1" defer></script>
+  <script src="{% static 'ui/js/run_timeline.js' %}?v=20260325-attachments" defer></script>
 </body>
 </html>

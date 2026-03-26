@@ -1,10 +1,10 @@
-{% load static %}
+﻿{% load static %}
 <!DOCTYPE html>
 <html lang="en">
 
 <head>
   <meta charset="utf-8">
-  <title>{{ agent.name }} · Agent Chat</title>
+  <title>{{ agent.name }} - Agent Chat</title>
   <link rel="icon" type="image/x-icon" href="{% static 'img/favicon.ico' %}">
   <link rel="stylesheet" href="{% static 'control/chat.css' %}?v=20260315-md-renderer" />
   <style>
@@ -350,8 +350,11 @@
 
     .chat-form .chat-form-actions {
       display: flex;
-      justify-content: flex-end;
-      margin-top: 0.5rem;
+      justify-content: flex-start;
+      align-items: center;
+      margin-top: 0;
+      gap: 0.55rem;
+      flex-wrap: nowrap;
     }
 
     .chat-form .chat-form-actions button {
@@ -367,8 +370,149 @@
     .chat-form {
       margin-top: auto;
       flex-shrink: 0;
-      max-width: 95%;
+      max-width: 100%;
       font-size: 1.5rem;
+    }
+    .chat-form-shell {
+      display: flex;
+      flex-direction: column;
+      align-items: stretch;
+      gap: 0.55rem;
+      width: 100%;
+    }
+    .chat-form-shell textarea {
+      width: 100%;
+    }
+    .chat-form-panel {
+      display: flex;
+      align-items: center;
+      gap: 0.6rem;
+      width: 100%;
+    }
+    .chat-artifacts {
+      border: 1px solid rgba(15, 23, 42, 0.12);
+      border-radius: 12px;
+      padding: 0.35rem 0.5rem;
+      margin: 0;
+      background: rgba(255, 255, 255, 0.72);
+      flex: 1 1 auto;
+      min-width: 0;
+      max-height: 3.25rem;
+      overflow: hidden;
+    }
+    .chat-form-attachment-controls {
+      display: flex;
+      align-items: center;
+      flex-wrap: nowrap;
+      gap: 0.55rem;
+      min-width: 0;
+    }
+    .chat-form-attachment-label {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.45rem;
+      color: #0f172a;
+      font-weight: 800;
+      font-size: 0.9rem;
+    }
+    .chat-artifacts-count {
+      display: inline-flex;
+      align-items: center;
+      min-height: 1.45rem;
+      padding: 0 0.5rem;
+      border-radius: 999px;
+      background: rgba(15, 23, 42, 0.08);
+      color: #0f172a;
+      font-size: 0.78rem;
+      font-weight: 800;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+    .chat-artifacts-note {
+      margin: 0 0 0.7rem;
+      color: rgba(15, 23, 42, 0.62);
+      font-size: 0.86rem;
+      line-height: 1.35;
+    }
+    .chat-artifacts-list {
+      display: flex;
+      flex-wrap: nowrap;
+      gap: 0.35rem;
+      margin-bottom: 0;
+      overflow-x: auto;
+      overflow-y: hidden;
+      scrollbar-width: thin;
+    }
+    .chat-artifact-item {
+      display: flex;
+      flex-direction: row;
+      justify-content: flex-start;
+      gap: 0.28rem;
+      align-items: stretch;
+      padding: 0.2rem 1.15rem 0.2rem 0.5rem;
+      border-radius: 8px;
+      color: #0f172a;
+      background: rgba(15, 23, 42, 0.04);
+      border: 1px solid rgba(15, 23, 42, 0.08);
+      min-height: 0;
+      position: relative;
+      flex: 0 0 128px;
+    }
+    .chat-artifact-item-link {
+      display: flex;
+      flex-direction: row;
+      align-items: center;
+      gap: 0.3rem;
+      text-decoration: none;
+      color: inherit;
+      min-width: 0;
+      width: 100%;
+      overflow: hidden;
+    }
+    .chat-artifact-item:hover {
+      background: rgba(14, 165, 233, 0.08);
+      border-color: rgba(14, 165, 233, 0.28);
+    }
+    .chat-artifact-item-name {
+      font-weight: 600;
+      font-size: 0.86rem;
+      word-break: break-word;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      max-width: 100%;
+    }
+    .chat-artifact-item-meta {
+      font-size: 0.72rem;
+      color: rgba(15, 23, 42, 0.6);
+      white-space: nowrap;
+    }
+    .chat-artifact-delete {
+      position: absolute;
+      top: 0.1rem;
+      right: 0.1rem;
+      width: 1rem;
+      height: 1rem;
+      border: 0;
+      border-radius: 999px;
+      background: rgba(220, 38, 38, 0.12);
+      color: #991b1b;
+      font-size: 0.7rem;
+      font-weight: 800;
+      padding: 0;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      line-height: 1;
+    }
+    .chat-artifact-delete:hover {
+      background: rgba(220, 38, 38, 0.18);
+    }
+    .chat-artifacts-empty {
+      font-size: 0.92rem;
+      color: rgba(15, 23, 42, 0.55);
+      margin: 0;
     }
     .chat-elapsed-prompt {
       align-self: center;
@@ -865,8 +1009,9 @@
     data-user-name="{{ user_name }}"
     data-run-timeline-base-url="/ui/run/"
     data-ws-url="{{ websocket_url }}"
-    data-run-prealloc-url="{% url 'agents:agent_run_preallocate' slug=agent.slug %}"
-    data-current-run-id="{{ current_run_id }}"
+      data-run-prealloc-url="{% url 'agents:agent_run_preallocate' slug=agent.slug %}"
+      data-artifact-upload-url="{{ artifact_upload_url }}"
+      data-current-run-id="{{ current_run_id }}"
       data-llm-provider="{{ llm_provider }}"
       data-llm-provider-label="{{ llm_provider_label }}"
       data-llm-model="{{ llm_model }}"
@@ -892,9 +1037,38 @@
       <div class="chat-messages" data-chat-messages></div>
       <div class="chat-elapsed-prompt" data-elapsed-prompt></div>
       <form class="chat-form" data-chat-form>
-        <textarea data-chat-input rows="4" placeholder="Say something to {{ agent.name|lower }}…"></textarea>
-        <div class="chat-form-actions">
-          <button type="submit">Send</button>
+        <div class="chat-form-shell">
+          <textarea data-chat-input rows="4" placeholder="Say something to {{ agent.name|lower }}..."></textarea>
+          <div class="chat-form-panel">
+            <section class="chat-artifacts" aria-label="Pending attachments">
+              <div class="chat-artifacts-list" data-run-artifacts-list>
+                {% if current_run_artifacts %}
+                  {% for artifact in current_run_artifacts %}
+                    <div class="chat-artifact-item">
+                      <a class="chat-artifact-item-link" href="{{ artifact.download_url }}" target="_blank" rel="noopener">
+                        <span class="chat-artifact-item-name">{{ artifact.name }}</span>
+                        <span class="chat-artifact-item-meta">{{ artifact.size_bytes|filesizeformat }}</span>
+                      </a>
+                      <button type="button" class="chat-artifact-delete" data-artifact-delete-url="{{ artifact.delete_url }}" data-artifact-name="{{ artifact.name }}" aria-label="Delete {{ artifact.name }}">X</button>
+                    </div>
+                  {% endfor %}
+                {% else %}
+                  <div class="chat-artifacts-empty" data-run-artifacts-empty>No attachments</div>
+                {% endif %}
+              </div>
+            </section>
+            <div class="chat-form-actions">
+              <div class="chat-form-attachment-controls">
+                <span class="chat-form-attachment-label">
+                  Pending attachments
+                  <span class="chat-artifacts-count" data-pending-artifact-count>{{ current_run_artifacts|length }}</span>
+                </span>
+                <button type="button" class="status-action info" data-artifact-upload-trigger>Attach file</button>
+                <input type="file" hidden multiple data-artifact-upload-input>
+              </div>
+              <button type="submit">Send</button>
+            </div>
+          </div>
         </div>
       </form>
     </section>

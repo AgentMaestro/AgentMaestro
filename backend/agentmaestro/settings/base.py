@@ -229,6 +229,7 @@ CELERY_TASK_ROUTES = {
     "tools.execute_tool_call_async": {"queue": "tools"},
     "runs.tasks.reconcile_waiting_subruns": {"queue": "runs"},
     "runs.tasks.archive_completed_runs": {"queue": "runs"},
+    "runs.tasks.purge_consumed_artifacts": {"queue": "runs"},
     "runs.tasks.execute_headless_run": {"queue": "runs"},
     "comms.tasks.telegram_poll_scheduler": {"queue": "comms"},
     "comms.tasks.telegram_poll_once": {"queue": "comms"},
@@ -246,6 +247,9 @@ ARCHIVE_COMPACT_EVENTS = os.getenv("ARCHIVE_COMPACT_EVENTS", "true").lower() in 
     "true",
     "yes",
 }
+ARTIFACT_RETENTION_DAYS = int(os.getenv("ARTIFACT_RETENTION_DAYS", "30"))
+ARTIFACT_PURGE_INTERVAL_HOURS = int(os.getenv("ARTIFACT_PURGE_INTERVAL_HOURS", "24"))
+ARTIFACT_PURGE_LIMIT = int(os.getenv("ARTIFACT_PURGE_LIMIT", "500"))
 
 RECONCILE_INTERVAL = int(os.getenv("RECONCILE_INTERVAL", "30"))
 # Tool-call concurrency is intentionally configured via the toolrunner-prefixed env var
@@ -316,6 +320,11 @@ CELERY_BEAT_SCHEDULE = {
     "runs.archive_completed_runs": {
         "task": "runs.tasks.archive_completed_runs",
         "schedule": timedelta(hours=ARCHIVE_INTERVAL_HOURS),
+    },
+    "runs.purge_consumed_artifacts": {
+        "task": "runs.tasks.purge_consumed_artifacts",
+        "schedule": timedelta(hours=ARTIFACT_PURGE_INTERVAL_HOURS),
+        "options": {"expires": max(ARTIFACT_PURGE_INTERVAL_HOURS * 3600, 300)},
     },
     #"llm.refresh_openai_models": {
     #    "task": "llm.tasks.refresh_openai_models",

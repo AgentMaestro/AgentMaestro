@@ -81,6 +81,73 @@ class ReconstructionTests(TestCase):
         self.assertEqual({"root": "C:\\test"}, decoded)
         self.assertEqual(payload["tool_call_id"], tool_item["tool_call_id"])
 
+    def test_remote_ops_message_becomes_system_item(self):
+        self._create_event(
+            "remote_ops_message",
+            {"text": "A helper note for replay", "kind": "remote_ops"},
+        )
+        items = build_provider_input_from_events(
+            filter_resumable_events(load_resumable_run_events(str(self.run.id)))
+        )
+        self.assertEqual(1, len(items))
+        self.assertEqual("system", items[0]["role"])
+        self.assertEqual("A helper note for replay", items[0]["content"])
+
+    def test_artifact_context_becomes_system_item(self):
+        self._create_event(
+            "artifact_context",
+            {
+                "artifact_id": str(uuid.uuid4()),
+                "artifact_path": r"C:\Dev\AgentMaestro\backend\run_artifacts\run-1\artifact-1\notes.txt",
+                "text": "ATTACHED FILE CONTEXT\nFilename: notes.txt\nFull path: C:\\Dev\\AgentMaestro\\backend\\run_artifacts\\run-1\\artifact-1\\notes.txt\nType: FILE\nExtracted content:\nhello world\nInstruction: Use this content directly. Do not infer that only the filename was provided.",
+            },
+        )
+        items = build_provider_input_from_events(
+            filter_resumable_events(load_resumable_run_events(str(self.run.id)))
+        )
+        self.assertEqual(1, len(items))
+        self.assertEqual("system", items[0]["role"])
+        self.assertIn("hello world", items[0]["content"])
+        self.assertIn("Instruction: Use this content directly.", items[0]["content"])
+
+    def test_removed_artifact_context_is_not_replayed(self):
+        artifact_id = str(uuid.uuid4())
+        self._create_event(
+            "artifact_context",
+            {
+                "artifact_id": artifact_id,
+                "artifact_path": r"C:\Dev\AgentMaestro\backend\run_artifacts\run-1\artifact-1\notes.txt",
+                "text": "ATTACHED FILE CONTEXT\nFilename: notes.txt\nFull path: C:\\Dev\\AgentMaestro\\backend\\run_artifacts\\run-1\\artifact-1\\notes.txt\nType: FILE\nExtracted content:\nhello world\nInstruction: Use this content directly. Do not infer that only the filename was provided.",
+            },
+        )
+        self._create_event(
+            "artifact_removed",
+            {"artifact_id": artifact_id, "artifact_name": "notes.txt"},
+        )
+        items = build_provider_input_from_events(
+            filter_resumable_events(load_resumable_run_events(str(self.run.id)))
+        )
+        self.assertEqual([], items)
+
+    def test_consumed_artifact_context_is_not_replayed(self):
+        artifact_id = str(uuid.uuid4())
+        self._create_event(
+            "artifact_context",
+            {
+                "artifact_id": artifact_id,
+                "artifact_path": r"C:\Dev\AgentMaestro\backend\run_artifacts\run-1\artifact-1\notes.txt",
+                "text": "ATTACHED FILE CONTEXT\nFilename: notes.txt\nFull path: C:\\Dev\\AgentMaestro\\backend\\run_artifacts\\run-1\\artifact-1\\notes.txt\nType: FILE\nExtracted content:\nhello world\nInstruction: Use this content directly. Do not infer that only the filename was provided.",
+            },
+        )
+        self._create_event(
+            "artifact_consumed",
+            {"artifact_ids": [artifact_id], "artifact_count": 1},
+        )
+        items = build_provider_input_from_events(
+            filter_resumable_events(load_resumable_run_events(str(self.run.id)))
+        )
+        self.assertEqual([], items)
+
     def test_irrelevant_events_are_filtered(self):
         self._create_event("debug_log", {"foo": "bar"})
         self._create_event("chat_message", {"role": "user", "text": "hi"})
