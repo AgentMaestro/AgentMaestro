@@ -194,7 +194,7 @@ def _build_capability_notices(tool_names: Iterable[str]) -> list[str]:
             "- The `google_bridge` tool parses a generic boolean query language with `AND`, `OR`, `NOT`, and parentheses.\n"
             "- Grouped alternation is allowed inside fielded clauses, for example `from:(dsmith@aol.com OR dsmyth@aol.com)` or `to:(sktennis7@gmail.com OR kissinger.scott@gmail.com)`.\n"
             "- Use `|` only for regex-based code search tools; do not use it in Google bridge queries.\n"
-            "- Supported query fields vary by Google surface. Check the tool schema examples for Gmail and Calendar field support before generating a query.\n"
+            "- Supported query fields vary by Google surface. Check the tool schema examples for Gmail, Calendar, Drive, Docs, and Sheets support before generating a query.\n"
             "- The bridge compiles queries into one or more concrete backend calls, so grouped `OR` clauses may fan out into multiple requests and `NOT` stays part of the compiled plan.\n"
             "- Keep query intent inside the query language rather than splitting it into ad hoc text.\n"
         )

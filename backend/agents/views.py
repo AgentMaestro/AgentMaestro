@@ -7,6 +7,7 @@ from django.contrib import messages
 from django.contrib.auth import get_user_model
 from django.contrib.auth.decorators import login_required
 from django.core.exceptions import PermissionDenied
+from django.core.files.uploadedfile import SimpleUploadedFile
 from django.db import transaction
 from django.http import FileResponse, Http404, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
@@ -42,6 +43,8 @@ from runs.services.artifacts import (
     serialize_artifact,
     store_run_artifact,
 )
+from google_bridge.services.bridge import resolve_google_account
+from google_bridge.services.client import GoogleApiError, GoogleBridgeClient
 from runs.services.handoff import apply_successor_handoff
 from runs.services.memory import get_or_create_run_memory
 from runs.services.events import append_event
@@ -628,6 +631,11 @@ def agent_detail(request, slug: str):
         "current_run_id": str(current_run.id) if current_run else "",
         "current_run_artifacts": current_run_artifacts,
         "artifact_upload_url": reverse("agents:agent_artifact_upload", kwargs={"slug": agent.slug}),
+        "artifact_google_drive_import_url": reverse("agents:agent_google_drive_import", kwargs={"slug": agent.slug}),
+        "google_drive_browser_url": reverse("google_bridge:agent_drive_browser", kwargs={"slug": agent.slug}),
+        "google_bridge_status_url": reverse("google_bridge:agent_status", kwargs={"slug": agent.slug}),
+        "google_bridge_connect_url": reverse("google_bridge:agent_connect", kwargs={"slug": agent.slug}),
+        "google_bridge_account_url": reverse("google_bridge:agent_account", kwargs={"slug": agent.slug}),
     }
     return render(request, "agents/agent_detail.html", context)
 
@@ -701,6 +709,178 @@ def agent_artifact_upload(request, slug: str):
             },
         )
         artifacts.append(artifact)
+
+    summary_text = render_artifact_summary(artifacts)
+    context_payload = build_artifact_context_payload(artifacts)
+    append_event(
+        run_id=str(run.id),
+        event_type="remote_ops_message",
+        payload={
+            "text": summary_text,
+            "author_label": "artifact",
+            "kind": "artifact_upload",
+            "timestamp": timezone.now().isoformat(),
+            "artifact_ids": [str(artifact.id) for artifact in artifacts],
+            "artifacts": [_serialize_agent_artifact(agent.slug, artifact) for artifact in artifacts],
+        },
+    )
+    for item in context_payload.get("artifacts") or []:
+        context_text = str(item.get("context_text") or item.get("text") or "").strip()
+        append_event(
+            run_id=str(run.id),
+            event_type="artifact_context",
+            payload={
+                "artifact_id": str(item.get("id") or ""),
+                "artifact_path": str(item.get("artifact_path") or item.get("storage_path") or ""),
+                "text": context_text,
+                "artifact": item,
+                "artifact_count": context_payload.get("artifact_count") or 0,
+                "timestamp": timezone.now().isoformat(),
+            },
+        )
+
+    return JsonResponse(
+        {
+            "ok": True,
+            "run_id": str(run.id),
+            "message": summary_text,
+            "artifacts": [
+                _serialize_agent_artifact(agent.slug, artifact)
+                for artifact in pending_artifacts(run.artifacts.order_by("created_at"))[:20]
+            ],
+        }
+    )
+
+
+@login_required
+@require_http_methods(["POST"])
+def agent_google_drive_import(request, slug: str):
+    agent = get_object_or_404(Agent.objects.select_related("workspace", "owner"), slug=slug)
+    if not _can_access_agent(request.user, agent):
+        raise PermissionDenied("Workspace access required to view this agent.")
+
+    run_id = str(request.POST.get("run_id") or "").strip()
+    if not run_id:
+        try:
+            import json
+
+            payload = json.loads(request.body.decode("utf-8") or "{}")
+        except Exception:
+            payload = {}
+        run_id = str(payload.get("run_id") or "").strip()
+    if not run_id:
+        return JsonResponse({"ok": False, "error": "Missing run_id."}, status=400)
+
+    run = get_object_or_404(
+        AgentRun.objects.select_related("agent", "workspace"),
+        id=run_id,
+        agent=agent,
+        workspace=agent.workspace,
+    )
+
+    file_ids = list(request.POST.getlist("file_ids") or [])
+    if not file_ids:
+        try:
+            import json
+
+            payload = json.loads(request.body.decode("utf-8") or "{}")
+        except Exception:
+            payload = {}
+        raw_file_ids = payload.get("file_ids") or payload.get("files") or []
+        if isinstance(raw_file_ids, str):
+            file_ids = [raw_file_ids]
+        elif isinstance(raw_file_ids, list):
+            file_ids = [str(item).strip() for item in raw_file_ids if str(item).strip()]
+    file_ids = [str(item).strip() for item in file_ids if str(item).strip()]
+    if not file_ids:
+        return JsonResponse({"ok": False, "error": "No Google Drive files selected."}, status=400)
+
+    account_id = str(request.POST.get("account_id") or "").strip()
+    if not account_id:
+        try:
+            import json
+
+            payload = json.loads(request.body.decode("utf-8") or "{}")
+        except Exception:
+            payload = {}
+        account_id = str(payload.get("account_id") or "").strip()
+
+    account = resolve_google_account(workspace=agent.workspace, owner=request.user, account_id=account_id) if account_id else resolve_google_account(workspace=agent.workspace, owner=request.user)
+    if account is None:
+        return JsonResponse({"ok": False, "error": "No active Google account connection is available."}, status=400)
+
+    client = GoogleBridgeClient(account)
+    prepared_files: list[dict[str, object]] = []
+    for file_id in file_ids:
+        try:
+            metadata = client.get_drive_file(
+                file_id,
+                fields="id,name,mimeType,modifiedTime,createdTime,webViewLink,webContentLink,size,parents",
+            )
+        except GoogleApiError as exc:
+            return JsonResponse({"ok": False, "error": str(exc), "file_id": file_id}, status=502)
+
+        mime_type = str(metadata.get("mimeType") or "")
+        file_name = str(metadata.get("name") or file_id).strip() or file_id
+        if mime_type == "application/vnd.google-apps.folder":
+            return JsonResponse({"ok": False, "error": f"{file_name} is a folder and cannot be attached."}, status=400)
+
+        export_mime_type = ""
+        content_bytes = b""
+        content_type = mime_type or "application/octet-stream"
+        try:
+            if mime_type == "application/vnd.google-apps.document":
+                export_mime_type = "text/plain"
+                content_bytes = client.export_drive_file(file_id, export_mime_type)
+                content_type = export_mime_type
+            elif mime_type == "application/vnd.google-apps.spreadsheet":
+                export_mime_type = "text/csv"
+                content_bytes = client.export_drive_file(file_id, export_mime_type)
+                content_type = export_mime_type
+            elif mime_type.startswith("application/vnd.google-apps."):
+                export_mime_type = "text/plain"
+                content_bytes = client.export_drive_file(file_id, export_mime_type)
+                content_type = export_mime_type
+            else:
+                content_bytes = client.download_drive_file(file_id)
+        except GoogleApiError as exc:
+            return JsonResponse({"ok": False, "error": str(exc), "file_id": file_id}, status=502)
+
+        prepared_files.append(
+            {
+                "uploaded_file": SimpleUploadedFile(
+                    file_name,
+                    content_bytes,
+                    content_type=content_type,
+                ),
+                "metadata": {
+                    "uploaded_by_user_id": request.user.id,
+                    "uploaded_by_username": request.user.get_username(),
+                    "source": "google_drive",
+                    "source_channel": "google_drive",
+                    "google_file_id": file_id,
+                    "google_file_name": file_name,
+                    "google_mime_type": mime_type,
+                    "google_export_mime_type": export_mime_type,
+                    "google_drive_url": str(metadata.get("webViewLink") or ""),
+                    "provided_in_prompt": True,
+                },
+            }
+        )
+
+    artifacts: list[Artifact] = []
+    try:
+        for prepared in prepared_files:
+            artifact = store_run_artifact(
+                run,
+                prepared["uploaded_file"],
+                metadata=dict(prepared["metadata"] or {}),
+            )
+            artifacts.append(artifact)
+    except Exception as exc:
+        for artifact in artifacts:
+            delete_run_artifact(artifact)
+        return JsonResponse({"ok": False, "error": str(exc)}, status=500)
 
     summary_text = render_artifact_summary(artifacts)
     context_payload = build_artifact_context_payload(artifacts)

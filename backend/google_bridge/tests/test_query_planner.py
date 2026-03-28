@@ -47,3 +47,16 @@ def test_plan_google_query_expands_calendar_grouped_or_into_multiple_q_calls():
     assert plan.query_strings == ("team sync", "planning")
     assert plan.to_dict()["capabilities"]["resource_kind"] == "calendar"
     assert plan.to_dict()["calls"][0]["query"] == "team sync"
+
+
+def test_plan_google_query_supports_drive_boolean_filters():
+    plan = plan_google_query(
+        'mime_type:"application/vnd.google-apps.document" AND NOT name:Archive',
+        resource_kind="drive",
+        action_kind="read",
+        operation="list",
+    )
+
+    assert plan.execution_mode == "single"
+    assert plan.query_strings == ('mime_type:"application/vnd.google-apps.document" -name:Archive',)
+    assert plan.to_dict()["capabilities"]["resource_kind"] == "drive"

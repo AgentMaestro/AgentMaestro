@@ -4,6 +4,7 @@ import secrets
 
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
+from django.conf import settings
 from django.http import Http404, HttpResponseBadRequest, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
@@ -11,6 +12,8 @@ from django.views.decorators.http import require_http_methods
 
 from agents.models import Agent
 from core.models import WorkspaceMembership
+from google_bridge.services.bridge import resolve_google_account, resolve_google_accounts, set_primary_google_account
+from google_bridge.services.client import GoogleApiError, GoogleBridgeClient
 
 from .models import GoogleAccount
 from .services.oauth import (
@@ -34,19 +37,28 @@ def _get_agent_with_access(user, slug: str) -> Agent:
 
 
 def _resolve_active_account(agent: Agent, user) -> GoogleAccount | None:
-    return (
-        GoogleAccount.objects.filter(workspace=agent.workspace, owner=user, is_active=True)
-        .order_by("-updated_at")
-        .first()
-    )
+    return resolve_google_account(workspace=agent.workspace, owner=user)
 
 
 def _list_active_accounts(agent: Agent, user):
-    return list(
-        GoogleAccount.objects.filter(workspace=agent.workspace, owner=user, is_active=True).order_by(
-            "-last_synced_at", "-updated_at", "email", "google_subject"
-        )
-    )
+    return resolve_google_accounts(workspace=agent.workspace, owner=user, account_scope="all")
+
+
+def _serialize_google_account(account: GoogleAccount, *, selected_id: str = "") -> dict[str, object]:
+    metadata = dict(account.metadata or {})
+    account_id = str(account.id)
+    email = str(account.email or "").strip()
+    google_subject = str(account.google_subject or "").strip()
+    display_name = email or google_subject or account_id
+    return {
+        "id": account_id,
+        "email": email,
+        "google_subject": google_subject,
+        "display_name": display_name,
+        "is_primary": bool(metadata.get("is_primary")),
+        "selected": account_id == selected_id,
+        "last_synced_at": account.last_synced_at.isoformat() if account.last_synced_at else "",
+    }
 
 
 def _build_session_payload(*, agent: Agent, state: str) -> dict[str, str]:
@@ -98,10 +110,13 @@ def agent_google_connect(request, slug: str):
             "agent": agent,
             "active_account": active_account,
             "active_accounts": _list_active_accounts(agent, request.user),
+            "selected_account_id": str(active_account.id) if active_account else "",
+            "google_primary_account": str(getattr(settings, "GOOGLE_PRIMARY_ACCOUNT", "") or "").strip(),
             "oauth_configured": oauth_configured,
             "oauth_error": oauth_error,
             "callback_url": reverse("google_bridge:callback"),
             "disconnect_url": reverse("google_bridge:agent_disconnect", kwargs={"slug": slug}),
+            "select_account_url": reverse("google_bridge:agent_account", kwargs={"slug": slug}),
             "status_url": reverse("google_bridge:agent_status", kwargs={"slug": slug}),
         },
     )
@@ -214,6 +229,7 @@ def agent_google_status(request, slug: str):
                 "agent_slug": agent.slug,
                 "workspace_id": str(agent.workspace_id),
                 "accounts": [],
+                "selected_account_id": "",
             }
         )
     active_accounts = _list_active_accounts(agent, request.user)
@@ -222,21 +238,157 @@ def agent_google_status(request, slug: str):
             "connected": True,
             "agent_slug": agent.slug,
             "workspace_id": str(agent.workspace_id),
+            "selected_account_id": str(account.id),
             "email": account.email,
             "google_subject": account.google_subject,
             "scopes": account.scopes,
             "last_synced_at": account.last_synced_at.isoformat() if account.last_synced_at else "",
             "accounts": [
-                {
-                    "email": item.email,
-                    "google_subject": item.google_subject,
-                    "last_synced_at": item.last_synced_at.isoformat() if item.last_synced_at else "",
-                    "is_active": item.is_active,
-                }
+                _serialize_google_account(item, selected_id=str(account.id))
                 for item in active_accounts
             ],
         }
     )
+
+
+@login_required
+@require_http_methods(["GET"])
+def agent_google_drive_browser(request, slug: str):
+    agent = _get_agent_with_access(request.user, slug)
+    account_id = str(request.GET.get("account_id") or "").strip()
+    account = resolve_google_account(workspace=agent.workspace, owner=request.user, account_id=account_id) if account_id else _resolve_active_account(agent, request.user)
+    if account is None:
+        account = _resolve_active_account(agent, request.user)
+    connect_url = reverse("google_bridge:agent_connect", kwargs={"slug": slug})
+    if account is None:
+        return JsonResponse(
+            {
+                "connected": False,
+                "agent_slug": agent.slug,
+                "workspace_id": str(agent.workspace_id),
+                "connect_url": connect_url,
+                "files": [],
+                "current_folder_id": "",
+                "parent_folder_id": "",
+                "accounts": [],
+                "selected_account_id": "",
+            }
+        )
+
+    parent_id = str(request.GET.get("parent_id") or "").strip()
+    q = ["trashed=false"]
+    if parent_id:
+        q.append(f"'{parent_id}' in parents")
+    else:
+        q.append("'root' in parents")
+    search_query = " and ".join(q)
+    page_size = 100
+    try:
+        page_size = max(1, min(int(str(request.GET.get("page_size") or 100).strip() or 100), 200))
+    except ValueError:
+        page_size = 100
+
+    client = GoogleBridgeClient(account)
+    try:
+        data = client.list_drive_files(q=search_query, page_size=page_size)
+    except GoogleApiError as exc:
+        return JsonResponse(
+            {
+                "connected": True,
+                "agent_slug": agent.slug,
+                "workspace_id": str(agent.workspace_id),
+                "account_email": account.email,
+                "google_subject": account.google_subject,
+                "connect_url": connect_url,
+                "current_folder_id": parent_id,
+                "parent_folder_id": "",
+                "files": [],
+                "error": str(exc),
+                "accounts": [
+                    _serialize_google_account(item, selected_id=str(account.id))
+                    for item in _list_active_accounts(agent, request.user)
+                ],
+                "selected_account_id": str(account.id),
+            },
+            status=502,
+        )
+
+    files = []
+    for item in list(data.get("files") or []):
+        file_item = dict(item)
+        mime_type = str(file_item.get("mimeType") or "")
+        files.append(
+            {
+                "id": str(file_item.get("id") or ""),
+                "name": str(file_item.get("name") or ""),
+                "mime_type": mime_type,
+                "size_bytes": int(str(file_item.get("size") or "0") or 0) if str(file_item.get("size") or "").strip().isdigit() else 0,
+                "modified_time": str(file_item.get("modifiedTime") or ""),
+                "created_time": str(file_item.get("createdTime") or ""),
+                "web_view_link": str(file_item.get("webViewLink") or ""),
+                "web_content_link": str(file_item.get("webContentLink") or ""),
+                "parents": list(file_item.get("parents") or []),
+                "is_folder": mime_type == "application/vnd.google-apps.folder",
+            }
+        )
+
+    return JsonResponse(
+        {
+            "connected": True,
+            "agent_slug": agent.slug,
+            "workspace_id": str(agent.workspace_id),
+            "account_email": account.email,
+            "google_subject": account.google_subject,
+            "connect_url": connect_url,
+            "current_folder_id": parent_id or "root",
+            "parent_folder_id": "",
+            "files": files,
+            "next_page_token": str(data.get("nextPageToken") or ""),
+            "accounts": [
+                _serialize_google_account(item, selected_id=str(account.id))
+                for item in _list_active_accounts(agent, request.user)
+            ],
+            "selected_account_id": str(account.id),
+        }
+    )
+
+
+@login_required
+@require_http_methods(["POST"])
+def agent_google_account(request, slug: str):
+    agent = _get_agent_with_access(request.user, slug)
+    account_id = str(request.POST.get("account_id") or "").strip()
+    if not account_id:
+        account = resolve_google_account(workspace=agent.workspace, owner=request.user)
+        if account is None:
+            return JsonResponse({"ok": False, "error": "Google account not found."}, status=404)
+        active_accounts = _list_active_accounts(agent, request.user)
+        return JsonResponse(
+            {
+                "ok": True,
+                "account": _serialize_google_account(account, selected_id=str(account.id)),
+                "selected_account_id": str(account.id),
+                "accounts": [_serialize_google_account(item, selected_id=str(account.id)) for item in active_accounts],
+            }
+        )
+
+    account = set_primary_google_account(workspace=agent.workspace, owner=request.user, account_id=account_id)
+    if account is None:
+        return JsonResponse({"ok": False, "error": "Google account not found."}, status=404)
+
+    if request.headers.get("Accept", "").lower().find("application/json") >= 0:
+        active_accounts = _list_active_accounts(agent, request.user)
+        return JsonResponse(
+            {
+                "ok": True,
+                "account": _serialize_google_account(account, selected_id=str(account.id)),
+                "selected_account_id": str(account.id),
+                "accounts": [_serialize_google_account(item, selected_id=str(account.id)) for item in active_accounts],
+            }
+        )
+
+    messages.success(request, f"Selected {account.email or account.google_subject or account.id} as the default Google account.")
+    return redirect(reverse("google_bridge:agent_connect", kwargs={"slug": slug}))
 
 
 def _fallback_google_connect_url(request) -> str:

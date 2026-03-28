@@ -53,6 +53,30 @@
       .meta {
         color: rgba(226, 232, 240, 0.8);
       }
+      .account-picker {
+        display: flex;
+        gap: 0.75rem;
+        flex-wrap: wrap;
+        align-items: center;
+        margin-top: 0.75rem;
+      }
+      .account-picker label {
+        font-size: 0.82rem;
+        font-weight: 700;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        color: rgba(226, 232, 240, 0.78);
+      }
+      .account-picker select {
+        min-width: min(100%, 24rem);
+        flex: 1 1 20rem;
+        min-height: 44px;
+        border-radius: 10px;
+        border: 1px solid rgba(148, 163, 184, 0.24);
+        background: rgba(15, 23, 42, 0.86);
+        color: #e2e8f0;
+        padding: 0.55rem 0.7rem;
+      }
       code {
         background: rgba(15, 23, 42, 0.7);
         border-radius: 6px;
@@ -100,12 +124,33 @@
         {% else %}
           <p>No active Google account is connected for this workspace.</p>
         {% endif %}
+        {% if active_accounts|length > 1 %}
+          <form method="post" action="{{ select_account_url }}">
+            {% csrf_token %}
+            <div class="account-picker">
+              <label for="google-account-select">Default account</label>
+              <select id="google-account-select" name="account_id">
+                {% for account in active_accounts %}
+                  <option value="{{ account.id }}" {% if account.id|stringformat:"s" == selected_account_id %}selected{% endif %}>
+                    {{ account.email|default:account.google_subject }}
+                    {% if account.email|lower == google_primary_account|lower %}
+                      (Env default)
+                    {% elif account.metadata.is_primary %}
+                      (Primary)
+                    {% endif %}
+                  </option>
+                {% endfor %}
+              </select>
+              <button class="btn btn-primary" type="submit">Set default</button>
+            </div>
+          </form>
+        {% endif %}
       </section>
 
       <section class="panel">
         <h2 style="margin-top: 0;">Connect Google</h2>
         {% if oauth_configured %}
-          <p>Use this to link Gmail and Calendar read access. Write actions are intentionally not exposed yet.</p>
+          <p>Use this to link Gmail, Calendar, Drive, Docs, and Sheets read access. Write actions are intentionally not exposed yet.</p>
           <form method="post" action="">
             {% csrf_token %}
             <button class="btn btn-primary" type="submit">Start Google OAuth</button>

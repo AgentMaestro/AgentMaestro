@@ -103,13 +103,44 @@ def normalize_google_payload(payload: dict | None) -> dict[str, object]:
     return raw
 
 
-def resolve_google_account(*, workspace=None, owner=None) -> GoogleAccount | None:
+def resolve_google_account(
+    *,
+    workspace=None,
+    owner=None,
+    account_id: str = "",
+    email: str = "",
+    google_subject: str = "",
+) -> GoogleAccount | None:
     queryset = GoogleAccount.objects.filter(is_active=True)
     if workspace is not None:
         queryset = queryset.filter(workspace=workspace)
     if owner is not None:
         queryset = queryset.filter(owner=owner)
-    return queryset.order_by("-last_synced_at", "-updated_at").first()
+    if account_id:
+        account = queryset.filter(id=account_id).first()
+        if account is not None:
+            return account
+    if email:
+        account = queryset.filter(email__iexact=email).first()
+        if account is not None:
+            return account
+    if google_subject:
+        account = queryset.filter(google_subject=google_subject).first()
+        if account is not None:
+            return account
+    primary_email = str(getattr(settings, "GOOGLE_PRIMARY_ACCOUNT", "") or "").strip().lower()
+    accounts = list(queryset.order_by("-last_synced_at", "-updated_at", "email", "google_subject"))
+    if not accounts:
+        return None
+    if primary_email:
+        for account in accounts:
+            if str(account.email or "").strip().lower() == primary_email:
+                return account
+    for account in accounts:
+        metadata = dict(account.metadata or {})
+        if bool(metadata.get("is_primary")):
+            return account
+    return accounts[0]
 
 
 def resolve_google_accounts(
@@ -128,10 +159,65 @@ def resolve_google_accounts(
     if google_subject:
         queryset = queryset.filter(google_subject=google_subject)
     if email:
-        queryset = queryset.filter(email=email)
-    if account_scope == "all":
-        return queryset.order_by("-last_synced_at", "-updated_at", "email", "google_subject")
-    return queryset.order_by("-last_synced_at", "-updated_at")[:1]
+        queryset = queryset.filter(email__iexact=email)
+    accounts = list(queryset.order_by("-last_synced_at", "-updated_at", "email", "google_subject"))
+    primary_email = str(getattr(settings, "GOOGLE_PRIMARY_ACCOUNT", "") or "").strip().lower()
+    if account_scope != "all":
+        account = resolve_google_account(
+            workspace=workspace,
+            owner=owner,
+            google_subject=google_subject,
+            email=email,
+        )
+        return [account] if account is not None else []
+    if not accounts:
+        return []
+    primary_accounts: list[GoogleAccount] = []
+    other_accounts: list[GoogleAccount] = []
+    metadata_primary_accounts: list[GoogleAccount] = []
+    for account in accounts:
+        metadata = dict(account.metadata or {})
+        if primary_email and str(account.email or "").strip().lower() == primary_email:
+            primary_accounts.append(account)
+        elif bool(metadata.get("is_primary")):
+            metadata_primary_accounts.append(account)
+        else:
+            other_accounts.append(account)
+    ordered_accounts = primary_accounts + metadata_primary_accounts + other_accounts
+    return ordered_accounts
+
+
+def set_primary_google_account(*, workspace=None, owner=None, account_id: str = "", email: str = "", google_subject: str = "") -> GoogleAccount | None:
+    account = resolve_google_account(
+        workspace=workspace,
+        owner=owner,
+        account_id=account_id,
+        email=email,
+        google_subject=google_subject,
+    )
+    if account is None:
+        return None
+    queryset = GoogleAccount.objects.filter(is_active=True)
+    if workspace is not None:
+        queryset = queryset.filter(workspace=workspace)
+    if owner is not None:
+        queryset = queryset.filter(owner=owner)
+    current_timestamp = timezone.now().isoformat()
+    for item in queryset:
+        metadata = dict(item.metadata or {})
+        changed = False
+        if item.pk == account.pk:
+            if not bool(metadata.get("is_primary")):
+                metadata["is_primary"] = True
+                changed = True
+            metadata["primary_set_at"] = current_timestamp
+            changed = True
+        elif metadata.pop("is_primary", None) is not None:
+            changed = True
+        if changed:
+            item.metadata = metadata
+            item.save(update_fields=["metadata", "updated_at"])
+    return account
 
 
 def _execute_google_task_for_account(
@@ -331,6 +417,30 @@ def _execute_google_task_for_account(
             raise GoogleBridgeTaskError(
                 f"Unsupported Google calendar operation '{operation}'."
             )
+    elif resource_kind == "drive":
+        if operation in {"list", "read"}:
+            if operation == "list":
+                data, summary_text = _execute_drive_list_for_account(client=client, normalized=normalized)
+            else:
+                data, summary_text = _execute_drive_read_for_account(client=client, normalized=normalized)
+        elif operation == "export":
+            data, summary_text = _execute_drive_export_for_account(client=client, normalized=normalized)
+        else:
+            raise GoogleBridgeTaskError(f"Unsupported Google drive operation '{operation}'.")
+    elif resource_kind == "docs":
+        if operation == "export":
+            data, summary_text = _execute_docs_export_for_account(client=client, normalized=normalized)
+        elif operation in {"list", "read"}:
+            data, summary_text = _execute_docs_read_for_account(client=client, normalized=normalized)
+        else:
+            raise GoogleBridgeTaskError(f"Unsupported Google docs operation '{operation}'.")
+    elif resource_kind == "sheets":
+        if operation == "export":
+            data, summary_text = _execute_sheets_export_for_account(client=client, normalized=normalized)
+        elif operation in {"list", "read"}:
+            data, summary_text = _execute_sheets_read_for_account(client=client, normalized=normalized)
+        else:
+            raise GoogleBridgeTaskError(f"Unsupported Google sheets operation '{operation}'.")
     else:
         raise GoogleBridgeTaskError(f"Unsupported Google resource kind '{resource_kind}'.")
     return data, summary_text
@@ -452,6 +562,136 @@ def _execute_calendar_list_for_account(
     return data, _summarize_calendar_list(data)
 
 
+def _execute_drive_list_for_account(
+    *,
+    client: GoogleBridgeClient,
+    normalized: dict[str, object],
+) -> tuple[dict[str, object], str]:
+    query = str(normalized.get("query") or "").strip()
+    page_size = int(normalized.get("max_results") or 20)
+    data = client.list_drive_files(q=query, page_size=page_size)
+    files = list(data.get("files") or [])
+    data = {
+        "kind": "drive#files",
+        "files": files[:page_size],
+        "nextPageToken": data.get("nextPageToken") or "",
+        "query": query,
+    }
+    return data, _summarize_drive_list(data, query=query)
+
+
+def _execute_drive_read_for_account(
+    *,
+    client: GoogleBridgeClient,
+    normalized: dict[str, object],
+) -> tuple[dict[str, object], str]:
+    file_id = _resolve_google_file_id(normalized)
+    if not file_id:
+        return _execute_drive_list_for_account(client=client, normalized=normalized)
+    data = client.get_drive_file(
+        file_id,
+        fields="id,name,mimeType,modifiedTime,createdTime,webViewLink,webContentLink,size,owners,emailAddress",
+    )
+    return data, _summarize_drive_file(data)
+
+
+def _execute_drive_export_for_account(
+    *,
+    client: GoogleBridgeClient,
+    normalized: dict[str, object],
+) -> tuple[dict[str, object], str]:
+    file_id = _resolve_google_file_id(normalized)
+    export_mime_type = str(normalized.get("export_mime_type") or "").strip()
+    if not file_id:
+        raise GoogleBridgeTaskError("Drive export tasks require file_id.")
+    if not export_mime_type:
+        raise GoogleBridgeTaskError("Drive export tasks require export_mime_type.")
+    content = client.export_drive_file(file_id, export_mime_type)
+    return (
+        {
+            "file_id": file_id,
+            "export_mime_type": export_mime_type,
+            "content_text": _decode_text_bytes(content, export_mime_type),
+            "content_bytes_base64": _encode_bytes_base64(content),
+            "content_length": len(content),
+        },
+        _summarize_drive_file({"id": file_id, "mimeType": export_mime_type, "name": str(normalized.get("name") or "")}),
+    )
+
+
+def _execute_docs_read_for_account(
+    *,
+    client: GoogleBridgeClient,
+    normalized: dict[str, object],
+) -> tuple[dict[str, object], str]:
+    file_id = _resolve_google_file_id(normalized)
+    if not file_id:
+        raise GoogleBridgeTaskError("Docs read tasks require file_id.")
+    data = client.get_document(file_id)
+    return data, _summarize_docs_document(data)
+
+
+def _execute_docs_export_for_account(
+    *,
+    client: GoogleBridgeClient,
+    normalized: dict[str, object],
+) -> tuple[dict[str, object], str]:
+    file_id = _resolve_google_file_id(normalized)
+    export_mime_type = str(normalized.get("export_mime_type") or "").strip()
+    if not file_id:
+        raise GoogleBridgeTaskError("Docs export tasks require file_id.")
+    if not export_mime_type:
+        raise GoogleBridgeTaskError("Docs export tasks require export_mime_type.")
+    content = client.export_drive_file(file_id, export_mime_type)
+    return (
+        {
+            "file_id": file_id,
+            "export_mime_type": export_mime_type,
+            "content_text": _decode_text_bytes(content, export_mime_type),
+            "content_bytes_base64": _encode_bytes_base64(content),
+            "content_length": len(content),
+        },
+        _summarize_docs_export(file_id, export_mime_type, content),
+    )
+
+
+def _execute_sheets_read_for_account(
+    *,
+    client: GoogleBridgeClient,
+    normalized: dict[str, object],
+) -> tuple[dict[str, object], str]:
+    file_id = _resolve_google_file_id(normalized)
+    range_name = str(normalized.get("range") or "").strip()
+    if not file_id:
+        raise GoogleBridgeTaskError("Sheets read tasks require file_id.")
+    data = client.get_sheet_values(file_id, range_name=range_name)
+    return data, _summarize_sheet_values(data, spreadsheet_id=file_id, range_name=range_name)
+
+
+def _execute_sheets_export_for_account(
+    *,
+    client: GoogleBridgeClient,
+    normalized: dict[str, object],
+) -> tuple[dict[str, object], str]:
+    file_id = _resolve_google_file_id(normalized)
+    export_mime_type = str(normalized.get("export_mime_type") or "").strip()
+    if not file_id:
+        raise GoogleBridgeTaskError("Sheets export tasks require file_id.")
+    if not export_mime_type:
+        raise GoogleBridgeTaskError("Sheets export tasks require export_mime_type.")
+    content = client.export_drive_file(file_id, export_mime_type)
+    return (
+        {
+            "file_id": file_id,
+            "export_mime_type": export_mime_type,
+            "content_text": _decode_text_bytes(content, export_mime_type),
+            "content_bytes_base64": _encode_bytes_base64(content),
+            "content_length": len(content),
+        },
+        _summarize_sheet_export(file_id, export_mime_type, content),
+    )
+
+
 def _execute_google_step(
     step: dict[str, object],
     *,
@@ -521,7 +761,29 @@ def _execute_google_step(
                 raise GoogleBridgeTaskError(
                     "Calendar write tasks require a specific connected account. Use email or google_subject to target the account explicitly."
                 )
-    if normalized.get("account_scope") == "all" and len(selected_accounts) > 1 and operation in {"list", "read"} and not str(normalized.get("message_id") or "").strip():
+    if (
+        normalized.get("account_scope") == "all"
+        and len(selected_accounts) > 1
+        and resource_kind == "drive"
+        and operation in {"list", "read"}
+        and not str(normalized.get("file_id") or "").strip()
+    ):
+        result, summary_text = _execute_merged_list_task(selected_accounts, normalized, resource_kind)
+    elif (
+        normalized.get("account_scope") == "all"
+        and len(selected_accounts) > 1
+        and resource_kind == "drive"
+        and operation in {"read", "export"}
+        and str(normalized.get("file_id") or "").strip()
+    ):
+        raise GoogleBridgeTaskError(
+            "Drive file read/export tasks require a specific connected account. Use email or google_subject to target the account explicitly."
+        )
+    elif normalized.get("account_scope") == "all" and len(selected_accounts) > 1 and resource_kind in {"docs", "sheets"}:
+        raise GoogleBridgeTaskError(
+            f"{resource_kind.title()} read/export tasks require a specific connected account. Use email or google_subject to target the account explicitly."
+        )
+    elif normalized.get("account_scope") == "all" and len(selected_accounts) > 1 and operation in {"list", "read"} and not str(normalized.get("message_id") or "").strip():
         result, summary_text = _execute_merged_list_task(selected_accounts, normalized, resource_kind)
     elif normalized.get("account_scope") == "all" and len(selected_accounts) > 1 and operation == "read":
         raise GoogleBridgeTaskError(
@@ -590,6 +852,16 @@ def _execute_merged_list_task(
                         "account_google_subject": connection.google_subject,
                     }
                 )
+        elif resource_kind == "drive":
+            items = list(data.get("files") or [])
+            for item in items:
+                merged_items.append(
+                    {
+                        **dict(item),
+                        "account_email": connection.email,
+                        "account_google_subject": connection.google_subject,
+                    }
+                )
         else:
             items = list(data.get("items") or [])
             for calendar_item in list(data.get("calendars") or []):
@@ -617,6 +889,14 @@ def _execute_merged_list_task(
         return (
             {"messages": merged_items, "resultSizeEstimate": len(merged_items), "accounts": account_summaries},
             f"Returned {len(merged_items)} {count_label} across {len(accounts)} accounts.",
+        )
+
+    if resource_kind == "drive":
+        max_results = int(normalized.get("max_results") or 20)
+        merged_items = merged_items[:max_results]
+        return (
+            {"files": merged_items, "nextPageToken": "", "accounts": account_summaries},
+            f"Returned {len(merged_items)} Drive files across {len(accounts)} accounts.",
         )
 
     return (
@@ -724,8 +1004,10 @@ def _normalize_google_step(step: dict | None, *, defaults: dict[str, object] | N
     account_scope = str(raw.get("account_scope") or "primary").strip().lower()
     if integration_kind != "google":
         raise GoogleBridgeTaskError(f"Google step {step_index} only accepts integration_kind=google.")
-    if resource_kind not in {"gmail", "calendar"}:
-        raise GoogleBridgeTaskError(f"Google step {step_index} requires resource_kind=gmail or calendar.")
+    if resource_kind not in {"gmail", "calendar", "drive", "docs", "sheets"}:
+        raise GoogleBridgeTaskError(
+            f"Google step {step_index} requires resource_kind=gmail, calendar, drive, docs, or sheets."
+        )
     if account_scope not in {"primary", "all"}:
         raise GoogleBridgeTaskError(f"Google step {step_index} requires account_scope=primary or all.")
     raw["integration_kind"] = integration_kind
@@ -754,6 +1036,16 @@ def _normalize_google_step(step: dict | None, *, defaults: dict[str, object] | N
     raw["google_subject"] = str(raw.get("google_subject") or "").strip()
     raw["email"] = str(raw.get("email") or "").strip()
     raw["delete_mode"] = str(raw.get("delete_mode") or "").strip().lower()
+    raw["file_id"] = str(
+        raw.get("file_id")
+        or raw.get("document_id")
+        or raw.get("spreadsheet_id")
+        or ""
+    ).strip()
+    raw["document_id"] = str(raw.get("document_id") or raw["file_id"] or "").strip()
+    raw["spreadsheet_id"] = str(raw.get("spreadsheet_id") or raw["file_id"] or "").strip()
+    raw["range"] = str(raw.get("range") or "").strip()
+    raw["export_mime_type"] = str(raw.get("export_mime_type") or "").strip()
     if resource_kind == "gmail":
         if action_kind == "list":
             action_kind = "read"
@@ -792,7 +1084,7 @@ def _normalize_google_step(step: dict | None, *, defaults: dict[str, object] | N
                 operation = "trash"
         if action_kind in {"draft", "send"} and not raw["subject"] and not raw["draft_id"]:
             raise GoogleBridgeTaskError(f"Google step {step_index} requires subject for Gmail write operations.")
-    else:
+    elif resource_kind == "calendar":
         if action_kind == "list":
             action_kind = "read"
         if action_kind == "read" and operation in {"create", "update", "delete"}:
@@ -840,6 +1132,47 @@ def _normalize_google_step(step: dict | None, *, defaults: dict[str, object] | N
                 raise GoogleBridgeTaskError(f"Google step {step_index} requires operation=delete for Calendar delete workflows.")
             if not raw["event_id"]:
                 raise GoogleBridgeTaskError(f"Google step {step_index} requires event_id for Calendar delete workflows.")
+    else:
+        if action_kind == "list":
+            action_kind = "read"
+        if action_kind not in {"read", "export"}:
+            raise GoogleBridgeTaskError(
+                f"Google step {step_index} currently supports read and export actions for Drive, Docs, and Sheets."
+            )
+        if resource_kind in {"docs", "sheets"} and str(raw.get("query") or "").strip():
+            raise GoogleBridgeTaskError(
+                f"Google step {step_index} does not support query strings for {resource_kind} reads."
+            )
+        if resource_kind == "drive" and action_kind == "read" and operation not in {"list", "read"}:
+            raise GoogleBridgeTaskError(
+                f"Google step {step_index} currently supports list/read operations for Drive reads."
+            )
+        if resource_kind in {"docs", "sheets"} and action_kind == "read" and operation not in {"list", "read"}:
+            raise GoogleBridgeTaskError(
+                f"Google step {step_index} currently supports list/read operations for {resource_kind} reads."
+            )
+        if operation == "list" and action_kind == "export":
+            operation = "export"
+        if action_kind == "export":
+            operation = "export"
+        if operation == "export":
+            if not raw["file_id"]:
+                raise GoogleBridgeTaskError(
+                    f"Google step {step_index} requires file_id for {resource_kind} export workflows."
+                )
+            if not raw["export_mime_type"]:
+                raise GoogleBridgeTaskError(
+                    f"Google step {step_index} requires export_mime_type for {resource_kind} export workflows."
+                )
+        elif action_kind == "read":
+            if resource_kind == "drive" and not raw["file_id"] and not raw["query"]:
+                operation = "list"
+            elif not raw["file_id"]:
+                raise GoogleBridgeTaskError(
+                    f"Google step {step_index} requires file_id for {resource_kind} read workflows."
+                )
+        if resource_kind == "drive" and raw["query"] and not raw["file_id"]:
+            operation = "list"
     raw["action_kind"] = action_kind
     raw["operation"] = operation
     return raw
@@ -1072,6 +1405,149 @@ def _summarize_gmail_no_matches_for_cleanup(*, queries: list[str], accounts: lis
     if not query_text:
         query_text = "no query"
     return f"No Gmail messages matched this cleanup query. Checked accounts: {account_text}. Queries: {query_text}."
+
+
+def _summarize_drive_list(data: dict, *, query: str = "") -> str:
+    files = list(data.get("files") or [])
+    if not files:
+        return "No Drive files were returned." if not query else f"No Drive files matched query '{query}'."
+    previews: list[str] = []
+    for item in files[:5]:
+        file_id = str(item.get("id") or "").strip()
+        name = str(item.get("name") or "").strip()
+        mime_type = str(item.get("mimeType") or "").strip()
+        modified_time = str(item.get("modifiedTime") or "").strip()
+        parts = []
+        if file_id:
+            parts.append(file_id)
+        if name:
+            parts.append(f"name={name}")
+        if mime_type:
+            parts.append(f"mimeType={mime_type}")
+        if modified_time:
+            parts.append(f"modified={modified_time}")
+        if parts:
+            previews.append(" | ".join(parts))
+    if query:
+        return f"Returned {len(files)} Drive files for query '{query}'. Files: {'; '.join(previews)}."
+    return f"Returned {len(files)} Drive files. Files: {'; '.join(previews)}."
+
+
+def _summarize_drive_file(data: dict) -> str:
+    file_id = str(data.get("id") or "").strip()
+    name = str(data.get("name") or "").strip()
+    mime_type = str(data.get("mimeType") or "").strip()
+    parts = ["Drive file retrieved."]
+    if file_id:
+        parts.append(f"File ID: {file_id}")
+    if name:
+        parts.append(f"Name: {name}")
+    if mime_type:
+        parts.append(f"MIME type: {mime_type}")
+    return " ".join(parts)
+
+
+def _summarize_docs_document(data: dict) -> str:
+    title = str(data.get("title") or "").strip()
+    body_text = _extract_document_text(data)
+    parts = ["Google Doc retrieved."]
+    if title:
+        parts.append(f"Title: {title}")
+    if body_text:
+        parts.append(f"Preview: {body_text[:240]}")
+    return " ".join(parts)
+
+
+def _summarize_docs_export(file_id: str, mime_type: str, content: bytes) -> str:
+    text = _decode_text_bytes(content, mime_type)
+    parts = ["Google Doc exported."]
+    if file_id:
+        parts.append(f"File ID: {file_id}")
+    if mime_type:
+        parts.append(f"Export MIME type: {mime_type}")
+    if text:
+        parts.append(f"Preview: {text[:240]}")
+    else:
+        parts.append(f"Bytes: {len(content)}")
+    return " ".join(parts)
+
+
+def _summarize_sheet_values(data: dict, *, spreadsheet_id: str, range_name: str = "") -> str:
+    values = list(data.get("values") or [])
+    if not values:
+        label = range_name or "Sheet1"
+        return f"No Sheet values were returned for {label}."
+    preview_rows: list[str] = []
+    for row in values[:5]:
+        preview_rows.append(" | ".join(str(cell) for cell in row[:6]))
+    parts = ["Google Sheet values retrieved."]
+    if spreadsheet_id:
+        parts.append(f"Spreadsheet ID: {spreadsheet_id}")
+    if range_name:
+        parts.append(f"Range: {range_name}")
+    parts.append(f"Preview: {'; '.join(preview_rows)}")
+    return " ".join(parts)
+
+
+def _summarize_sheet_export(file_id: str, mime_type: str, content: bytes) -> str:
+    text = _decode_text_bytes(content, mime_type)
+    parts = ["Google Sheet exported."]
+    if file_id:
+        parts.append(f"File ID: {file_id}")
+    if mime_type:
+        parts.append(f"Export MIME type: {mime_type}")
+    if text:
+        parts.append(f"Preview: {text[:240]}")
+    else:
+        parts.append(f"Bytes: {len(content)}")
+    return " ".join(parts)
+
+
+def _extract_document_text(data: dict) -> str:
+    parts: list[str] = []
+
+    def walk(nodes: object) -> None:
+        if isinstance(nodes, dict):
+            text = str(nodes.get("content") or nodes.get("text") or "")
+            if text.strip():
+                parts.append(text.strip())
+            for value in nodes.values():
+                walk(value)
+        elif isinstance(nodes, list):
+            for item in nodes:
+                walk(item)
+
+    walk(data.get("body") or data.get("bodyContent") or data)
+    return " ".join(parts).strip()
+
+
+def _decode_text_bytes(content: bytes, mime_type: str) -> str:
+    if not content:
+        return ""
+    lowered = str(mime_type or "").lower()
+    if "text" in lowered or lowered in {"application/json", "application/xml", "text/csv", "text/plain", "text/tab-separated-values"}:
+        for encoding in ("utf-8", "utf-16", "latin-1"):
+            try:
+                return content.decode(encoding).strip()
+            except UnicodeDecodeError:
+                continue
+    return ""
+
+
+def _encode_bytes_base64(content: bytes) -> str:
+    if not content:
+        return ""
+    import base64
+
+    return base64.b64encode(content).decode("ascii")
+
+
+def _resolve_google_file_id(normalized: dict[str, object]) -> str:
+    for key in ("file_id", "document_id", "spreadsheet_id", "message_id", "event_id"):
+        text = str(normalized.get(key) or "").strip()
+        if text:
+            return text
+    return ""
 
 
 def _gmail_or_clause_limit() -> int:

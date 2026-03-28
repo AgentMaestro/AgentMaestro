@@ -8,6 +8,7 @@ urlpatterns = [
     path("new", views.agent_create_wizard, name="agent_create"),
     path("<slug:slug>/", views.agent_detail, name="agent_detail"),
     path("<slug:slug>/artifacts/upload/", views.agent_artifact_upload, name="agent_artifact_upload"),
+    path("<slug:slug>/artifacts/google-drive-import/", views.agent_google_drive_import, name="agent_google_drive_import"),
     path(
         "<slug:slug>/artifacts/<uuid:artifact_id>/delete/",
         views.agent_artifact_delete,

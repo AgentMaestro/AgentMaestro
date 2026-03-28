@@ -52,6 +52,16 @@ _CALENDAR_QUERY_FIELDS = frozenset(
     }
 )
 
+_DRIVE_QUERY_FIELDS = frozenset(
+    {
+        "q",
+        "name",
+        "mime_type",
+        "modified_time",
+        "created_time",
+    }
+)
+
 
 def get_google_query_capabilities(*, resource_kind: str, action_kind: str, operation: str) -> GoogleQueryCapabilities:
     resource = str(resource_kind or "").strip().lower()
@@ -75,6 +85,24 @@ def get_google_query_capabilities(*, resource_kind: str, action_kind: str, opera
             query_enabled=action == "read" and operation_name in {"list", "read"},
             supported_fields=frozenset({"q"}),
             supported_operators=frozenset({"AND", "OR"}),
+        )
+
+    if resource == "drive":
+        return GoogleQueryCapabilities(
+            resource_kind="drive",
+            action_kinds=frozenset({"read"}),
+            query_enabled=action == "read" and operation_name in {"list", "read"},
+            supported_fields=_DRIVE_QUERY_FIELDS,
+            supported_operators=frozenset({"AND", "OR", "NOT"}),
+        )
+
+    if resource in {"docs", "sheets"}:
+        return GoogleQueryCapabilities(
+            resource_kind=resource,
+            action_kinds=frozenset({"read", "export"}),
+            query_enabled=False,
+            supported_fields=frozenset(),
+            supported_operators=frozenset({"AND", "OR", "NOT"}),
         )
 
     return GoogleQueryCapabilities(

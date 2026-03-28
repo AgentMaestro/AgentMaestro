@@ -3,11 +3,13 @@ from __future__ import annotations
 from email.message import EmailMessage
 from base64 import urlsafe_b64encode
 from datetime import timedelta
+from urllib.parse import quote
 
 import httpx
 from django.utils import timezone as django_timezone
 
 from google_bridge.models import GoogleAccount
+from google_bridge.services.http import request_with_retries
 from google_bridge.services.oauth import refresh_access_token
 
 
@@ -47,8 +49,7 @@ class GoogleBridgeClient:
 
     def _request(self, method: str, url: str, *, params: dict | None = None, json: dict | None = None) -> dict:
         headers = {"Authorization": f"Bearer {self._access_token()}"}
-        with httpx.Client(timeout=30.0, headers=headers) as client:
-            response = client.request(method, url, params=params, json=json)
+        response = request_with_retries(method, url, headers=headers, params=params, json=json)
         try:
             response.raise_for_status()
         except httpx.HTTPStatusError as exc:
@@ -63,6 +64,16 @@ class GoogleBridgeClient:
             if not text:
                 return {}
             raise GoogleApiError(text) from None
+
+    def _request_bytes(self, method: str, url: str, *, params: dict | None = None) -> bytes:
+        headers = {"Authorization": f"Bearer {self._access_token()}"}
+        response = request_with_retries(method, url, headers=headers, params=params)
+        try:
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            detail = exc.response.text.strip() if exc.response is not None else str(exc)
+            raise GoogleApiError(detail or "Google API request failed.") from exc
+        return bytes(response.content or b"")
 
     def list_gmail_messages(
         self,
@@ -133,6 +144,74 @@ class GoogleBridgeClient:
             "DELETE",
             f"https://gmail.googleapis.com/gmail/v1/users/me/messages/{message_id}",
             json={},
+        )
+
+    def list_drive_files(
+        self,
+        *,
+        q: str = "",
+        page_size: int = 20,
+        page_token: str = "",
+        include_all_drives: bool = True,
+    ) -> dict:
+        params: dict[str, object] = {
+            "pageSize": max(1, min(int(page_size or 20), 1000)),
+            "fields": "nextPageToken,files(id,name,mimeType,modifiedTime,createdTime,webViewLink,webContentLink,size,parents)",
+            "supportsAllDrives": "true",
+            "includeItemsFromAllDrives": "true" if include_all_drives else "false",
+            "corpora": "allDrives" if include_all_drives else "user",
+        }
+        if q.strip():
+            params["q"] = q.strip()
+        if page_token.strip():
+            params["pageToken"] = page_token.strip()
+        return self._request("GET", "https://www.googleapis.com/drive/v3/files", params=params)
+
+    def get_drive_file(self, file_id: str, *, fields: str = "") -> dict:
+        params: dict[str, object] = {"supportsAllDrives": "true"}
+        if fields.strip():
+            params["fields"] = fields.strip()
+        return self._request(
+            "GET",
+            f"https://www.googleapis.com/drive/v3/files/{file_id}",
+            params=params,
+        )
+
+    def download_drive_file(self, file_id: str) -> bytes:
+        return self._request_bytes(
+            "GET",
+            f"https://www.googleapis.com/drive/v3/files/{file_id}",
+            params={"alt": "media", "supportsAllDrives": "true"},
+        )
+
+    def export_drive_file(self, file_id: str, mime_type: str) -> bytes:
+        export_mime_type = str(mime_type or "").strip()
+        if not export_mime_type:
+            raise GoogleApiError("Drive export requires a mime type.")
+        return self._request_bytes(
+            "GET",
+            f"https://www.googleapis.com/drive/v3/files/{file_id}/export",
+            params={"mimeType": export_mime_type},
+        )
+
+    def get_document(self, document_id: str) -> dict:
+        return self._request(
+            "GET",
+            f"https://docs.googleapis.com/v1/documents/{document_id}",
+        )
+
+    def get_spreadsheet(self, spreadsheet_id: str) -> dict:
+        return self._request(
+            "GET",
+            f"https://sheets.googleapis.com/v4/spreadsheets/{spreadsheet_id}",
+        )
+
+    def get_sheet_values(self, spreadsheet_id: str, *, range_name: str = "") -> dict:
+        sheet_range = str(range_name or "").strip() or "Sheet1"
+        encoded_range = quote(sheet_range, safe="!:$,")
+        return self._request(
+            "GET",
+            f"https://sheets.googleapis.com/v4/spreadsheets/{spreadsheet_id}/values/{encoded_range}",
         )
 
     def list_calendar_events(

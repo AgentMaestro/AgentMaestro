@@ -1678,15 +1678,14 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
             except Exception as exc:
                 if self._is_previous_response_not_found(exc):
                     logger.debug(
-                        "WS previous_response_id not found run=%s transport=%s model=%s; clearing chain id and retrying once",
+                        "WS previous_response_id not found run=%s transport=%s model=%s; resetting continuity and retrying once",
                         self.run_id,
                         self._transport_label(),
                         self.model_name,
                     )
-                    self._response_chain_previous_id = None
-                    if self.session:
-                        self.session.previous_response_id = None
-                    await _set_run_previous_response_id(self.run_id or "", None)
+                    await self._reset_response_continuity(
+                        reason="previous response not found"
+                    )
                     continue
                 elif self._active_model_candidate_index + 1 < len(
                     self._model_candidates
@@ -1869,16 +1868,15 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
                         and self.client.is_previous_response_not_found(exc)
                     ):
                         logger.debug(
-                            "HTTP previous_response_id not found run=%s transport=%s model=%s; clearing chain id and retrying once",
+                            "HTTP previous_response_id not found run=%s transport=%s model=%s; resetting continuity and retrying once",
                             self.run_id,
                             self._transport_label(),
                             model,
                         )
                         retry_without_previous_response = True
-                        self._response_chain_previous_id = None
-                        if self.session:
-                            self.session.previous_response_id = None
-                        await _set_run_previous_response_id(self.run_id or "", None)
+                        await self._reset_response_continuity(
+                            reason="previous response not found"
+                        )
                         continue
                     if candidate_index + 1 < len(model_candidates) and is_retryable_model_failure(
                         exc,

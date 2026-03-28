@@ -6,6 +6,8 @@ from urllib.parse import urlencode
 import httpx
 from django.conf import settings
 
+from google_bridge.services.http import request_with_retries
+
 
 GOOGLE_OAUTH_AUTHORIZE_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 GOOGLE_OAUTH_TOKEN_URL = "https://oauth2.googleapis.com/token"
@@ -57,8 +59,7 @@ def exchange_authorization_code(code: str) -> dict[str, object]:
         "redirect_uri": config.redirect_uri,
         "grant_type": "authorization_code",
     }
-    with httpx.Client(timeout=30.0) as client:
-        response = client.post(GOOGLE_OAUTH_TOKEN_URL, data=payload)
+    response = request_with_retries("POST", GOOGLE_OAUTH_TOKEN_URL, data=payload)
     _raise_for_status(response)
     return dict(response.json())
 
@@ -71,16 +72,14 @@ def refresh_access_token(refresh_token: str) -> dict[str, object]:
         "refresh_token": refresh_token,
         "grant_type": "refresh_token",
     }
-    with httpx.Client(timeout=30.0) as client:
-        response = client.post(GOOGLE_OAUTH_TOKEN_URL, data=payload)
+    response = request_with_retries("POST", GOOGLE_OAUTH_TOKEN_URL, data=payload)
     _raise_for_status(response)
     return dict(response.json())
 
 
 def fetch_userinfo(access_token: str) -> dict[str, object]:
     headers = {"Authorization": f"Bearer {access_token}"}
-    with httpx.Client(timeout=30.0, headers=headers) as client:
-        response = client.get("https://openidconnect.googleapis.com/v1/userinfo")
+    response = request_with_retries("GET", "https://openidconnect.googleapis.com/v1/userinfo", headers=headers)
     _raise_for_status(response)
     return dict(response.json())
 

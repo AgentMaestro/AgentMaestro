@@ -1946,3 +1946,82 @@ def test_google_bridge_calendar_schema_requires_local_time_bounds():
     assert any(example.get("account_scope") == "all" and example.get("query") == "from:info@airbnb.com" and example.get("operation") == "delete" and example.get("delete_mode") == "delete" for example in gmail_delete_examples)
     assert any(example.get("account_scope") == "all" and example.get("query") == "from:airbnb.com" and example.get("operation") == "trash" for example in gmail_delete_examples)
     assert any(example.get("account_scope") == "all" and example.get("query") == "from:airbnb.com" and example.get("operation") == "delete" and example.get("delete_mode") == "delete" for example in gmail_delete_examples)
+
+
+def test_execute_google_task_supports_drive_docs_and_sheets_steps(monkeypatch):
+    workspace, user, account = _make_account()
+
+    captured: dict[str, object] = {"drive_q": None, "export_calls": [], "sheet_range": None}
+
+    class FakeClient:
+        def __init__(self, connection):
+            self.connection = connection
+
+        def list_drive_files(self, *, q: str = "", page_size: int = 20, page_token: str = "", include_all_drives: bool = True):
+            captured["drive_q"] = q
+            return {
+                "files": [{"id": "drive-1", "name": "Drive File", "mimeType": "application/pdf"}],
+                "nextPageToken": "",
+            }
+
+        def get_document(self, document_id: str):
+            return {
+                "documentId": document_id,
+                "title": "Doc Title",
+                "body": {"content": [{"paragraph": {"elements": [{"textRun": {"content": "Doc body text"}}]}}]},
+            }
+
+        def get_sheet_values(self, spreadsheet_id: str, *, range_name: str = ""):
+            captured["sheet_range"] = range_name
+            return {
+                "spreadsheetId": spreadsheet_id,
+                "range": range_name,
+                "values": [["A1", "B1"], ["A2", "B2"]],
+            }
+
+        def export_drive_file(self, file_id: str, mime_type: str) -> bytes:
+            captured["export_calls"].append((file_id, mime_type))
+            return b"exported-bytes"
+
+    monkeypatch.setattr("google_bridge.services.bridge.GoogleBridgeClient", FakeClient)
+
+    result = execute_google_task(
+        payload={
+            "integration_kind": "google",
+            "steps": [
+                {
+                    "resource_kind": "drive",
+                    "action_kind": "read",
+                    "operation": "list",
+                    "query": 'mime_type:application/vnd.google-apps.document',
+                    "max_results": 5,
+                },
+                {
+                    "resource_kind": "docs",
+                    "action_kind": "read",
+                    "operation": "read",
+                    "file_id": "doc-123",
+                },
+                {
+                    "resource_kind": "sheets",
+                    "action_kind": "export",
+                    "operation": "export",
+                    "file_id": "sheet-123",
+                    "export_mime_type": "text/csv",
+                },
+            ],
+        },
+        workspace=workspace,
+        owner=user,
+        account=account,
+    )
+
+    assert captured["drive_q"] == 'mime_type:application/vnd.google-apps.document'
+    assert captured["sheet_range"] is None
+    assert captured["export_calls"] == [("sheet-123", "text/csv")]
+    assert result["steps"][0]["resource_kind"] == "drive"
+    assert result["steps"][1]["resource_kind"] == "docs"
+    assert result["steps"][2]["resource_kind"] == "sheets"
+    assert result["steps"][0]["result"]["files"][0]["id"] == "drive-1"
+    assert result["steps"][1]["result"]["documentId"] == "doc-123"
+    assert result["steps"][2]["result"]["content_text"] == "exported-bytes"

@@ -1,4 +1,4 @@
-(() => {
+﻿(() => {
     const shell = document.querySelector("[data-agent-chat]");
     if (!shell) {
         return;
@@ -15,11 +15,29 @@
     const telegramMirrorToggle = shell.querySelector("[data-telegram-mirror-toggle]");
     const telegramMirrorToggleUrl = shell.dataset.telegramToggleUrl || "";
     const artifactUploadUrl = shell.dataset.artifactUploadUrl || "";
+    const artifactGoogleDriveImportUrl = shell.dataset.artifactGoogleDriveImportUrl || "";
     const artifactUploadTrigger = shell.querySelector("[data-artifact-upload-trigger]");
     const artifactUploadInput = shell.querySelector("[data-artifact-upload-input]");
     const artifactListEl = shell.querySelector("[data-run-artifacts-list]");
     const artifactEmptyEl = shell.querySelector("[data-run-artifacts-empty]");
     const artifactCountEl = shell.querySelector("[data-pending-artifact-count]");
+    const googleDriveBrowserUrl = shell.dataset.googleDriveBrowserUrl || "";
+    const googleBridgeStatusUrl = shell.dataset.googleBridgeStatusUrl || "";
+    const googleBridgeConnectUrl = shell.dataset.googleBridgeConnectUrl || "";
+    const googleBridgeAccountUrl = shell.dataset.googleBridgeAccountUrl || "";
+    const drivePreviewIconUrl = shell.dataset.drivePreviewIconUrl || "";
+    const driveModal = shell.querySelector("[data-drive-modal]");
+    const driveModalCloseButtons = shell.querySelectorAll("[data-drive-modal-close]");
+    const driveLocalBrowseButton = shell.querySelector("[data-drive-local-browse]");
+    const driveUpButton = shell.querySelector("[data-drive-up]");
+    const driveRefreshButton = shell.querySelector("[data-drive-refresh]");
+    const driveAttachButton = shell.querySelector("[data-drive-attach-selected]");
+    const driveBreadcrumbEl = shell.querySelector("[data-drive-breadcrumb]");
+    const driveStatusEl = shell.querySelector("[data-drive-browser-status]");
+    const driveListEl = shell.querySelector("[data-drive-file-list]");
+    const driveSelectedCountEl = shell.querySelector("[data-drive-selected-count]");
+    const driveAccountSelectorEl = shell.querySelector("[data-drive-account-selector]");
+    const driveAccountRowEl = shell.querySelector("[data-drive-account-row]");
     const runTimelineBaseUrl = (shell.dataset.runTimelineBaseUrl || "/ui/run/").trim() || "/ui/run/";
     const approvalGrantsListEl = shell.querySelector("[data-approval-grants-list]");
     const approvalGrantsEmptyEl = shell.querySelector("[data-approval-grants-empty]");
@@ -46,6 +64,19 @@
     let telegramMirrorEnabled = (shell.dataset.telegramMirrorEnabled || "false").trim() === "true";
     let artifactUploadBusy = false;
     let currentArtifactQueue = [];
+    let driveBrowserState = {
+        connected: false,
+        currentFolderId: "",
+        parentFolderId: "",
+        files: [],
+        accounts: [],
+        selectedAccountId: "",
+        selectedIds: new Set(),
+        connectUrl: googleBridgeConnectUrl,
+        trail: [{id: "", name: "My Drive"}],
+        trailIndex: 0,
+    };
+    let suppressDriveAccountChange = false;
     const normalizeTransportLabel = (value, fallbackValue = "") => {
         const candidate = String(value || fallbackValue || "").trim().toUpperCase();
         if (candidate.includes("HTTP")) {
@@ -386,7 +417,7 @@
             if (grant.created_at) {
                 createdBits.push(formatTimestamp(grant.created_at));
             }
-            meta.textContent = createdBits.join(" · ");
+            meta.textContent = createdBits.join(" Â· ");
 
             item.append(header, scope);
             if (meta.textContent) {
@@ -736,6 +767,21 @@
             artifactUploadTrigger.disabled = artifactUploadBusy;
             artifactUploadTrigger.textContent = label || (artifactUploadBusy ? "Uploading..." : "Attach file");
         }
+        if (driveLocalBrowseButton) {
+            driveLocalBrowseButton.disabled = artifactUploadBusy;
+        }
+        if (driveRefreshButton) {
+            driveRefreshButton.disabled = artifactUploadBusy;
+        }
+        if (driveAccountSelectorEl) {
+            driveAccountSelectorEl.disabled = artifactUploadBusy || driveBrowserState.accounts.length <= 1;
+        }
+        if (driveUpButton) {
+            driveUpButton.disabled = artifactUploadBusy || (driveBrowserState.trailIndex || 0) <= 0;
+        }
+        if (driveAttachButton) {
+            driveAttachButton.disabled = artifactUploadBusy || driveBrowserState.selectedIds.size === 0;
+        }
         if (artifactUploadInput) {
             artifactUploadInput.disabled = artifactUploadBusy;
         }
@@ -824,6 +870,487 @@
         }
         renderArtifacts([]);
         log("Detected browser reload; cleared prior run view and will start fresh.");
+    };
+
+    const formatDriveSize = (sizeBytes) => {
+        const value = Number(sizeBytes || 0);
+        if (!value) {
+            return "";
+        }
+        if (value < 1024) {
+            return `${value} B`;
+        }
+        if (value < 1024 * 1024) {
+            return `${(value / 1024).toFixed(value % 1024 === 0 ? 0 : 1)} KB`;
+        }
+        if (value < 1024 * 1024 * 1024) {
+            return `${(value / (1024 * 1024)).toFixed(1)} MB`;
+        }
+        return `${(value / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+    };
+
+    const formatDriveFileType = (file) => {
+        const name = String(file?.name || "").trim();
+        const mimeType = String(file?.mime_type || "").trim();
+        if (Boolean(file?.is_folder)) {
+            return "Folder";
+        }
+        if (mimeType === "application/vnd.google-apps.document") {
+            return "Doc";
+        }
+        if (mimeType === "application/vnd.google-apps.spreadsheet") {
+            return "Sheet";
+        }
+        if (mimeType === "application/vnd.google-apps.presentation") {
+            return "Slides";
+        }
+        if (mimeType === "application/vnd.google-apps.drawing") {
+            return "Drawing";
+        }
+        if (mimeType.startsWith("application/vnd.google-apps.")) {
+            return "Google File";
+        }
+        const suffix = name.includes(".") ? name.split(".").pop() : "";
+        if (suffix) {
+            return suffix.toUpperCase();
+        }
+        if (mimeType) {
+            const slashIndex = mimeType.indexOf("/");
+            return slashIndex >= 0 ? mimeType.slice(slashIndex + 1).toUpperCase() : mimeType.toUpperCase();
+        }
+        return "File";
+    };
+
+    const formatDriveDateTime = (value) => {
+        if (!value) {
+            return "";
+        }
+        const parsed = new Date(value);
+        if (Number.isNaN(parsed.getTime())) {
+            return String(value);
+        }
+        return new Intl.DateTimeFormat(undefined, {
+            year: "numeric",
+            month: "2-digit",
+            day: "2-digit",
+            hour: "2-digit",
+            minute: "2-digit",
+        }).format(parsed);
+    };
+
+    const setDriveModalOpen = (open) => {
+        if (!driveModal) {
+            return;
+        }
+        driveModal.hidden = !open;
+        document.body.style.overflow = open ? "hidden" : "";
+        if (open) {
+            if (!driveBrowserState.connected && !driveBrowserState.files.length) {
+                void loadDriveFolder(driveBrowserState.currentFolderId || "");
+            }
+        }
+    };
+
+    const updateDriveSelectionSummary = () => {
+        const count = driveBrowserState.selectedIds.size;
+        if (driveSelectedCountEl) {
+            driveSelectedCountEl.textContent = `${count} selected`;
+        }
+        if (driveAttachButton) {
+            driveAttachButton.disabled = count === 0 || artifactUploadBusy;
+        }
+    };
+
+    const renderDriveAccountSelector = (accounts, selectedAccountId = "") => {
+        const items = Array.isArray(accounts) ? accounts : [];
+        const nextAccountId = String(selectedAccountId || driveBrowserState.selectedAccountId || items[0]?.id || "").trim();
+        driveBrowserState.accounts = items;
+        driveBrowserState.selectedAccountId = nextAccountId;
+        if (!driveAccountSelectorEl) {
+            return;
+        }
+        const container = driveAccountRowEl || driveAccountSelectorEl.parentElement;
+        if (container) {
+            container.hidden = items.length <= 1;
+        }
+        suppressDriveAccountChange = true;
+        driveAccountSelectorEl.textContent = "";
+        items.forEach((account) => {
+            const option = document.createElement("option");
+            const accountId = String(account.id || "").trim();
+            const email = String(account.email || "").trim();
+            const subject = String(account.google_subject || "").trim();
+            const label = String(account.display_name || email || subject || accountId || "Google account").trim();
+            option.value = accountId;
+            option.textContent = account.is_primary ? `${label} (Primary)` : label;
+            if (accountId && accountId === nextAccountId) {
+                option.selected = true;
+            }
+            driveAccountSelectorEl.append(option);
+        });
+        driveAccountSelectorEl.value = nextAccountId;
+        driveAccountSelectorEl.disabled = items.length <= 1 || artifactUploadBusy;
+        suppressDriveAccountChange = false;
+    };
+
+    const persistDriveAccountSelection = async (accountId) => {
+        const selectedAccountId = String(accountId || "").trim();
+        if (!googleBridgeAccountUrl || !selectedAccountId) {
+            return false;
+        }
+        try {
+            const response = await fetch(googleBridgeAccountUrl, {
+                method: "POST",
+                credentials: "same-origin",
+                headers: {
+                    "Content-Type": "application/json",
+                    "X-CSRFToken": getCookie("csrftoken"),
+                    Accept: "application/json",
+                },
+                body: JSON.stringify({account_id: selectedAccountId}),
+            });
+            const payload = await response.json();
+            if (!response.ok) {
+                throw new Error(payload?.error || `Google account selection failed (${response.status})`);
+            }
+            renderDriveAccountSelector(payload.accounts || [], payload.selected_account_id || selectedAccountId);
+            return true;
+        } catch (error) {
+            warn("Unable to persist Google account selection", error);
+            appendSystemMessage("Unable to change Google account selection.", "error");
+            return false;
+        }
+    };
+
+    const setDriveFolderTrail = (folderName, folderId) => {
+        const trail = Array.isArray(driveBrowserState.trail) ? driveBrowserState.trail.slice(0, driveBrowserState.trailIndex + 1) : [];
+        trail.push({id: folderId || "", name: folderName || "My Drive"});
+        driveBrowserState.trail = trail;
+        driveBrowserState.trailIndex = trail.length - 1;
+        if (driveUpButton) {
+            driveUpButton.disabled = driveBrowserState.trailIndex <= 0;
+        }
+        if (driveBreadcrumbEl) {
+            driveBreadcrumbEl.textContent = trail.map((item) => item.name || item.id || "My Drive").join(" / ");
+        }
+    };
+
+    const refreshDriveBreadcrumb = () => {
+        const trail = Array.isArray(driveBrowserState.trail) ? driveBrowserState.trail : [];
+        if (driveBreadcrumbEl) {
+            driveBreadcrumbEl.textContent = trail.length
+                ? trail.map((item) => item.name || item.id || "My Drive").join(" / ")
+                : "My Drive";
+        }
+        if (driveUpButton) {
+            driveUpButton.disabled = (driveBrowserState.trailIndex || 0) <= 0;
+        }
+    };
+
+    const renderDriveFiles = (files) => {
+        if (!driveListEl) {
+            return;
+        }
+        driveListEl.textContent = "";
+        const items = Array.isArray(files) ? files.slice() : [];
+        items.sort((left, right) => {
+            const leftFolder = Boolean(left?.is_folder);
+            const rightFolder = Boolean(right?.is_folder);
+            if (leftFolder !== rightFolder) {
+                return leftFolder ? -1 : 1;
+            }
+            const leftName = String(left?.name || "").trim().toLowerCase();
+            const rightName = String(right?.name || "").trim().toLowerCase();
+            return leftName.localeCompare(rightName);
+        });
+        if (!items.length) {
+            const empty = document.createElement("div");
+            empty.className = "chat-drive-browser-empty";
+            empty.textContent = "No files in this folder.";
+            driveListEl.append(empty);
+            updateDriveSelectionSummary();
+            return;
+        }
+        items.forEach((file) => {
+            const fileId = String(file.id || "").trim();
+            const isFolder = Boolean(file.is_folder);
+            const selected = driveBrowserState.selectedIds.has(fileId);
+            const row = document.createElement("article");
+            row.className = `chat-drive-browser-row${isFolder ? " is-folder" : ""}${selected ? " is-selected" : ""}`;
+            row.dataset.driveFileId = fileId;
+            row.dataset.driveIsFolder = isFolder ? "true" : "false";
+            row.title = isFolder ? "Double-click to open folder" : "Double-click to preview in Google Drive";
+
+            const selectCell = document.createElement("div");
+            selectCell.className = "chat-drive-browser-cell is-select";
+            const selectBox = document.createElement("input");
+            selectBox.type = "checkbox";
+            selectBox.checked = selected;
+            selectBox.disabled = isFolder;
+            selectBox.addEventListener("click", (event) => {
+                event.stopPropagation();
+            });
+            selectBox.addEventListener("change", () => {
+                if (!fileId || isFolder) {
+                    return;
+                }
+                if (selectBox.checked) {
+                    driveBrowserState.selectedIds.add(fileId);
+                } else {
+                    driveBrowserState.selectedIds.delete(fileId);
+                }
+                row.classList.toggle("is-selected", selectBox.checked);
+                updateDriveSelectionSummary();
+            });
+            selectCell.append(selectBox);
+
+            const nameCell = document.createElement("div");
+            nameCell.className = "chat-drive-browser-cell is-name";
+            const nameText = document.createElement("span");
+            nameText.className = "chat-drive-browser-name-text";
+            nameText.textContent = file.name || fileId || "Untitled";
+            if (isFolder) {
+                const folderIcon = document.createElement("span");
+                folderIcon.className = "chat-drive-folder-icon";
+                folderIcon.setAttribute("aria-hidden", "true");
+                folderIcon.textContent = "📁";
+                nameCell.append(folderIcon, nameText);
+            } else {
+                nameCell.append(nameText);
+            }
+
+            const typeCell = document.createElement("div");
+            typeCell.className = "chat-drive-browser-cell is-type";
+            typeCell.textContent = formatDriveFileType(file);
+
+            const sizeCell = document.createElement("div");
+            sizeCell.className = "chat-drive-browser-cell is-size";
+            sizeCell.textContent = isFolder ? "" : (formatDriveSize(file.size_bytes) || "—");
+
+            const modifiedCell = document.createElement("div");
+            modifiedCell.className = "chat-drive-browser-cell is-modified";
+            modifiedCell.textContent = formatDriveDateTime(file.modified_time) || "—";
+
+            const previewCell = document.createElement("div");
+            previewCell.className = "chat-drive-browser-cell is-preview";
+            const previewButton = document.createElement("button");
+            previewButton.type = "button";
+            previewButton.className = "chat-drive-browser-preview-button";
+            previewButton.title = isFolder ? "Open folder" : "Preview";
+            previewButton.setAttribute("aria-label", isFolder ? "Open folder" : "Preview");
+            const previewIcon = document.createElement("img");
+            previewIcon.src = drivePreviewIconUrl || "";
+            previewIcon.alt = "";
+            previewIcon.setAttribute("aria-hidden", "true");
+            previewButton.append(previewIcon);
+            previewCell.append(previewButton);
+
+            row.append(selectCell, nameCell, typeCell, sizeCell, modifiedCell, previewCell);
+
+            row.addEventListener("click", (event) => {
+                if (event.target instanceof HTMLInputElement && event.target.type === "checkbox") {
+                    return;
+                }
+                if (event.target instanceof HTMLButtonElement) {
+                    return;
+                }
+                if (isFolder) {
+                    return;
+                }
+                selectBox.checked = !selectBox.checked;
+                selectBox.dispatchEvent(new Event("change", {bubbles: true}));
+            });
+            row.addEventListener("dblclick", (event) => {
+                event.preventDefault();
+                if (isFolder) {
+                    void loadDriveFolder(fileId, file.name || fileId || "Folder");
+                    return;
+                }
+                const webViewLink = String(file.web_view_link || "").trim();
+                const webContentLink = String(file.web_content_link || "").trim();
+                if (webViewLink) {
+                    window.open(webViewLink, "_blank", "noopener,noreferrer");
+                    return;
+                }
+                if (webContentLink) {
+                    window.open(webContentLink, "_blank", "noopener,noreferrer");
+                    return;
+                }
+                selectBox.checked = true;
+                selectBox.dispatchEvent(new Event("change", {bubbles: true}));
+            });
+            previewButton.addEventListener("click", (event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                if (isFolder) {
+                    void loadDriveFolder(fileId, file.name || fileId || "Folder");
+                    return;
+                }
+                const webViewLink = String(file.web_view_link || "").trim();
+                const webContentLink = String(file.web_content_link || "").trim();
+                if (webViewLink) {
+                    window.open(webViewLink, "_blank", "noopener,noreferrer");
+                    return;
+                }
+                if (webContentLink) {
+                    window.open(webContentLink, "_blank", "noopener,noreferrer");
+                    return;
+                }
+                selectBox.checked = true;
+                selectBox.dispatchEvent(new Event("change", {bubbles: true}));
+            });
+
+            driveListEl.append(row);
+        });
+        updateDriveSelectionSummary();
+    };
+
+    const loadDriveFolder = async (parentId = "", folderName = "", accountId = "") => {
+        if (!googleDriveBrowserUrl || !driveListEl || !driveStatusEl) {
+            return false;
+        }
+        driveStatusEl.textContent = "Loading Drive files...";
+        const requestUrl = new URL(googleDriveBrowserUrl, window.location.origin);
+        const selectedAccountId = String(accountId || driveBrowserState.selectedAccountId || "").trim();
+        if (selectedAccountId) {
+            requestUrl.searchParams.set("account_id", selectedAccountId);
+        }
+        if (parentId) {
+            requestUrl.searchParams.set("parent_id", parentId);
+        }
+        try {
+            const response = await fetch(requestUrl.toString(), {
+                credentials: "same-origin",
+                headers: {Accept: "application/json"},
+            });
+            const payload = await response.json();
+            if (!response.ok) {
+                throw new Error(payload?.error || `Drive browser request failed (${response.status})`);
+            }
+            driveBrowserState.connected = Boolean(payload.connected);
+            driveBrowserState.currentFolderId = String(payload.current_folder_id || parentId || "");
+            driveBrowserState.parentFolderId = String(payload.parent_folder_id || "");
+            driveBrowserState.connectUrl = String(payload.connect_url || driveBrowserState.connectUrl || "");
+            driveBrowserState.files = Array.isArray(payload.files) ? payload.files.slice() : [];
+            renderDriveAccountSelector(payload.accounts || [], payload.selected_account_id || selectedAccountId);
+            if (!Array.isArray(driveBrowserState.trail)) {
+                driveBrowserState.trail = [{id: "", name: "My Drive"}];
+                driveBrowserState.trailIndex = 0;
+            }
+            if (parentId === "" && !folderName) {
+                driveBrowserState.trail = [{id: "", name: "My Drive"}];
+                driveBrowserState.trailIndex = 0;
+            } else if (folderName) {
+                setDriveFolderTrail(folderName, parentId);
+            } else {
+                refreshDriveBreadcrumb();
+            }
+            if (driveAccountSelectorEl) {
+                driveAccountSelectorEl.value = driveBrowserState.selectedAccountId;
+            }
+            if (payload.connected) {
+                driveStatusEl.textContent = payload.error ? payload.error : "Double-click folders to open them. Select files with the checkbox.";
+                if (payload.error) {
+                    driveListEl.textContent = "";
+                } else {
+                    renderDriveFiles(payload.files || []);
+                }
+            } else {
+                driveStatusEl.innerHTML = driveBrowserState.connectUrl
+                    ? `Google Drive is not connected. <a href="${driveBrowserState.connectUrl}" target="_blank" rel="noopener">Connect Google Drive</a> first.`
+                    : "Google Drive is not connected.";
+                driveListEl.textContent = "";
+                driveBrowserState.files = [];
+            }
+            if (driveUpButton) {
+                driveUpButton.disabled = (driveBrowserState.trailIndex || 0) <= 0;
+            }
+            return true;
+        } catch (error) {
+            warn("Unable to load Drive files", error);
+            driveStatusEl.textContent = "Unable to load Google Drive files.";
+            driveListEl.textContent = "";
+            return false;
+        }
+    };
+
+    const openDriveModal = async () => {
+        setDriveModalOpen(true);
+        if (!Array.isArray(driveBrowserState.trail) || !driveBrowserState.trail.length) {
+            driveBrowserState.trail = [{id: "", name: "My Drive"}];
+            driveBrowserState.trailIndex = 0;
+            refreshDriveBreadcrumb();
+        }
+        if (!driveBrowserState.files.length) {
+            await loadDriveFolder(driveBrowserState.currentFolderId || "");
+        }
+    };
+
+    const closeDriveModal = () => {
+        setDriveModalOpen(false);
+    };
+
+    const attachSelectedDriveFiles = async () => {
+        if (!artifactGoogleDriveImportUrl || !driveBrowserState.selectedIds.size) {
+            return false;
+        }
+        setArtifactUploadState(true, "Attaching...");
+        try {
+            let runId = activeRunId;
+            if (runId && shouldRotateRunForNextPrompt()) {
+                const rotated = await rotateToFreshRun({
+                    reason: "Starting a fresh run for Google Drive attachments.",
+                    rotationCode: "artifact_upload",
+                });
+                if (!rotated) {
+                    throw new Error("Unable to start a run for Google Drive attachment");
+                }
+                runId = activeRunId;
+            } else if (!runId) {
+                const ensuredRunId = await ensureRunId();
+                runId = ensuredRunId || activeRunId;
+            }
+            if (!runId) {
+                throw new Error("No active run available for Google Drive attachment");
+            }
+            const formData = new FormData();
+            formData.append("run_id", runId);
+            if (driveBrowserState.selectedAccountId) {
+                formData.append("account_id", driveBrowserState.selectedAccountId);
+            }
+            Array.from(driveBrowserState.selectedIds).forEach((fileId) => {
+                formData.append("file_ids", fileId);
+            });
+            const response = await fetch(artifactGoogleDriveImportUrl, {
+                method: "POST",
+                credentials: "same-origin",
+                headers: {
+                    Accept: "application/json",
+                    "X-CSRFToken": getCookie("csrftoken"),
+                },
+                body: formData,
+            });
+            const payload = await response.json();
+            if (!response.ok) {
+                throw new Error(payload?.error || `Drive import failed (${response.status})`);
+            }
+            if (payload?.run_id) {
+                activeRunId = String(payload.run_id);
+                storeRunId(activeRunId);
+                updateRunTimelineLink(activeRunId);
+            }
+            driveBrowserState.selectedIds.clear();
+            renderArtifacts(payload.artifacts || []);
+            closeDriveModal();
+            return true;
+        } catch (error) {
+            warn("Unable to import Google Drive files", error);
+            appendSystemMessage("Unable to attach Google Drive file(s).", "error");
+            return false;
+        } finally {
+            setArtifactUploadState(false);
+            updateDriveSelectionSummary();
+        }
     };
 
     const deleteArtifact = async (artifact) => {
@@ -1332,7 +1859,12 @@
             copyButton.className = "chat-message-copy";
             copyButton.title = "Copy response";
             copyButton.setAttribute("aria-label", "Copy response");
-            copyButton.textContent = "⧉";
+            copyButton.innerHTML = `
+                <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                    <rect x="8" y="5" width="10" height="12" rx="2" ry="2"></rect>
+                    <rect x="5" y="8" width="10" height="12" rx="2" ry="2"></rect>
+                </svg>
+            `;
             copyButton.addEventListener("click", async () => {
                 try {
                     const copied = await copyTextToClipboard(body.innerText || body.textContent || payload.text || "");
@@ -1340,10 +1872,19 @@
                         return;
                     }
                     copyButton.classList.add("is-copied");
-                    copyButton.textContent = "✓";
+                    copyButton.innerHTML = `
+                        <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                            <path d="M5 12l4 4 10-10" fill="none" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round"></path>
+                        </svg>
+                    `;
                     window.setTimeout(() => {
                         copyButton.classList.remove("is-copied");
-                        copyButton.textContent = "⧉";
+                        copyButton.innerHTML = `
+                            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                                <rect x="8" y="5" width="10" height="12" rx="2" ry="2"></rect>
+                                <rect x="5" y="8" width="10" height="12" rx="2" ry="2"></rect>
+                            </svg>
+                        `;
                     }, 1200);
                 } catch (error) {
                     console.warn("Unable to copy assistant response", error);
@@ -1388,7 +1929,7 @@
     let thinkingPlaceholder = null;
     let thinkingPhase = null;
 
-    const thinkingLabel = (phase) => `${agentName} is ${phase}…`;
+    const thinkingLabel = (phase) => `${agentName} is ${phase}...`;
 
     const removeThinkingPlaceholder = () => {
         if (thinkingPlaceholder) {
@@ -1529,8 +2070,8 @@
         if (grantSelect) {
             grantSelect.disabled = state !== "pending";
         }
-        approveBtn.textContent = state === "approved" ? "Approve ✓" : "Approve";
-        denyBtn.textContent = state === "denied" ? "Deny ✓" : "Deny";
+        approveBtn.textContent = state === "approved" ? "Approve âœ“" : "Approve";
+        denyBtn.textContent = state === "denied" ? "Deny âœ“" : "Deny";
         if (state === "approved") {
             approveBtn.classList.add("selected");
         } else if (state === "denied") {
@@ -2087,7 +2628,7 @@
             log("[CLOSE] Previous transport was open. Closing before reconnect.")
             socket.close();
         }
-        setStatus("Connecting…");
+        setStatus("Connecting...");
         const protocol = window.location.protocol === "https:" ? "wss" : "ws";
         const runQuery = activeRunId
             ? `${wsUrl.includes("?") ? "&" : "?"}run=${encodeURIComponent(activeRunId)}`
@@ -2230,7 +2771,60 @@
     });
 
     artifactUploadTrigger?.addEventListener("click", () => {
+        void openDriveModal();
+    });
+
+    driveModalCloseButtons.forEach((button) => {
+        button.addEventListener("click", () => {
+            closeDriveModal();
+        });
+    });
+
+    driveAccountSelectorEl?.addEventListener("change", () => {
+        if (suppressDriveAccountChange) {
+            return;
+        }
+        const nextAccountId = String(driveAccountSelectorEl.value || "").trim();
+        if (!nextAccountId || nextAccountId === driveBrowserState.selectedAccountId) {
+            return;
+        }
+        driveBrowserState.selectedAccountId = nextAccountId;
+        driveBrowserState.selectedIds.clear();
+        driveBrowserState.trail = [{id: "", name: "My Drive"}];
+        driveBrowserState.trailIndex = 0;
+        refreshDriveBreadcrumb();
+        updateDriveSelectionSummary();
+        void persistDriveAccountSelection(nextAccountId).then((saved) => {
+            if (saved) {
+                void loadDriveFolder("", "", nextAccountId);
+            }
+        });
+    });
+
+    driveLocalBrowseButton?.addEventListener("click", () => {
+        closeDriveModal();
         artifactUploadInput?.click();
+    });
+
+    driveUpButton?.addEventListener("click", () => {
+        const trail = Array.isArray(driveBrowserState.trail) ? driveBrowserState.trail : [];
+        if (driveBrowserState.trailIndex <= 0 || trail.length <= 1) {
+            return;
+        }
+        const nextIndex = Math.max(0, driveBrowserState.trailIndex - 1);
+        const nextFolder = trail[nextIndex] || {id: "", name: "My Drive"};
+        driveBrowserState.trailIndex = nextIndex;
+        driveBrowserState.trail = trail.slice(0, nextIndex + 1);
+        refreshDriveBreadcrumb();
+        void loadDriveFolder(nextFolder.id || "");
+    });
+
+    driveRefreshButton?.addEventListener("click", () => {
+        void loadDriveFolder(driveBrowserState.currentFolderId || "");
+    });
+
+    driveAttachButton?.addEventListener("click", () => {
+        void attachSelectedDriveFiles();
     });
 
     artifactUploadInput?.addEventListener("change", () => {
@@ -2238,7 +2832,8 @@
         if (!files.length) {
             return;
         }
-        uploadArtifacts(files);
+        closeDriveModal();
+        void uploadArtifacts(files);
     });
 
     clearReloadedRunView();
@@ -2247,3 +2842,7 @@
     setArtifactUploadState(false);
     initializeRunAndConnect();
 })();
+
+
+
+

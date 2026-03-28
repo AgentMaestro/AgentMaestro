@@ -5,7 +5,7 @@ from django.conf import settings
 
 from llm.services.providers.openai_client import OpenAIClient, _resolve_openai_base_url
 from llm.services.providers.openai_http import OpenAIHTTPService
-from llm.services.providers.openai_ws import OpenAIResponsesWebSocketSession
+from llm.services.providers.openai_ws import OpenAIResponsesWebSocketSession, _classify_error
 
 
 class _FakeWebSocket:
@@ -181,6 +181,27 @@ def test_openai_previous_response_not_found_detection_handles_missing_tool_outpu
             return "No tool output found for function call call_abc123."
 
     assert client.is_previous_response_not_found(_FakeMissingToolOutput())
+
+
+def test_openai_previous_response_not_found_detection_handles_tool_call_mismatch():
+    client = OpenAIClient.__new__(OpenAIClient)
+
+    class _FakeToolCallMismatch(Exception):
+        def __str__(self):
+            return "No tool call found for function call output with call_id call_abc123."
+
+    assert client.is_previous_response_not_found(_FakeToolCallMismatch())
+
+
+def test_openai_ws_invalid_request_error_is_treated_as_validation_error():
+    assert (
+        _classify_error(
+            "invalid_request_error",
+            "No tool call found for function call output with call_id call_abc123.",
+            400,
+        )
+        == "validation_error"
+    )
 
 
 def test_openai_base_url_is_normalized_to_v1(monkeypatch):

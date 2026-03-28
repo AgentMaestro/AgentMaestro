@@ -19,6 +19,7 @@ OPENAI_WS_MAX_RETRIES = int(os.getenv("OPENAI_WS_MAX_RETRIES", "3"))
 OPENAI_WS_MAX_RETRY_JITTER_MS = int(os.getenv("OPENAI_WS_MAX_RETRY_JITTER_MS", "250"))
 
 VALIDATION_ERROR_CODES = {
+    "invalid_request_error",
     "oneofparam",
     "invalid_enum_value",
     "invalid_value",

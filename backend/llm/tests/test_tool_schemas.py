@@ -162,14 +162,19 @@ def test_google_bridge_schema_advertises_mutation_aware_payload_contract():
     calendar_time_zone = google_tool["parameters"]["properties"]["time_zone"]["description"]
 
     assert "Gmail draft/send workflows" in tool_description
+    assert "Drive, Docs, and Sheets" in tool_description
     assert "REQUIRED PARAMETERS" in description
     assert "WORKING EXAMPLE PAYLOADS" in description
     assert "steps" in description
     assert "create a draft first" in description
     assert "Calendar create, update, and delete workflows are supported" in description
+    assert "Drive, Docs, and Sheets use read/export workflows" in action_kind
     assert "trash" in description
     assert "gmail" in resource_kind
     assert "calendar" in resource_kind
+    assert "drive" in resource_kind
+    assert "docs" in resource_kind
+    assert "sheets" in resource_kind
     assert "Draft and send are supported for Gmail writes" in action_kind
     assert "draft first" in action_kind
     assert "trash/delete workflows" in action_kind
@@ -179,6 +184,8 @@ def test_google_bridge_schema_advertises_mutation_aware_payload_contract():
     assert "and, or, not" in query_description.lower()
     assert "grouped alternation is allowed inside fielded clauses" in query_description.lower()
     assert "supported query fields vary by surface" in query_description.lower()
+    assert "drive list/read" in query_description.lower()
+    assert "docs and sheets reads use direct file identifiers" in query_description.lower()
 
 
 def test_lint_and_format_schema_advertise_cmd_only_for_command():

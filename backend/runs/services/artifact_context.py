@@ -153,10 +153,10 @@ def _extract_text_from_artifact(artifact: Artifact) -> tuple[str, dict[str, obje
         }
 
     return "", {
-            "extraction_status": "binary",
-            "extraction_notes": f"non-text artifact ({mime_type or 'unknown mime'})",
-            "truncated": False,
-        }
+        "extraction_status": "binary",
+        "extraction_notes": f"non-text artifact ({mime_type or 'unknown mime'})",
+        "truncated": False,
+    }
 
 
 def _build_attachment_metadata_block(
@@ -182,6 +182,11 @@ def _build_attachment_metadata_block(
         f"provided_in_prompt: {_format_context_value(serialized.get('provided_in_prompt'))}",
         f"deleted: false",
         f"source_channel: {_format_context_value(serialized.get('source_channel'))}",
+        f"google_file_id: {_format_context_value(serialized.get('google_file_id'))}",
+        f"google_drive_url: {_format_context_value(serialized.get('google_drive_url'))}",
+        f"google_file_name: {_format_context_value(serialized.get('google_file_name'))}",
+        f"google_mime_type: {_format_context_value(serialized.get('google_mime_type'))}",
+        f"google_export_mime_type: {_format_context_value(serialized.get('google_export_mime_type'))}",
         f"submitted_by: {_format_context_value(serialized.get('submitted_by_username') or serialized.get('submitted_by_user_id'))}",
         "EXTRACTION RESULT",
         f"text_extractable: {_format_context_value(text_extractable)}",
@@ -221,6 +226,10 @@ def build_artifact_context_payload(artifacts: Iterable[Artifact]) -> dict[str, o
             section_lines.append(text)
         else:
             section_lines.append("(not text-extractable)")
+        if str(serialized.get("google_file_id") or "").strip():
+            section_lines.append(
+                "Instruction: If google_file_id is present, prefer google_bridge for Google-native file reads or exports."
+            )
         section_lines.append("Instruction: Use this content directly. Do not infer that only the filename was provided.")
         section_text = "\n".join(section_lines)
         sections.append(section_text)

@@ -65,6 +65,16 @@ def _env_json_list(key: str, default: list[str] | None = None) -> list[str]:
     return list(default or [])
 
 
+def _env_float_value(key: str, default: float) -> float:
+    raw = _env_value(key, "")
+    if not raw:
+        return float(default)
+    try:
+        return float(raw)
+    except ValueError:
+        return float(default)
+
+
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/4.2/howto/deployment/checklist/
 
@@ -206,8 +216,11 @@ USE_TZ = True
 # Static files (CSS, JavaScript, Images)
 # https://docs.djangoproject.com/en/4.2/howto/static-files/
 
-STATIC_URL = 'static/'
+STATIC_URL = '/static/'
 STATIC_ROOT = BASE_DIR / "staticfiles"
+STATICFILES_DIRS = [
+    BASE_DIR / "static",
+]
 STATICFILES_STORAGE = 'whitenoise.storage.CompressedStaticFilesStorage'
 
 # Default primary key field type
@@ -287,6 +300,11 @@ SCHEDULED_HEADLESS_APPROVAL_TTL_DAYS = int(_env_value("SCHEDULED_HEADLESS_APPROV
 GOOGLE_CLIENT_ID = _env_value("GOOGLE_CLIENT_ID")
 GOOGLE_CLIENT_SECRET = _env_value("GOOGLE_CLIENT_SECRET")
 GOOGLE_REDIRECT_URI = _env_value("GOOGLE_REDIRECT_URI")
+GOOGLE_PRIMARY_ACCOUNT = _env_value("GOOGLE_PRIMARY_ACCOUNT")
+GOOGLE_BRIDGE_TIMEOUT_SECONDS = _env_float_value("GOOGLE_BRIDGE_TIMEOUT_SECONDS", 30.0)
+GOOGLE_BRIDGE_RETRY_ATTEMPTS = int(_env_value("GOOGLE_BRIDGE_RETRY_ATTEMPTS") or "2")
+GOOGLE_BRIDGE_RETRY_BACKOFF_SECONDS = _env_float_value("GOOGLE_BRIDGE_RETRY_BACKOFF_SECONDS", 1.0)
+GOOGLE_BRIDGE_RETRY_MAX_BACKOFF_SECONDS = _env_float_value("GOOGLE_BRIDGE_RETRY_MAX_BACKOFF_SECONDS", 8.0)
 GOOGLE_OAUTH_SCOPES = _env_json_list(
     "GOOGLE_OAUTH_SCOPES",
     [
@@ -297,6 +315,9 @@ GOOGLE_OAUTH_SCOPES = _env_json_list(
         "https://www.googleapis.com/auth/gmail.modify",
         "https://www.googleapis.com/auth/calendar.readonly",
         "https://www.googleapis.com/auth/calendar",
+        "https://www.googleapis.com/auth/drive.readonly",
+        "https://www.googleapis.com/auth/documents.readonly",
+        "https://www.googleapis.com/auth/spreadsheets.readonly",
     ],
 )
 
