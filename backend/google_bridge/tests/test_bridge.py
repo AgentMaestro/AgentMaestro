@@ -712,6 +712,232 @@ def test_execute_google_task_sends_gmail_message(monkeypatch):
     assert "Message ID: msg-123" in result["summary_text"]
 
 
+def test_execute_google_task_lists_gmail_filters(monkeypatch):
+    workspace, user, account = _make_account()
+
+    class FakeClient:
+        def __init__(self, connection):
+            self.connection = connection
+
+        def list_gmail_filters(self):
+            return {
+                "filter": [
+                    {
+                        "id": "filter-1",
+                        "criteria": {"from": "alerts@example.com", "query": "from:alerts@example.com"},
+                        "action": {"addLabelIds": ["Label_1"], "removeLabelIds": ["INBOX"]},
+                    }
+                ]
+            }
+
+    monkeypatch.setattr("google_bridge.services.bridge.GoogleBridgeClient", FakeClient)
+
+    result = execute_google_task(
+        payload={
+            "integration_kind": "google",
+            "resource_kind": "gmail_settings",
+            "action_kind": "read",
+            "operation": "list",
+            "account_scope": "primary",
+            "email": "user@example.com",
+        },
+        workspace=workspace,
+        owner=user,
+        account=account,
+    )
+
+    assert result["resource_kind"] == "gmail_settings"
+    assert result["operation"] == "list"
+    assert result["result"]["filter"][0]["id"] == "filter-1"
+    assert "Returned 1 Gmail filters" in result["summary_text"]
+
+
+def test_execute_google_task_creates_updates_and_deletes_gmail_filters(monkeypatch):
+    workspace, user, account = _make_account()
+
+    captured: dict[str, object] = {"calls": []}
+
+    class FakeClient:
+        def __init__(self, connection):
+            self.connection = connection
+
+        def get_gmail_filter(self, filter_id: str):
+            captured["calls"].append(("get", filter_id))
+            return {
+                "id": filter_id,
+                "criteria": {"from": "alerts@example.com"},
+                "action": {"addLabelIds": ["Label_1"]},
+            }
+
+        def create_gmail_filter(self, *, criteria: dict | None = None, action: dict | None = None):
+            captured["calls"].append(("create", criteria, action))
+            return {"id": "filter-2", "criteria": criteria or {}, "action": action or {}}
+
+        def delete_gmail_filter(self, filter_id: str):
+            captured["calls"].append(("delete", filter_id))
+            return {}
+
+    monkeypatch.setattr("google_bridge.services.bridge.GoogleBridgeClient", FakeClient)
+
+    create_result = execute_google_task(
+        payload={
+            "integration_kind": "google",
+            "resource_kind": "gmail_settings",
+            "action_kind": "create",
+            "operation": "create",
+            "account_scope": "primary",
+            "email": "user@example.com",
+            "criteria": {"from": "alerts@example.com", "query": "from:alerts@example.com"},
+            "action": {"addLabelIds": ["Label_1"]},
+        },
+        workspace=workspace,
+        owner=user,
+        account=account,
+    )
+
+    update_result = execute_google_task(
+        payload={
+            "integration_kind": "google",
+            "resource_kind": "gmail_settings",
+            "action_kind": "update",
+            "operation": "update",
+            "account_scope": "primary",
+            "email": "user@example.com",
+            "filter_id": "filter-1",
+            "action": {"removeLabelIds": ["INBOX"]},
+        },
+        workspace=workspace,
+        owner=user,
+        account=account,
+    )
+
+    delete_result = execute_google_task(
+        payload={
+            "integration_kind": "google",
+            "resource_kind": "gmail_settings",
+            "action_kind": "delete",
+            "operation": "delete",
+            "account_scope": "primary",
+            "email": "user@example.com",
+            "filter_id": "filter-1",
+        },
+        workspace=workspace,
+        owner=user,
+        account=account,
+    )
+
+    assert create_result["result"]["id"] == "filter-2"
+    assert update_result["result"]["id"] == "filter-2"
+    assert delete_result["operation"] == "delete"
+    assert captured["calls"][0][0] == "create"
+    assert captured["calls"][1] == ("get", "filter-1")
+    assert captured["calls"][2][0] == "delete"
+    assert captured["calls"][3][0] == "create"
+    assert captured["calls"][4] == ("delete", "filter-1")
+    assert "Gmail filter created" in create_result["summary_text"]
+    assert "Gmail filter updated" in update_result["summary_text"]
+    assert "Gmail filter deleted" in delete_result["summary_text"]
+
+
+def test_execute_google_task_fans_out_gmail_filter_query_clauses(monkeypatch):
+    workspace, user, account = _make_account()
+
+    captured: dict[str, object] = {"created": []}
+
+    class FakeClient:
+        def __init__(self, connection):
+            self.connection = connection
+
+        def create_gmail_filter(self, *, criteria: dict | None = None, action: dict | None = None):
+            captured["created"].append((dict(criteria or {}), dict(action or {})))
+            return {"id": f"filter-{len(captured['created'])}", "criteria": criteria or {}, "action": action or {}}
+
+    monkeypatch.setattr("google_bridge.services.bridge.GoogleBridgeClient", FakeClient)
+
+    result = execute_google_task(
+        payload={
+            "integration_kind": "google",
+            "resource_kind": "gmail_settings",
+            "action_kind": "create",
+            "operation": "create",
+            "account_scope": "primary",
+            "email": "user@example.com",
+            "criteria": {
+                "query": "from:alerts@example.com OR from:news@example.com",
+                "subject": "Alert",
+            },
+            "action": {"addLabelIds": ["Label_1"]},
+        },
+        workspace=workspace,
+        owner=user,
+        account=account,
+    )
+
+    assert len(captured["created"]) == 2
+    assert captured["created"][0][0]["query"] == "from:alerts@example.com"
+    assert captured["created"][1][0]["query"] == "from:news@example.com"
+    assert result["result"]["count"] == 2
+    assert "Gmail filters created" in result["summary_text"]
+
+
+def test_execute_google_task_previews_gmail_filter_creation(monkeypatch):
+    workspace, user, account = _make_account()
+
+    captured: dict[str, object] = {"queries": []}
+
+    class FakeClient:
+        def __init__(self, connection):
+            self.connection = connection
+
+        def list_gmail_messages(self, *, query: str = "", label_ids: list[str] | None = None, max_results: int = 5, page_token: str = ""):
+            captured["queries"].append((query, max_results))
+            return {
+                "messages": [{"id": f"msg-{query or 'none'}"}],
+                "resultSizeEstimate": 1,
+            }
+
+        def get_gmail_message(self, message_id: str):
+            return {
+                "snippet": f"Snippet for {message_id}",
+                "payload": {
+                    "headers": [
+                        {"name": "Subject", "value": f"Subject for {message_id}"},
+                        {"name": "From", "value": "sender@example.com"},
+                        {"name": "Date", "value": "Fri, 21 Mar 2026 09:00:00 -0400"},
+                    ]
+                },
+            }
+
+    monkeypatch.setattr("google_bridge.services.bridge.GoogleBridgeClient", FakeClient)
+
+    result = execute_google_task(
+        payload={
+            "integration_kind": "google",
+            "resource_kind": "gmail_settings",
+            "action_kind": "create",
+            "operation": "create",
+            "account_scope": "primary",
+            "email": "user@example.com",
+            "dry_run": True,
+            "preview_max_results": 3,
+            "criteria": {
+                "query": "from:alerts@example.com OR from:news@example.com",
+            },
+            "action": {"addLabelIds": ["Label_1"]},
+        },
+        workspace=workspace,
+        owner=user,
+        account=account,
+    )
+
+    assert len(captured["queries"]) == 2
+    assert captured["queries"][0] == ("from:alerts@example.com", 3)
+    assert captured["queries"][1] == ("from:news@example.com", 3)
+    assert result["result"]["preview_max_results"] == 3
+    assert len(result["result"]["preview_filters"]) == 2
+    assert "preview ready" in result["summary_text"].lower()
+
+
 def test_execute_google_task_trashes_gmail_message(monkeypatch):
     workspace, user, account = _make_account()
 
@@ -1840,6 +2066,11 @@ def test_google_bridge_calendar_schema_requires_local_time_bounds():
     body_description = schema["properties"]["body"]["description"]
     thread_id_description = schema["properties"]["thread_id"]["description"]
     draft_id_description = schema["properties"]["draft_id"]["description"]
+    filter_id_description = schema["properties"]["filter_id"]["description"]
+    criteria_description = schema["properties"]["criteria"]["description"]
+    action_description = schema["properties"]["action"]["description"]
+    dry_run_description = schema["properties"]["dry_run"]["description"]
+    preview_max_results_description = schema["properties"]["preview_max_results"]["description"]
 
     assert "local time" in time_min_description
     assert "GMT or Zulu" in time_min_description
@@ -1855,6 +2086,7 @@ def test_google_bridge_calendar_schema_requires_local_time_bounds():
     assert "to:(sktennis7@gmail.com or kissinger.scott@gmail.com)" in query_description.lower()
     assert "supported query fields vary by surface" in query_description.lower()
     assert "gmail list/read supports from, to, subject, label_ids, include_read, in, is, newer_than, and older_than" in query_description.lower()
+    assert "gmail settings filters use the nested criteria object instead of query" in query_description.lower()
     assert "calendar list/read supports q" in query_description.lower()
     assert "q:(team sync or planning)" in query_description.lower()
     assert "message_id" in query_description.lower() or "message id" in query_description.lower()
@@ -1879,10 +2111,15 @@ def test_google_bridge_calendar_schema_requires_local_time_bounds():
     assert "create" in action_kind_description
     assert "update" in action_kind_description
     assert "read, list, draft, send, create, update, delete" in action_kind_description
-    assert "gmail supports draft/send writes and Calendar supports create/update/delete writes" in resource_kind_description
+    assert "gmail settings supports filter list/create/update/delete workflows" in resource_kind_description.lower()
     assert "all calendars" in calendar_id_description.lower()
     assert "supports q for event search terms" in calendar_id_description.lower()
     assert "local time" in start_description
+    assert "gmail settings filter identifier" in filter_id_description.lower()
+    assert "gmail settings filter criteria object" in criteria_description.lower()
+    assert "gmail settings filter action object" in action_description.lower()
+    assert "preview a gmail settings filter create or update operation" in dry_run_description.lower()
+    assert "preview messages to include per preview clause" in preview_max_results_description.lower()
     assert schema["properties"]["max_results"]["default"] == 20
     assert "maximum" not in schema["properties"]["max_results"]
     assert "operation" not in schema["required"]
@@ -1946,6 +2183,17 @@ def test_google_bridge_calendar_schema_requires_local_time_bounds():
     assert any(example.get("account_scope") == "all" and example.get("query") == "from:info@airbnb.com" and example.get("operation") == "delete" and example.get("delete_mode") == "delete" for example in gmail_delete_examples)
     assert any(example.get("account_scope") == "all" and example.get("query") == "from:airbnb.com" and example.get("operation") == "trash" for example in gmail_delete_examples)
     assert any(example.get("account_scope") == "all" and example.get("query") == "from:airbnb.com" and example.get("operation") == "delete" and example.get("delete_mode") == "delete" for example in gmail_delete_examples)
+
+    gmail_settings_examples = [
+        example
+        for example in GOOGLE_BRIDGE_TOOL_EXAMPLES
+        if example.get("resource_kind") == "gmail_settings"
+    ]
+    assert any(example.get("operation") == "list" and example.get("action_kind") == "read" for example in gmail_settings_examples)
+    assert any(example.get("operation") == "create" and example.get("action_kind") == "create" for example in gmail_settings_examples)
+    assert any(example.get("dry_run") is True and example.get("preview_max_results") == 3 for example in gmail_settings_examples)
+    assert any(example.get("operation") == "update" and example.get("action_kind") == "update" for example in gmail_settings_examples)
+    assert any(example.get("operation") == "delete" and example.get("action_kind") == "delete" for example in gmail_settings_examples)
 
 
 def test_execute_google_task_supports_drive_docs_and_sheets_steps(monkeypatch):

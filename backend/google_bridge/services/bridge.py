@@ -337,6 +337,80 @@ def _execute_google_task_for_account(
                 unread_only=unread_only,
             )
             summary_text = _summarize_gmail_list(data, unread_only=unread_only)
+    elif resource_kind == "gmail_settings":
+        filter_id = str(normalized.get("filter_id") or "").strip()
+        criteria = dict(normalized.get("criteria") or {})
+        action_payload = dict(normalized.get("action") or {})
+        query_clauses = list(normalized.get("_gmail_filter_query_clauses") or [])
+        if not query_clauses and str(criteria.get("query") or "").strip():
+            query_clauses = [str(criteria.get("query") or "").strip()]
+        if operation in {"list", "read"}:
+            if filter_id:
+                data = client.get_gmail_filter(filter_id)
+                summary_text = _summarize_gmail_filter(data)
+            else:
+                data = client.list_gmail_filters()
+                summary_text = _summarize_gmail_filter_list(data)
+        elif operation == "create":
+            if bool(normalized.get("dry_run")):
+                data = _build_gmail_filter_preview(
+                    client,
+                    normalized=normalized,
+                    query_clauses=query_clauses,
+                )
+                summary_text = _summarize_gmail_filter_preview(data, action="would create")
+            else:
+                created_filters: list[dict[str, object]] = []
+                candidate_criteria_list = _gmail_filter_candidate_criteria(criteria, query_clauses)
+                for candidate_criteria in candidate_criteria_list:
+                    created_filters.append(
+                        client.create_gmail_filter(criteria=candidate_criteria, action=action_payload)
+                    )
+                if len(created_filters) == 1:
+                    data = created_filters[0]
+                    summary_text = _summarize_gmail_filter_mutation(data, action="created")
+                else:
+                    data = {"filters": created_filters, "count": len(created_filters)}
+                    summary_text = _summarize_gmail_filter_batch_mutation(data, action="created")
+        elif operation == "update":
+            if not filter_id:
+                raise GoogleBridgeTaskError("Gmail filter update tasks require filter_id.")
+            existing = client.get_gmail_filter(filter_id)
+            merged_criteria = dict(existing.get("criteria") or {})
+            merged_action = dict(existing.get("action") or {})
+            merged_criteria.update(criteria)
+            merged_action.update(action_payload)
+            if bool(normalized.get("dry_run")):
+                preview_query_clauses = list(normalized.get("_gmail_filter_query_clauses") or [])
+                if not preview_query_clauses and str(merged_criteria.get("query") or "").strip():
+                    preview_query_clauses = [str(merged_criteria.get("query") or "").strip()]
+                data = _build_gmail_filter_preview(
+                    client,
+                    normalized=normalized,
+                    query_clauses=preview_query_clauses,
+                )
+                summary_text = _summarize_gmail_filter_preview(data, action="would update")
+            else:
+                client.delete_gmail_filter(filter_id)
+                created_filters = []
+                candidate_criteria_list = _gmail_filter_candidate_criteria(merged_criteria, list(normalized.get("_gmail_filter_query_clauses") or []))
+                for candidate_criteria in candidate_criteria_list:
+                    created_filters.append(
+                        client.create_gmail_filter(criteria=candidate_criteria, action=merged_action)
+                    )
+                if len(created_filters) == 1:
+                    data = created_filters[0]
+                    summary_text = _summarize_gmail_filter_mutation(data, action="updated")
+                else:
+                    data = {"filters": created_filters, "count": len(created_filters)}
+                    summary_text = _summarize_gmail_filter_batch_mutation(data, action="updated")
+        elif operation == "delete":
+            if not filter_id:
+                raise GoogleBridgeTaskError("Gmail filter delete tasks require filter_id.")
+            data = client.delete_gmail_filter(filter_id)
+            summary_text = _summarize_gmail_filter_delete(filter_id)
+        else:
+            raise GoogleBridgeTaskError(f"Unsupported Google gmail_settings operation '{operation}'.")
     elif resource_kind == "calendar":
         if operation == "read":
             event_id = str(normalized.get("event_id") or "").strip()
@@ -772,6 +846,14 @@ def _execute_google_step(
     elif (
         normalized.get("account_scope") == "all"
         and len(selected_accounts) > 1
+        and resource_kind == "gmail_settings"
+        and operation in {"list", "read"}
+        and not str(normalized.get("filter_id") or "").strip()
+    ):
+        result, summary_text = _execute_merged_gmail_settings_list_task(selected_accounts, normalized)
+    elif (
+        normalized.get("account_scope") == "all"
+        and len(selected_accounts) > 1
         and resource_kind == "drive"
         and operation in {"read", "export"}
         and str(normalized.get("file_id") or "").strip()
@@ -789,6 +871,14 @@ def _execute_google_step(
         raise GoogleBridgeTaskError(
             "Google bridge read tasks require the specific account from the list result. "
             "Use the returned account_email or google_subject together with message_id or event_id."
+        )
+    elif normalized.get("account_scope") == "all" and len(selected_accounts) > 1 and resource_kind == "gmail_settings" and str(normalized.get("filter_id") or "").strip():
+        raise GoogleBridgeTaskError(
+            "Gmail filter read-by-id tasks require a specific connected account. Use email or google_subject to target the account explicitly."
+        )
+    elif normalized.get("account_scope") == "all" and len(selected_accounts) > 1 and resource_kind == "gmail_settings" and operation in {"create", "update", "delete"}:
+        raise GoogleBridgeTaskError(
+            "Gmail filter write tasks require a specific connected account. Use email or google_subject to target the account explicitly."
         )
     elif normalized.get("account_scope") == "all" and len(selected_accounts) > 1 and resource_kind == "gmail" and operation in {"trash", "delete"}:
         if str(normalized.get("message_id") or "").strip():
@@ -905,6 +995,35 @@ def _execute_merged_list_task(
     )
 
 
+def _execute_merged_gmail_settings_list_task(
+    accounts: list[GoogleAccount],
+    normalized: dict[str, object],
+) -> tuple[dict[str, object], str]:
+    merged_filters: list[dict[str, object]] = []
+    account_summaries: list[dict[str, object]] = []
+    for connection in accounts:
+        data, summary_text = _execute_google_task_for_account(connection, normalized, "gmail_settings", "list")
+        account_summaries.append(
+            {
+                "google_subject": connection.google_subject,
+                "email": connection.email,
+                "summary_text": summary_text,
+            }
+        )
+        for item in list(data.get("filter") or data.get("filters") or []):
+            merged_filters.append(
+                {
+                    **dict(item),
+                    "account_email": connection.email,
+                    "account_google_subject": connection.google_subject,
+                }
+            )
+    return (
+        {"filter": merged_filters, "accounts": account_summaries},
+        f"Returned {len(merged_filters)} Gmail filters across {len(accounts)} accounts.",
+    )
+
+
 def _execute_merged_delete_task(
     accounts: list[GoogleAccount],
     normalized: dict[str, object],
@@ -1004,9 +1123,9 @@ def _normalize_google_step(step: dict | None, *, defaults: dict[str, object] | N
     account_scope = str(raw.get("account_scope") or "primary").strip().lower()
     if integration_kind != "google":
         raise GoogleBridgeTaskError(f"Google step {step_index} only accepts integration_kind=google.")
-    if resource_kind not in {"gmail", "calendar", "drive", "docs", "sheets"}:
+    if resource_kind not in {"gmail", "gmail_settings", "calendar", "drive", "docs", "sheets"}:
         raise GoogleBridgeTaskError(
-            f"Google step {step_index} requires resource_kind=gmail, calendar, drive, docs, or sheets."
+            f"Google step {step_index} requires resource_kind=gmail, gmail_settings, calendar, drive, docs, or sheets."
         )
     if account_scope not in {"primary", "all"}:
         raise GoogleBridgeTaskError(f"Google step {step_index} requires account_scope=primary or all.")
@@ -1036,6 +1155,11 @@ def _normalize_google_step(step: dict | None, *, defaults: dict[str, object] | N
     raw["google_subject"] = str(raw.get("google_subject") or "").strip()
     raw["email"] = str(raw.get("email") or "").strip()
     raw["delete_mode"] = str(raw.get("delete_mode") or "").strip().lower()
+    raw["filter_id"] = str(raw.get("filter_id") or "").strip()
+    raw["criteria"] = _normalize_gmail_filter_payload(raw.get("criteria"))
+    raw["action"] = _normalize_gmail_filter_payload(raw.get("action"))
+    raw["dry_run"] = _normalize_bool(raw.get("dry_run"))
+    raw["preview_max_results"] = int(raw.get("preview_max_results") or 5)
     raw["file_id"] = str(
         raw.get("file_id")
         or raw.get("document_id")
@@ -1084,6 +1208,59 @@ def _normalize_google_step(step: dict | None, *, defaults: dict[str, object] | N
                 operation = "trash"
         if action_kind in {"draft", "send"} and not raw["subject"] and not raw["draft_id"]:
             raise GoogleBridgeTaskError(f"Google step {step_index} requires subject for Gmail write operations.")
+    elif resource_kind == "gmail_settings":
+        if str(raw.get("query") or "").strip():
+            raise GoogleBridgeTaskError(
+                f"Google step {step_index} does not support top-level query strings for Gmail settings filters. Use criteria.query instead."
+            )
+        criteria_query = str(dict(raw.get("criteria") or {}).get("query") or "").strip()
+        if criteria_query:
+            query_plan = _plan_google_query(
+                criteria_query,
+                resource_kind="gmail",
+                action_kind="read",
+                operation="list",
+            )
+            raw["_gmail_filter_query_plan"] = query_plan.to_dict()
+            raw["_gmail_filter_query_clauses"] = list(query_plan.query_strings)
+        if action_kind == "list":
+            action_kind = "read"
+        if action_kind not in {"read", "create", "update", "delete"}:
+            raise GoogleBridgeTaskError(
+                f"Google step {step_index} currently supports read, create, update, and delete actions for Gmail settings filters."
+            )
+        if action_kind == "read":
+            if operation == "read":
+                operation = "list"
+            if operation not in {"list", "read"}:
+                raise GoogleBridgeTaskError(f"Google step {step_index} currently supports list/read operations for Gmail settings filters.")
+        elif action_kind == "create":
+            if operation == "list":
+                operation = "create"
+            if operation != "create":
+                raise GoogleBridgeTaskError(f"Google step {step_index} requires operation=create for Gmail filter create workflows.")
+            if not raw["criteria"]:
+                raise GoogleBridgeTaskError(f"Google step {step_index} requires criteria for Gmail filter create workflows.")
+            if not raw["action"]:
+                raise GoogleBridgeTaskError(f"Google step {step_index} requires action for Gmail filter create workflows.")
+        elif action_kind == "update":
+            if operation in {"list", "read"}:
+                operation = "update"
+            if operation == "patch":
+                operation = "update"
+            if operation != "update":
+                raise GoogleBridgeTaskError(f"Google step {step_index} requires operation=update for Gmail filter update workflows.")
+            if not raw["filter_id"]:
+                raise GoogleBridgeTaskError(f"Google step {step_index} requires filter_id for Gmail filter update workflows.")
+            if not raw["criteria"] and not raw["action"]:
+                raise GoogleBridgeTaskError(f"Google step {step_index} requires criteria or action for Gmail filter update workflows.")
+        elif action_kind == "delete":
+            if operation == "list":
+                operation = "delete"
+            if operation != "delete":
+                raise GoogleBridgeTaskError(f"Google step {step_index} requires operation=delete for Gmail filter delete workflows.")
+            if not raw["filter_id"]:
+                raise GoogleBridgeTaskError(f"Google step {step_index} requires filter_id for Gmail filter delete workflows.")
     elif resource_kind == "calendar":
         if action_kind == "list":
             action_kind = "read"
@@ -1289,6 +1466,36 @@ def _normalize_bool(value: object) -> bool:
     return text in {"1", "true", "yes", "on"}
 
 
+def _normalize_gmail_filter_payload(value: object) -> dict[str, object]:
+    if not value:
+        return {}
+    if not isinstance(value, dict):
+        raise GoogleBridgeTaskError("Gmail filter criteria and action must be JSON objects.")
+    payload: dict[str, object] = {}
+    for key, raw_value in value.items():
+        normalized_key = str(key or "").strip()
+        if not normalized_key:
+            continue
+        if normalized_key in {"addLabelIds", "removeLabelIds"}:
+            items = _normalize_string_list(raw_value)
+            if items:
+                payload[normalized_key] = items
+            continue
+        if normalized_key in {"hasAttachment", "excludeChats"}:
+            payload[normalized_key] = _normalize_bool(raw_value)
+            continue
+        if normalized_key == "size":
+            try:
+                payload[normalized_key] = int(raw_value)
+            except Exception:
+                continue
+            continue
+        text = str(raw_value or "").strip()
+        if text:
+            payload[normalized_key] = text
+    return payload
+
+
 def _summarize_gmail_list(data: dict, *, unread_only: bool = False) -> str:
     messages = list(data.get("messages") or [])
     if not messages:
@@ -1318,6 +1525,179 @@ def _summarize_gmail_list(data: dict, *, unread_only: bool = False) -> str:
         f"Returned {len(messages)} {count_label}. Messages: {'; '.join(previews)}. "
         "Use google_bridge with operation=read and a message_id to fetch subject, sender, snippet, and metadata for each message."
     )
+
+
+def _summarize_gmail_filter_list(data: dict) -> str:
+    filters = list(data.get("filter") or data.get("filters") or [])
+    if not filters:
+        return "No Gmail filters were returned."
+    previews: list[str] = []
+    for item in filters[:5]:
+        filter_id = str(item.get("id") or "").strip()
+        criteria = _summarize_gmail_filter_criteria(dict(item.get("criteria") or {}))
+        action = _summarize_gmail_filter_action(dict(item.get("action") or {}))
+        parts = []
+        if filter_id:
+            parts.append(filter_id)
+        if criteria:
+            parts.append(f"criteria={criteria}")
+        if action:
+            parts.append(f"action={action}")
+        if parts:
+            previews.append(" | ".join(parts))
+    return f"Returned {len(filters)} Gmail filters. Filters: {'; '.join(previews)}."
+
+
+def _summarize_gmail_filter(data: dict) -> str:
+    filter_id = str(data.get("id") or "").strip()
+    criteria = _summarize_gmail_filter_criteria(dict(data.get("criteria") or {}))
+    action = _summarize_gmail_filter_action(dict(data.get("action") or {}))
+    parts = ["Gmail filter retrieved."]
+    if filter_id:
+        parts.append(f"Filter ID: {filter_id}")
+    if criteria:
+        parts.append(f"Criteria: {criteria}")
+    if action:
+        parts.append(f"Action: {action}")
+    return " ".join(parts)
+
+
+def _summarize_gmail_filter_mutation(data: dict, *, action: str) -> str:
+    filter_id = str(data.get("id") or data.get("filterId") or "").strip()
+    criteria = _summarize_gmail_filter_criteria(dict(data.get("criteria") or {}))
+    filter_action = _summarize_gmail_filter_action(dict(data.get("action") or {}))
+    parts = [f"Gmail filter {action}."]
+    if filter_id:
+        parts.append(f"Filter ID: {filter_id}")
+    if criteria:
+        parts.append(f"Criteria: {criteria}")
+    if filter_action:
+        parts.append(f"Action: {filter_action}")
+    return " ".join(parts)
+
+
+def _summarize_gmail_filter_batch_mutation(data: dict, *, action: str) -> str:
+    filters = list(data.get("filters") or [])
+    parts = [f"Gmail filters {action}."]
+    if filters:
+        parts.append(f"Count: {len(filters)}")
+    return " ".join(parts)
+
+
+def _summarize_gmail_filter_preview(data: dict, *, action: str) -> str:
+    previews = list(data.get("preview_filters") or [])
+    parts = [f"Gmail filter preview ready."]
+    if action:
+        parts[0] = f"Gmail filter preview ready for {action}."
+    if previews:
+        parts.append(f"Count: {len(previews)}")
+        preview_bits: list[str] = []
+        for item in previews[:5]:
+            query = str(item.get("query") or "").strip()
+            count = int(item.get("resultSizeEstimate") or 0)
+            preview_bits.append(f"{query or 'no query'}={count}")
+        if preview_bits:
+            parts.append(f"Matches: {'; '.join(preview_bits)}")
+    else:
+        parts.append("No criteria.query clauses were available to preview.")
+    return " ".join(parts)
+
+
+def _gmail_filter_candidate_criteria(criteria: dict[str, object], query_clauses: list[str]) -> list[dict[str, object]]:
+    base_criteria = dict(criteria or {})
+    query_text = str(base_criteria.get("query") or "").strip()
+    if not query_text:
+        return [base_criteria]
+    clauses = [str(item or "").strip() for item in query_clauses if str(item or "").strip()]
+    if not clauses:
+        clauses = [query_text]
+    candidates: list[dict[str, object]] = []
+    for clause in clauses:
+        candidate = dict(base_criteria)
+        candidate["query"] = clause
+        candidates.append(candidate)
+    return candidates
+
+
+def _summarize_gmail_filter_delete(filter_id: str) -> str:
+    parts = ["Gmail filter deleted."]
+    if filter_id:
+        parts.append(f"Filter ID: {filter_id}")
+    return " ".join(parts)
+
+
+def _summarize_gmail_filter_criteria(criteria: dict[str, object]) -> str:
+    parts: list[str] = []
+    for field in ("from", "to", "subject", "query", "negatedQuery", "sizeComparison"):
+        value = str(criteria.get(field) or "").strip()
+        if value:
+            parts.append(f"{field}={value}")
+    if criteria.get("hasAttachment") is not None:
+        parts.append(f"hasAttachment={bool(criteria.get('hasAttachment'))}")
+    if criteria.get("excludeChats") is not None:
+        parts.append(f"excludeChats={bool(criteria.get('excludeChats'))}")
+    size = criteria.get("size")
+    if size not in (None, ""):
+        parts.append(f"size={size}")
+    return ", ".join(parts)
+
+
+def _summarize_gmail_filter_action(action: dict[str, object]) -> str:
+    parts: list[str] = []
+    add_label_ids = _normalize_string_list(action.get("addLabelIds"))
+    if add_label_ids:
+        parts.append(f"addLabelIds={','.join(add_label_ids)}")
+    remove_label_ids = _normalize_string_list(action.get("removeLabelIds"))
+    if remove_label_ids:
+        parts.append(f"removeLabelIds={','.join(remove_label_ids)}")
+    forward = str(action.get("forward") or "").strip()
+    if forward:
+        parts.append(f"forward={forward}")
+    return ", ".join(parts)
+
+
+def _build_gmail_filter_preview(
+    client: GoogleBridgeClient,
+    *,
+    normalized: dict[str, object],
+    query_clauses: list[str],
+) -> dict[str, object]:
+    preview_limit = max(1, int(normalized.get("preview_max_results") or 5))
+    previews: list[dict[str, object]] = []
+    for clause in query_clauses:
+        if not clause:
+            continue
+        page = client.list_gmail_messages(
+            query=clause,
+            label_ids=[],
+            max_results=preview_limit,
+        )
+        preview_data = _enrich_gmail_list_messages(
+            client,
+            {
+                "messages": list(page.get("messages") or []),
+                "resultSizeEstimate": int(page.get("resultSizeEstimate") or len(list(page.get("messages") or []))),
+            },
+        )
+        messages = list(preview_data.get("messages") or [])
+        previews.append(
+            {
+                "query": clause,
+                "resultSizeEstimate": int(preview_data.get("resultSizeEstimate") or len(messages)),
+                "messages": messages[:preview_limit],
+            }
+        )
+    if not previews:
+        return {
+            "preview_max_results": preview_limit,
+            "preview_filters": [],
+            "query_plan": normalized.get("_gmail_filter_query_plan") or {},
+        }
+    return {
+        "preview_max_results": preview_limit,
+        "preview_filters": previews,
+        "query_plan": normalized.get("_gmail_filter_query_plan") or {},
+    }
 
 
 def _summarize_gmail_message(data: dict) -> str:

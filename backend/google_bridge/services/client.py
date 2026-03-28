@@ -146,6 +146,31 @@ class GoogleBridgeClient:
             json={},
         )
 
+    def list_gmail_filters(self) -> dict:
+        return self._request("GET", "https://gmail.googleapis.com/gmail/v1/users/me/settings/filters")
+
+    def get_gmail_filter(self, filter_id: str) -> dict:
+        return self._request(
+            "GET",
+            f"https://gmail.googleapis.com/gmail/v1/users/me/settings/filters/{filter_id}",
+        )
+
+    def create_gmail_filter(self, *, criteria: dict | None = None, action: dict | None = None) -> dict:
+        payload: dict[str, object] = {}
+        criteria_payload = self._normalize_gmail_filter_payload(criteria)
+        action_payload = self._normalize_gmail_filter_payload(action)
+        if criteria_payload:
+            payload["criteria"] = criteria_payload
+        if action_payload:
+            payload["action"] = action_payload
+        return self._request("POST", "https://gmail.googleapis.com/gmail/v1/users/me/settings/filters", json=payload)
+
+    def delete_gmail_filter(self, filter_id: str) -> dict:
+        return self._request(
+            "DELETE",
+            f"https://gmail.googleapis.com/gmail/v1/users/me/settings/filters/{filter_id}",
+        )
+
     def list_drive_files(
         self,
         *,
@@ -213,6 +238,45 @@ class GoogleBridgeClient:
             "GET",
             f"https://sheets.googleapis.com/v4/spreadsheets/{spreadsheet_id}/values/{encoded_range}",
         )
+
+    def _normalize_gmail_filter_payload(self, value: dict | None) -> dict[str, object]:
+        if not value:
+            return {}
+        if not isinstance(value, dict):
+            raise GoogleApiError("Gmail filter criteria and action must be JSON objects.")
+        payload: dict[str, object] = {}
+        for key, raw_value in value.items():
+            normalized_key = str(key or "").strip()
+            if not normalized_key:
+                continue
+            if normalized_key in {"addLabelIds", "removeLabelIds"}:
+                if isinstance(raw_value, str):
+                    items = [raw_value.strip()] if raw_value.strip() else []
+                else:
+                    try:
+                        iterable = list(raw_value or [])
+                    except TypeError:
+                        iterable = [raw_value]
+                    items = [str(item).strip() for item in iterable if str(item).strip()]
+                if items:
+                    payload[normalized_key] = items
+                continue
+            if normalized_key in {"hasAttachment", "excludeChats"}:
+                if isinstance(raw_value, bool):
+                    payload[normalized_key] = raw_value
+                else:
+                    payload[normalized_key] = str(raw_value).strip().lower() in {"1", "true", "yes", "on"}
+                continue
+            if normalized_key == "size":
+                try:
+                    payload[normalized_key] = int(raw_value)
+                except Exception:
+                    continue
+                continue
+            text = str(raw_value or "").strip()
+            if text:
+                payload[normalized_key] = text
+        return payload
 
     def list_calendar_events(
         self,
