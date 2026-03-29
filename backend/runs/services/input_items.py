@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Iterable
 
 from logging_utils import get_app_logger
+from runs.services.tool_output import compact_tool_output_text
 
 logger = get_app_logger(__name__)
 
@@ -34,6 +35,8 @@ def build_input_items(
         if role == "tool":
             tool_call_id = str(entry.get("tool_call_id") or "").strip()
             provider_call_id = str(entry.get("provider_call_id") or "").strip()
+            tool_name = str(entry.get("tool_name") or "tool").strip() or "tool"
+            content = compact_tool_output_text(tool_name, content)
             outstanding = bool(
                 previous_response_id
                 and provider_call_id

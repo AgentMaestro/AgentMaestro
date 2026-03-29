@@ -318,6 +318,180 @@ def test_execute_google_task_splits_or_queries_for_gmail_list(monkeypatch):
     assert result["result"]["query_plan"]["call_count"] == 3
 
 
+def test_execute_google_task_uses_shared_corpus_for_large_gmail_or_list(monkeypatch):
+    workspace, user, account = _make_account()
+
+    captured: dict[str, object] = {"list_calls": []}
+    matching_domains = [
+        "kayak.com",
+        "hulumail.com",
+        "ally.com",
+        "fast-growing-trees.com",
+        "bulksupplements.com",
+        "seekingalpha.com",
+        "email.interactivebrokers.com",
+        "alibaba.com",
+        "instagram.com",
+        "flyfrontier.com",
+    ]
+
+    class FakeClient:
+        def __init__(self, connection):
+            self.connection = connection
+
+        def list_gmail_messages(
+            self,
+            *,
+            query: str = "",
+            label_ids: list[str] | None = None,
+            max_results: int = 20,
+            page_token: str = "",
+        ):
+            captured["list_calls"].append(
+                {
+                    "query": query,
+                    "label_ids": label_ids,
+                    "max_results": max_results,
+                    "page_token": page_token,
+                }
+            )
+            if query != "in:anywhere":
+                return {"messages": [], "resultSizeEstimate": 0}
+            messages = [{"id": f"match-{index}"} for index in range(1, 11)]
+            messages.extend({"id": f"noise-{index}"} for index in range(1, 6))
+            return {"messages": messages, "resultSizeEstimate": len(messages)}
+
+        def get_gmail_message(self, message_id: str):
+            if message_id.startswith("match-"):
+                index = int(message_id.split("-", 1)[1]) - 1
+                domain = matching_domains[index]
+                sender = f"Sender <alerts@{domain}>"
+            else:
+                sender = "Noise <noise@example.com>"
+            return {
+                "snippet": f"Snippet for {message_id}",
+                "payload": {
+                    "headers": [
+                        {"name": "Subject", "value": f"Subject for {message_id}"},
+                        {"name": "From", "value": sender},
+                        {"name": "Date", "value": "Fri, 21 Mar 2026 09:00:00 -0400"},
+                    ]
+                },
+            }
+
+    monkeypatch.setattr("google_bridge.services.bridge.GoogleBridgeClient", FakeClient)
+
+    result = execute_google_task(
+        payload={
+            "integration_kind": "google",
+            "resource_kind": "gmail",
+            "action_kind": "read",
+            "operation": "list",
+            "account_scope": "primary",
+            "email": "user@example.com",
+            "include_read": True,
+            "max_results": 50,
+            "query": "in:anywhere from:(kayak.com OR hulumail.com OR ally.com OR fast-growing-trees.com OR bulksupplements.com OR seekingalpha.com OR email.interactivebrokers.com OR alibaba.com OR instagram.com OR flyfrontier.com)",
+        },
+        workspace=workspace,
+        owner=user,
+        account=account,
+    )
+
+    assert [call["query"] for call in captured["list_calls"]] == ["in:anywhere"]
+    assert result["result"]["execution_strategy"] == "shared_corpus"
+    assert result["result"]["resultSizeEstimate"] == 10
+    assert len(result["result"]["messages"]) == 10
+    assert "Returned 10 Gmail messages" in result["summary_text"]
+
+
+def test_execute_google_task_uses_shared_corpus_for_large_sender_or_list(monkeypatch):
+    workspace, user, account = _make_account()
+
+    captured: dict[str, object] = {"list_calls": []}
+    matching_domains = [
+        "kayak.com",
+        "hulumail.com",
+        "ally.com",
+        "fast-growing-trees.com",
+        "bulksupplements.com",
+        "seekingalpha.com",
+        "email.interactivebrokers.com",
+        "alibaba.com",
+        "instagram.com",
+        "flyfrontier.com",
+    ]
+
+    class FakeClient:
+        def __init__(self, connection):
+            self.connection = connection
+
+        def list_gmail_messages(
+            self,
+            *,
+            query: str = "",
+            label_ids: list[str] | None = None,
+            max_results: int = 20,
+            page_token: str = "",
+        ):
+            captured["list_calls"].append(
+                {
+                    "query": query,
+                    "label_ids": label_ids,
+                    "max_results": max_results,
+                    "page_token": page_token,
+                }
+            )
+            if query not in {"", "in:anywhere"}:
+                return {"messages": [], "resultSizeEstimate": 0}
+            messages = [{"id": f"match-{index}"} for index in range(1, 11)]
+            messages.extend({"id": f"noise-{index}"} for index in range(1, 6))
+            return {"messages": messages, "resultSizeEstimate": len(messages)}
+
+        def get_gmail_message(self, message_id: str):
+            if message_id.startswith("match-"):
+                index = int(message_id.split("-", 1)[1]) - 1
+                domain = matching_domains[index]
+                sender = f"Sender <alerts@{domain}>"
+            else:
+                sender = "Noise <noise@example.com>"
+            return {
+                "snippet": f"Snippet for {message_id}",
+                "payload": {
+                    "headers": [
+                        {"name": "Subject", "value": f"Subject for {message_id}"},
+                        {"name": "From", "value": sender},
+                        {"name": "Date", "value": "Fri, 21 Mar 2026 09:00:00 -0400"},
+                    ]
+                },
+            }
+
+    monkeypatch.setattr("google_bridge.services.bridge.GoogleBridgeClient", FakeClient)
+
+    result = execute_google_task(
+        payload={
+            "integration_kind": "google",
+            "resource_kind": "gmail",
+            "action_kind": "read",
+            "operation": "list",
+            "account_scope": "primary",
+            "email": "user@example.com",
+            "include_read": True,
+            "max_results": 50,
+            "query": "from:(kayak.com OR hulumail.com OR ally.com OR fast-growing-trees.com OR bulksupplements.com OR seekingalpha.com OR email.interactivebrokers.com OR alibaba.com OR instagram.com OR flyfrontier.com)",
+        },
+        workspace=workspace,
+        owner=user,
+        account=account,
+    )
+
+    assert [call["query"] for call in captured["list_calls"]] == [""]
+    assert result["result"]["execution_strategy"] == "shared_corpus"
+    assert result["result"]["resultSizeEstimate"] == 10
+    assert len(result["result"]["messages"]) == 10
+    assert "Returned 10 Gmail messages" in result["summary_text"]
+
+
 def test_execute_google_task_supports_nested_or_inside_parentheses():
     workspace, user, account = _make_account()
 
@@ -935,6 +1109,81 @@ def test_execute_google_task_previews_gmail_filter_creation(monkeypatch):
     assert captured["queries"][1] == ("from:news@example.com", 3)
     assert result["result"]["preview_max_results"] == 3
     assert len(result["result"]["preview_filters"]) == 2
+    assert "preview ready" in result["summary_text"].lower()
+
+
+def test_execute_google_task_previews_gmail_filter_creation_with_shared_corpus(monkeypatch):
+    workspace, user, account = _make_account()
+
+    captured: dict[str, object] = {"queries": []}
+    matching_domains = [
+        "kayak.com",
+        "hulumail.com",
+        "ally.com",
+        "fast-growing-trees.com",
+        "bulksupplements.com",
+        "seekingalpha.com",
+        "email.interactivebrokers.com",
+        "alibaba.com",
+        "instagram.com",
+        "flyfrontier.com",
+    ]
+
+    class FakeClient:
+        def __init__(self, connection):
+            self.connection = connection
+
+        def list_gmail_messages(self, *, query: str = "", label_ids: list[str] | None = None, max_results: int = 5, page_token: str = ""):
+            captured["queries"].append((query, max_results))
+            if query != "in:anywhere":
+                return {"messages": [], "resultSizeEstimate": 0}
+            messages = [{"id": f"match-{index}"} for index in range(1, 11)]
+            messages.extend({"id": f"noise-{index}"} for index in range(1, 6))
+            return {"messages": messages, "resultSizeEstimate": len(messages)}
+
+        def get_gmail_message(self, message_id: str):
+            if message_id.startswith("match-"):
+                index = int(message_id.split("-", 1)[1]) - 1
+                sender = f"Sender <alerts@{matching_domains[index]}>"
+            else:
+                sender = "Noise <noise@example.com>"
+            return {
+                "snippet": f"Snippet for {message_id}",
+                "payload": {
+                    "headers": [
+                        {"name": "Subject", "value": f"Subject for {message_id}"},
+                        {"name": "From", "value": sender},
+                        {"name": "Date", "value": "Fri, 21 Mar 2026 09:00:00 -0400"},
+                    ]
+                },
+            }
+
+    monkeypatch.setattr("google_bridge.services.bridge.GoogleBridgeClient", FakeClient)
+
+    result = execute_google_task(
+        payload={
+            "integration_kind": "google",
+            "resource_kind": "gmail_settings",
+            "action_kind": "create",
+            "operation": "create",
+            "account_scope": "primary",
+            "email": "user@example.com",
+            "dry_run": True,
+            "preview_max_results": 3,
+            "criteria": {
+                "query": "in:anywhere from:(kayak.com OR hulumail.com OR ally.com OR fast-growing-trees.com OR bulksupplements.com OR seekingalpha.com OR email.interactivebrokers.com OR alibaba.com OR instagram.com OR flyfrontier.com)",
+            },
+            "action": {"addLabelIds": ["Label_1"]},
+        },
+        workspace=workspace,
+        owner=user,
+        account=account,
+    )
+
+    assert [call[0] for call in captured["queries"]] == ["in:anywhere"]
+    assert result["result"]["shared_base_query"] == "in:anywhere"
+    assert len(result["result"]["preview_filters"]) == 10
+    assert all(item["resultSizeEstimate"] == 1 for item in result["result"]["preview_filters"])
     assert "preview ready" in result["summary_text"].lower()
 
 
@@ -2028,7 +2277,7 @@ def test_normalize_google_payload_rejects_non_read_step():
         )
 
 
-def test_build_google_task_objective_serializes_payload_as_json():
+def test_build_google_task_objective_builds_compact_instruction_prompt():
     objective, prompt = build_google_task_objective(
         {
             "integration_kind": "google",
@@ -2041,9 +2290,14 @@ def test_build_google_task_objective_serializes_payload_as_json():
     )
 
     assert "Google bridge task" in objective
-    assert '"integration_kind":"google"' in prompt
-    assert '"resource_kind":"calendar"' in prompt
-    assert '"time_min":"2026-03-20T00:00:00-04:00"' in prompt
+    assert "Use the Google Bridge tool to complete the task." in prompt
+    assert "Task parameters:" in prompt
+    assert "- calendar_id: primary" in prompt
+    assert "- time_min: 2026-03-20T00:00:00-04:00" in prompt
+    assert "integration_kind" not in prompt
+    assert "resource_kind" not in prompt
+    assert "{" not in prompt
+    assert "}" not in prompt
 
 
 def test_google_bridge_calendar_schema_requires_local_time_bounds():
@@ -2082,12 +2336,14 @@ def test_google_bridge_calendar_schema_requires_local_time_bounds():
     account_scope_description = schema["properties"]["account_scope"]["description"]
     assert "generic google_bridge query language" in query_description.lower()
     assert "and, or, not" in query_description.lower()
+    assert "field contains clauses" in query_description.lower()
     assert "from:(dsmith@aol.com or dsmyth@aol.com)" in query_description.lower()
     assert "to:(sktennis7@gmail.com or kissinger.scott@gmail.com)" in query_description.lower()
     assert "supported query fields vary by surface" in query_description.lower()
     assert "gmail list/read supports from, to, subject, label_ids, include_read, in, is, newer_than, and older_than" in query_description.lower()
     assert "gmail settings filters use the nested criteria object instead of query" in query_description.lower()
     assert "calendar list/read supports q" in query_description.lower()
+    assert "name contains filters for filename searches" in query_description.lower()
     assert "q:(team sync or planning)" in query_description.lower()
     assert "message_id" in query_description.lower() or "message id" in query_description.lower()
     assert "from:airbnb.com" in query_description.lower()
@@ -2273,3 +2529,124 @@ def test_execute_google_task_supports_drive_docs_and_sheets_steps(monkeypatch):
     assert result["steps"][0]["result"]["files"][0]["id"] == "drive-1"
     assert result["steps"][1]["result"]["documentId"] == "doc-123"
     assert result["steps"][2]["result"]["content_text"] == "exported-bytes"
+
+
+def test_execute_google_task_passes_drive_contains_query_to_client(monkeypatch):
+    workspace, user, account = _make_account()
+
+    captured: dict[str, object] = {}
+
+    class FakeClient:
+        def __init__(self, connection):
+            self.connection = connection
+
+        def list_drive_files(self, *, q: str = "", page_size: int = 20, page_token: str = "", include_all_drives: bool = True):
+            captured["q"] = q
+            captured["page_size"] = page_size
+            return {"files": [{"id": "drive-1", "name": "README.md", "mimeType": "text/plain"}], "nextPageToken": ""}
+
+    monkeypatch.setattr("google_bridge.services.bridge.GoogleBridgeClient", FakeClient)
+
+    result = execute_google_task(
+        payload={
+            "integration_kind": "google",
+            "resource_kind": "drive",
+            "action_kind": "read",
+            "operation": "list",
+            "query": "name contains 'README'",
+            "max_results": 5,
+        },
+        workspace=workspace,
+        owner=user,
+        account=account,
+    )
+
+    assert captured["q"] == "name contains 'README'"
+    assert captured["page_size"] == 5
+    assert result["result"]["query"] == "name contains 'README'"
+    assert result["result"]["files"][0]["id"] == "drive-1"
+
+
+def test_execute_google_task_canonicalizes_drive_mime_type_alias(monkeypatch):
+    workspace, user, account = _make_account()
+
+    captured: dict[str, object] = {}
+
+    class FakeClient:
+        def __init__(self, connection):
+            self.connection = connection
+
+        def list_drive_files(self, *, q: str = "", page_size: int = 20, page_token: str = "", include_all_drives: bool = True):
+            captured["q"] = q
+            return {"files": [{"id": "drive-1", "name": "README.md", "mimeType": "application/vnd.google-apps.document"}], "nextPageToken": ""}
+
+    monkeypatch.setattr("google_bridge.services.bridge.GoogleBridgeClient", FakeClient)
+
+    result = execute_google_task(
+        payload={
+            "integration_kind": "google",
+            "resource_kind": "drive",
+            "action_kind": "read",
+            "operation": "list",
+            "query": "mimeType = 'application/vnd.google-apps.document'",
+            "max_results": 5,
+        },
+        workspace=workspace,
+        owner=user,
+        account=account,
+    )
+
+    assert captured["q"] == "mimeType = 'application/vnd.google-apps.document'"
+    assert result["result"]["query"] == "mimeType = 'application/vnd.google-apps.document'"
+
+
+def test_execute_google_task_canonicalizes_drive_date_and_boolean_aliases(monkeypatch):
+    workspace, user, account = _make_account()
+
+    captured: dict[str, object] = {}
+
+    class FakeClient:
+        def __init__(self, connection):
+            self.connection = connection
+
+        def list_drive_files(self, *, q: str = "", page_size: int = 20, page_token: str = "", include_all_drives: bool = True):
+            captured["q"] = q
+            return {"files": [{"id": "drive-1", "name": "README.md", "mimeType": "application/vnd.google-apps.document"}], "nextPageToken": ""}
+
+    monkeypatch.setattr("google_bridge.services.bridge.GoogleBridgeClient", FakeClient)
+
+    result = execute_google_task(
+        payload={
+            "integration_kind": "google",
+            "resource_kind": "drive",
+            "action_kind": "read",
+            "operation": "list",
+            "query": "modifiedTime >= '2024-01-01T00:00:00Z' AND createdTime < '2024-02-01T00:00:00Z' AND trashed = false",
+            "max_results": 5,
+        },
+        workspace=workspace,
+        owner=user,
+        account=account,
+    )
+
+    assert captured["q"] == "modifiedTime >= '2024-01-01T00:00:00Z' and createdTime < '2024-02-01T00:00:00Z' and trashed = false"
+    assert result["result"]["query"] == "modifiedTime >= '2024-01-01T00:00:00Z' and createdTime < '2024-02-01T00:00:00Z' and trashed = false"
+
+
+def test_normalize_google_payload_allows_drive_list_query_without_file_id():
+    payload = normalize_google_payload(
+        {
+            "integration_kind": "google",
+            "resource_kind": "drive",
+            "action_kind": "read",
+            "operation": "list",
+            "query": "name contains 'README'",
+            "account_scope": "primary",
+        }
+    )
+
+    assert payload["resource_kind"] == "drive"
+    assert payload["action_kind"] == "read"
+    assert payload["operation"] == "list"
+    assert payload["query"] == "name contains 'README'"
+    assert payload["file_id"] == ""

@@ -37,6 +37,7 @@ from runs.services.memory import get_or_create_run_memory
 from runs.services.memory_bootstrap import bootstrap_memory_for_first_turn
 from runs.services.recovery import cancel_run, pause_run, resume_run
 from runs.services.steps import append_step
+from runs.services.tool_output import compact_tool_output_text
 from logging_utils import scrub_sensitive_text_with_types, scrub_sensitive_value
 from tools.models import ToolCall
 from tools.policy import ToolNotAllowedError, assert_tool_allowed, get_effective_tools
@@ -2446,10 +2447,7 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
             result_data = (
                 payload.get("result") or payload.get("stdout") or payload.get("stderr") or payload
             )
-            try:
-                tool_output_text = json.dumps(result_data, ensure_ascii=False)
-            except (TypeError, ValueError):
-                tool_output_text = str(result_data)
+            tool_output_text = compact_tool_output_text(str(payload.get("tool_name") or "tool"), result_data)
             provider_call_id = (
                 payload.get("provider_call_id") or self._pending_provider_call_id or ""
             )
@@ -2634,10 +2632,7 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
                 tool_call_id,
             )
             return
-        try:
-            tool_output_text = json.dumps(payload, ensure_ascii=False)
-        except (TypeError, ValueError):
-            tool_output_text = str(payload)
+            tool_output_text = compact_tool_output_text(str(payload.get("tool_name") or "tool"), payload)
         self.history.append(
             {
                 "role": "tool",

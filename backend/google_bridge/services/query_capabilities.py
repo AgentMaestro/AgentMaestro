@@ -59,6 +59,7 @@ _DRIVE_QUERY_FIELDS = frozenset(
         "mime_type",
         "modified_time",
         "created_time",
+        "trashed",
     }
 )
 

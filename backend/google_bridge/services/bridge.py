@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from collections.abc import Iterable
-from datetime import datetime
+from datetime import datetime, timedelta
 from email.utils import parsedate_to_datetime
 from zoneinfo import ZoneInfo
 from django.conf import settings
@@ -13,17 +14,122 @@ from core.services.timezones import get_local_timezone_name
 from google_bridge.models import GoogleAccount
 from google_bridge.services.client import GoogleBridgeClient
 from google_bridge.services.query_language import QueryLanguageError
-from google_bridge.services.query_planner import QueryPlannerError, plan_google_query
+from google_bridge.services.query_planner import QueryLiteral, QueryPlannerError, plan_google_query, _render_clause
 
 
 class GoogleBridgeTaskError(RuntimeError):
     pass
 
 
+logger = logging.getLogger(__name__)
+
+
+_PROMPT_FIELD_ORDER = (
+    "account_scope",
+    "email",
+    "google_subject",
+    "query",
+    "message_id",
+    "filter_id",
+    "criteria",
+    "action",
+    "dry_run",
+    "preview_max_results",
+    "file_id",
+    "document_id",
+    "spreadsheet_id",
+    "range",
+    "export_mime_type",
+    "include_read",
+    "to",
+    "cc",
+    "bcc",
+    "subject",
+    "body",
+    "thread_id",
+    "draft_id",
+    "delete_mode",
+    "label_ids",
+    "max_results",
+    "calendar_id",
+    "summary",
+    "description",
+    "location",
+    "start",
+    "end",
+    "time_zone",
+    "attendees",
+    "send_updates",
+    "time_min",
+    "time_max",
+    "event_id",
+)
+_PROMPT_VALUE_LIMIT = 240
+
+
+def _compact_prompt_value(value: object) -> str:
+    if value in (None, "", [], {}, ()):
+        return ""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, float)):
+        return str(value)
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, dict):
+        parts: list[str] = []
+        for key, item in value.items():
+            compact = _compact_prompt_value(item)
+            if compact:
+                parts.append(f"{key}={compact}")
+        return ", ".join(parts)
+    if isinstance(value, list):
+        parts = [_compact_prompt_value(item) for item in value]
+        return ", ".join(part for part in parts if part)
+    return str(value).strip()
+
+
+def _append_prompt_field(lines: list[str], label: str, value: object) -> None:
+    compact = _compact_prompt_value(value)
+    if not compact:
+        return
+    if len(compact) > _PROMPT_VALUE_LIMIT:
+        compact = f"{compact[:_PROMPT_VALUE_LIMIT].rstrip()}..."
+    lines.append(f"- {label}: {compact}")
+
+
+def _build_google_step_prompt(step: dict[str, object], *, index: int, total: int) -> str:
+    resource_kind = str(step.get("resource_kind") or "").strip()
+    action_kind = str(step.get("action_kind") or "").strip()
+    operation = str(step.get("operation") or "").strip()
+    header = f"Step {index}/{total}: {resource_kind} {action_kind} ({operation})".strip()
+    lines = [header]
+    for field_name in _PROMPT_FIELD_ORDER:
+        if field_name not in step:
+            continue
+        _append_prompt_field(lines, field_name, step.get(field_name))
+    return "\n".join(lines)
+
+
 def build_google_task_objective(payload: dict | None) -> tuple[str, str]:
     normalized = normalize_google_payload(payload)
     objective = f"Complete the Google bridge task for {normalized['resource_kind']} {normalized['operation']}."
-    prompt = json.dumps(normalized, sort_keys=True, separators=(",", ":"))
+    steps = list(normalized.get("steps") or [])
+    lines = [
+        objective,
+        "Use the Google Bridge tool to complete the task.",
+    ]
+    if steps:
+        lines.append(f"Planned steps: {len(steps)}")
+        for index, step in enumerate(steps, start=1):
+            lines.append(_build_google_step_prompt(step, index=index, total=len(steps)))
+    else:
+        lines.append("Task parameters:")
+        for field_name in _PROMPT_FIELD_ORDER:
+            if field_name in normalized:
+                _append_prompt_field(lines, field_name, normalized.get(field_name))
+    lines.append("Return a concise summary of the result.")
+    prompt = "\n".join(lines)
     return objective, prompt
 
 
@@ -642,6 +748,16 @@ def _execute_drive_list_for_account(
     normalized: dict[str, object],
 ) -> tuple[dict[str, object], str]:
     query = str(normalized.get("query") or "").strip()
+    if query:
+        query_plan = _plan_google_query(query, resource_kind="drive", action_kind="read", operation="list")
+        query = str(query_plan.normalized_query or query).strip()
+        logger.info(
+            "Drive list query rendered original=%r normalized=%r rendered=%r max_results=%s",
+            query_plan.original_query,
+            query_plan.normalized_query,
+            query,
+            int(normalized.get("max_results") or 20),
+        )
     page_size = int(normalized.get("max_results") or 20)
     data = client.list_drive_files(q=query, page_size=page_size)
     files = list(data.get("files") or [])
@@ -1090,6 +1206,36 @@ def _execute_gmail_list_for_account(
 ) -> dict[str, object]:
     max_results = int(normalized.get("max_results") or 20)
     queries = _google_query_clauses(normalized)
+    shared_corpus_plan = _gmail_shared_corpus_plan(normalized)
+    if shared_corpus_plan is not None:
+        base_query, clause_remainders = shared_corpus_plan
+        raw_messages = _collect_gmail_messages_for_queries(
+            client,
+            queries=[base_query],
+            label_ids=list(normalized.get("label_ids") or []),
+            max_results_per_query=None,
+        )
+        data = {
+            "messages": raw_messages,
+            "resultSizeEstimate": len(raw_messages),
+            "query_plan": normalized.get("_google_query_plan") or {},
+            "execution_strategy": "shared_corpus",
+            "shared_base_query": base_query,
+        }
+        data = _enrich_gmail_list_messages(client, data)
+        enriched_messages = list(data.get("messages") or [])
+        filtered_messages = [
+            message
+            for message in enriched_messages
+            if _gmail_message_matches_any_clause(message, clause_remainders)
+        ]
+        filtered_messages.sort(key=_gmail_message_sort_key)
+        filtered_messages = filtered_messages[:max_results]
+        data = dict(data)
+        data["messages"] = filtered_messages
+        data["resultSizeEstimate"] = len(filtered_messages)
+        return data
+
     raw_messages = _collect_gmail_messages_for_queries(
         client,
         queries=queries,
@@ -1100,6 +1246,7 @@ def _execute_gmail_list_for_account(
         "messages": raw_messages,
         "resultSizeEstimate": len(raw_messages),
         "query_plan": normalized.get("_google_query_plan") or {},
+        "execution_strategy": "query_fanout",
     }
     data = _enrich_gmail_list_messages(client, data)
     enriched_messages = list(data.get("messages") or [])
@@ -1342,8 +1489,11 @@ def _normalize_google_step(step: dict | None, *, defaults: dict[str, object] | N
                     f"Google step {step_index} requires export_mime_type for {resource_kind} export workflows."
                 )
         elif action_kind == "read":
-            if resource_kind == "drive" and not raw["file_id"] and not raw["query"]:
-                operation = "list"
+            if resource_kind == "drive":
+                if raw["file_id"]:
+                    operation = "read"
+                else:
+                    operation = "list"
             elif not raw["file_id"]:
                 raise GoogleBridgeTaskError(
                     f"Google step {step_index} requires file_id for {resource_kind} read workflows."
@@ -1663,6 +1813,50 @@ def _build_gmail_filter_preview(
     query_clauses: list[str],
 ) -> dict[str, object]:
     preview_limit = max(1, int(normalized.get("preview_max_results") or 5))
+    clause_calls: list[dict[str, object]] = []
+    for clause in query_clauses:
+        clause_text = str(clause or "").strip()
+        if not clause_text:
+            continue
+        clause_plan = _plan_google_query(
+            clause_text,
+            resource_kind="gmail",
+            action_kind="read",
+            operation="list",
+        )
+        clause_calls.extend(list(clause_plan.to_dict().get("calls") or []))
+    shared_corpus_plan = _gmail_shared_corpus_plan_from_calls(clause_calls)
+    if shared_corpus_plan is not None:
+        base_query, clause_remainders = shared_corpus_plan
+        page = client.list_gmail_messages(
+            query=base_query,
+            label_ids=[],
+            max_results=max(preview_limit * 10, 100),
+        )
+        preview_data = _enrich_gmail_list_messages(
+            client,
+            {
+                "messages": list(page.get("messages") or []),
+                "resultSizeEstimate": int(page.get("resultSizeEstimate") or len(list(page.get("messages") or []))),
+            },
+        )
+        messages = list(preview_data.get("messages") or [])
+        previews: list[dict[str, object]] = []
+        for clause_literals in clause_remainders:
+            matched_messages = [message for message in messages if _gmail_message_matches_literals(message, clause_literals)]
+            previews.append(
+                {
+                    "query": _render_clause(clause_literals, resource_kind="gmail"),
+                    "resultSizeEstimate": len(matched_messages),
+                    "messages": matched_messages[:preview_limit],
+                }
+            )
+        return {
+            "preview_filters": previews,
+            "resultSizeEstimate": sum(int(item.get("resultSizeEstimate") or 0) for item in previews),
+            "shared_base_query": base_query,
+        }
+
     previews: list[dict[str, object]] = []
     for clause in query_clauses:
         if not clause:
@@ -1990,6 +2184,229 @@ def _google_query_clauses(normalized: dict[str, object]) -> list[str]:
     return list(plan.query_strings)
 
 
+_GMAIL_SHARED_CORPUS_MIN_CLAUSES = 5
+_GMAIL_SHARED_CORPUS_FIELDS = {"from", "to", "subject", "label_ids", "in", "is", "newer_than", "older_than"}
+_GMAIL_SHARED_CORPUS_IN_VALUES = {"anywhere", "all", "inbox", "trash", "spam", "sent", "drafts", "snoozed", "important", "starred", "unread", "promotions", "social"}
+_GMAIL_SHARED_CORPUS_IS_VALUES = {"read", "unread", "starred", "important", "snoozed"}
+_GMAIL_SHARED_CORPUS_DATE_PATTERN = re.compile(r"^\s*(\d+)\s*([dhmw])\s*$", re.IGNORECASE)
+_GMAIL_EMAIL_PATTERN = re.compile(r"[\w.+-]+@[\w.-]+")
+
+
+def _gmail_query_plan_calls(normalized: dict[str, object]) -> list[dict[str, object]]:
+    stored_plan = normalized.get("_google_query_plan")
+    if isinstance(stored_plan, dict):
+        calls = list(stored_plan.get("calls") or [])
+        if calls:
+            return [dict(item) for item in calls]
+    query = str(normalized.get("query") or "").strip()
+    if not query:
+        return []
+    plan = _plan_google_query(
+        query,
+        resource_kind=str(normalized.get("resource_kind") or "gmail"),
+        action_kind=str(normalized.get("action_kind") or "read"),
+        operation=str(normalized.get("operation") or "list"),
+    )
+    return [dict(item) for item in plan.to_dict().get("calls") or []]
+
+
+def _gmail_literal_from_dict(item: dict[str, object]) -> QueryLiteral:
+    return QueryLiteral(
+        field_name=str(item.get("field_name") or "").strip() or None,
+        value=str(item.get("value") or ""),
+        negated=bool(item.get("negated")),
+        operator=str(item.get("operator") or "").strip() or None,
+    )
+
+
+def _gmail_clause_literals_from_call(call: dict[str, object]) -> tuple[QueryLiteral, ...]:
+    return tuple(_gmail_literal_from_dict(item) for item in list(call.get("literals") or []))
+
+
+def _gmail_clause_key(literal: QueryLiteral) -> tuple[str, str, bool, str]:
+    return (
+        str(literal.field_name or ""),
+        str(literal.value or ""),
+        bool(literal.negated),
+        str(literal.operator or ""),
+    )
+
+
+def _gmail_clause_literals_locally_matchable(literals: tuple[QueryLiteral, ...]) -> bool:
+    for literal in literals:
+        field_name = str(literal.field_name or "").strip().lower()
+        if field_name not in _GMAIL_SHARED_CORPUS_FIELDS and field_name != "":
+            return False
+    return True
+
+
+def _gmail_shared_corpus_plan_from_calls(calls: list[dict[str, object]]) -> tuple[str, list[tuple[QueryLiteral, ...]]] | None:
+    if len(calls) < _GMAIL_SHARED_CORPUS_MIN_CLAUSES:
+        return None
+    clause_literals = [_gmail_clause_literals_from_call(call) for call in calls]
+    if not clause_literals:
+        return None
+    if not all(_gmail_clause_literals_locally_matchable(literals) for literals in clause_literals):
+        return None
+    clause_key_sets = [set(_gmail_clause_key(literal) for literal in literals) for literals in clause_literals]
+    shared_keys = set.intersection(*clause_key_sets) if clause_key_sets else set()
+    shared_literals = tuple(
+        literal
+        for literal in clause_literals[0]
+        if _gmail_clause_key(literal) in shared_keys
+    )
+    shared_set = {_gmail_clause_key(literal) for literal in shared_literals}
+    clause_remainders: list[tuple[QueryLiteral, ...]] = []
+    for literals in clause_literals:
+        remainder = tuple(literal for literal in literals if _gmail_clause_key(literal) not in shared_set)
+        clause_remainders.append(remainder)
+    base_query = _render_clause(shared_literals, resource_kind="gmail")
+    return base_query, clause_remainders
+
+
+def _gmail_shared_corpus_plan(normalized: dict[str, object]) -> tuple[str, list[tuple[QueryLiteral, ...]]] | None:
+    return _gmail_shared_corpus_plan_from_calls(_gmail_query_plan_calls(normalized))
+
+
+def _gmail_message_text(message: dict[str, object]) -> str:
+    parts = [
+        str(message.get("subject") or "").strip(),
+        str(message.get("from") or "").strip(),
+        str(message.get("to") or "").strip(),
+        str(message.get("snippet") or "").strip(),
+    ]
+    return " ".join(part for part in parts if part)
+
+
+def _gmail_message_emails(message: dict[str, object], field_name: str) -> list[str]:
+    value = str(message.get(field_name) or "").strip()
+    if not value:
+        return []
+    return [match.lower() for match in _GMAIL_EMAIL_PATTERN.findall(value)]
+
+
+def _gmail_message_labels(message: dict[str, object]) -> set[str]:
+    labels = list(message.get("labelIds") or message.get("label_ids") or [])
+    return {str(label or "").strip().lower() for label in labels if str(label or "").strip()}
+
+
+def _gmail_message_datetime(message: dict[str, object]) -> datetime | None:
+    date_text = str(message.get("date") or "").strip()
+    if not date_text:
+        return None
+    try:
+        parsed = parsedate_to_datetime(date_text)
+    except Exception:
+        return None
+    if parsed is None:
+        return None
+    if parsed.tzinfo is None:
+        parsed = timezone.make_aware(parsed, timezone.get_current_timezone())
+    return parsed
+
+
+def _gmail_relative_delta(value: str) -> timedelta | None:
+    match = _GMAIL_SHARED_CORPUS_DATE_PATTERN.match(value)
+    if not match:
+        return None
+    amount = int(match.group(1))
+    unit = match.group(2).lower()
+    if unit == "d":
+        return timedelta(days=amount)
+    if unit == "h":
+        return timedelta(hours=amount)
+    if unit == "m":
+        return timedelta(minutes=amount)
+    if unit == "w":
+        return timedelta(weeks=amount)
+    return None
+
+
+def _gmail_message_matches_literal(message: dict[str, object], literal: QueryLiteral) -> bool:
+    field_name = str(literal.field_name or "").strip().lower()
+    value = str(literal.value or "").strip()
+    if not value and field_name != "in":
+        return False
+    if field_name == "from":
+        emails = _gmail_message_emails(message, "from")
+        sender_text = _gmail_message_text(message).lower()
+        candidate = value.lower()
+        if "@" in candidate:
+            return any(email == candidate for email in emails) or candidate in sender_text
+        return any(email.endswith(f"@{candidate}") or email.endswith(candidate) for email in emails) or candidate in sender_text
+    if field_name == "to":
+        emails = _gmail_message_emails(message, "to")
+        recipient_text = _gmail_message_text(message).lower()
+        candidate = value.lower()
+        if "@" in candidate:
+            return any(email == candidate for email in emails) or candidate in recipient_text
+        return any(email.endswith(f"@{candidate}") or email.endswith(candidate) for email in emails) or candidate in recipient_text
+    if field_name == "subject":
+        return value.lower() in str(message.get("subject") or "").lower()
+    if field_name == "label_ids":
+        labels = _gmail_message_labels(message)
+        candidates = [item.strip().lower() for item in re.split(r"[,\s]+", value) if item.strip()]
+        return any(candidate in labels for candidate in candidates)
+    if field_name == "in":
+        candidate = value.lower()
+        labels = _gmail_message_labels(message)
+        if candidate in {"anywhere", "all"}:
+            return True
+        label_map = {
+            "inbox": "inbox",
+            "trash": "trash",
+            "spam": "spam",
+            "sent": "sent",
+            "drafts": "draft",
+            "snoozed": "snoozed",
+            "important": "important",
+            "starred": "starred",
+            "promotions": "category_promotions",
+            "social": "category_social",
+        }
+        label_name = label_map.get(candidate, candidate)
+        return label_name in labels
+    if field_name == "is":
+        candidate = value.lower()
+        labels = _gmail_message_labels(message)
+        if candidate == "read":
+            return "unread" not in labels
+        if candidate == "unread":
+            return "unread" in labels
+        return candidate in labels
+    if field_name == "newer_than":
+        delta = _gmail_relative_delta(value)
+        message_dt = _gmail_message_datetime(message)
+        if delta is None or message_dt is None:
+            return False
+        return message_dt >= timezone.now() - delta
+    if field_name == "older_than":
+        delta = _gmail_relative_delta(value)
+        message_dt = _gmail_message_datetime(message)
+        if delta is None or message_dt is None:
+            return False
+        return message_dt <= timezone.now() - delta
+    if field_name == "":
+        return value.lower() in _gmail_message_text(message).lower()
+    return False
+
+
+def _gmail_message_matches_literals(message: dict[str, object], literals: tuple[QueryLiteral, ...]) -> bool:
+    if not literals:
+        return True
+    for literal in literals:
+        matched = _gmail_message_matches_literal(message, literal)
+        if literal.negated:
+            matched = not matched
+        if not matched:
+            return False
+    return True
+
+
+def _gmail_message_matches_any_clause(message: dict[str, object], clause_literals: list[tuple[QueryLiteral, ...]]) -> bool:
+    return any(_gmail_message_matches_literals(message, literals) for literals in clause_literals)
+
+
 def _collect_gmail_messages_for_queries(
     client: GoogleBridgeClient,
     *,
@@ -2070,8 +2487,10 @@ def _enrich_gmail_list_messages(client: GoogleBridgeClient, data: dict) -> dict:
                 **message,
                 "subject": headers.get("subject", ""),
                 "from": headers.get("from", ""),
+                "to": headers.get("to", ""),
                 "date": headers.get("date", ""),
                 "snippet": str(message_data.get("snippet") or "").strip(),
+                "labelIds": list(message_data.get("labelIds") or message.get("labelIds") or []),
             }
         )
     enriched = dict(data)

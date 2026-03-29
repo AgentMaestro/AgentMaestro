@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 import uuid
 from datetime import date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
@@ -217,6 +218,25 @@ def list_scheduled_tasks(*, agent=None, workspace=None, owner=None, enabled_only
     return list(queryset.order_by("next_run_at", "created_at")[: max(1, min(int(limit or 20), 50))])
 
 
+def get_scheduled_task(*, agent=None, workspace=None, owner=None, scheduled_task_id: str):
+    queryset = ScheduledTask.objects.select_related(
+        "agent",
+        "owner",
+        "workspace",
+        "source_memory",
+        "last_run",
+        "active_run",
+        "recurrence_rule",
+    )
+    if agent is not None:
+        queryset = queryset.filter(agent=agent)
+    if workspace is not None:
+        queryset = queryset.filter(workspace=workspace)
+    if owner is not None:
+        queryset = queryset.filter(owner=owner)
+    return queryset.filter(id=scheduled_task_id).first()
+
+
 
 def cleanup_scheduled_task_active_runs(*, now: datetime | None = None, limit: int = DEFAULT_SCHEDULED_TASK_LIMIT) -> dict[str, int]:
     current_time = now or timezone.now()
@@ -357,8 +377,8 @@ def build_scheduled_task_execution_bucket_key(scheduled_task: ScheduledTask) -> 
     return f"{SCHEDULED_TASK_EXEC_BUCKET_PREFIX}:{scheduled_task.id}:{scheduled_task.task_type}"
 
 
-def serialize_scheduled_task(task: ScheduledTask) -> dict[str, object]:
-    return {
+def serialize_scheduled_task(task: ScheduledTask, *, include_execution_payload: bool = False) -> dict[str, object]:
+    payload = {
         "scheduled_task_id": str(task.id),
         "recurrence_rule_id": str(task.recurrence_rule_id),
         "title": task.title,
@@ -379,6 +399,9 @@ def serialize_scheduled_task(task: ScheduledTask) -> dict[str, object]:
         "last_result_summary": task.last_result_summary,
         "last_error": task.last_error,
     }
+    if include_execution_payload:
+        payload["execution_payload"] = deepcopy(task.execution_payload or {})
+    return payload
 
 
 

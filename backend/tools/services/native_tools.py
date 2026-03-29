@@ -10,12 +10,14 @@ from memory.scheduled_tasks import (
     create_scheduled_task,
     disable_scheduled_task,
     enable_scheduled_task,
+    get_scheduled_task,
     list_scheduled_tasks,
     serialize_scheduled_task,
     update_scheduled_task,
 )
 from memory.services import remember as remember_memory
 from memory.services import search_memory as search_memory_records
+from comms.services.agent_chat_bridge import send_paired_telegram_message
 from runs.services.headless import continue_headless_run_after_approval_gate
 from runs.services.subruns import run_subrun_flow
 from tools.models import ToolCall
@@ -170,17 +172,23 @@ def execute_native_tool_call(tool_call: ToolCall) -> dict[str, object]:
             "duration_ms": 0,
             "result": {**serialize_scheduled_task(scheduled_task), "source_memory_id": str(scheduled_task.source_memory_id or "")},
         }
-    if tool_call.tool_name in {"edit_scheduled_task", "disable_scheduled_task", "enable_scheduled_task"}:
+    if tool_call.tool_name in {"get_scheduled_task", "edit_scheduled_task", "disable_scheduled_task", "enable_scheduled_task"}:
         scheduled_task_id = str(args.get("scheduled_task_id") or "").strip()
         if not scheduled_task_id:
             raise RuntimeError(f"{tool_call.tool_name} requires scheduled_task_id.")
-        scheduled_task = (
-            ScheduledTask.objects.select_related("recurrence_rule")
-            .filter(id=scheduled_task_id, agent=tool_call.run.agent)
-            .first()
-        )
+        scheduled_task = get_scheduled_task(agent=tool_call.run.agent, scheduled_task_id=scheduled_task_id)
         if scheduled_task is None:
             raise RuntimeError("Scheduled task not found for the current agent.")
+        if tool_call.tool_name == "get_scheduled_task":
+            return {
+                "request_id": str(tool_call.id),
+                "status": "COMPLETED",
+                "exit_code": 0,
+                "stdout": "",
+                "stderr": "",
+                "duration_ms": 0,
+                "result": serialize_scheduled_task(scheduled_task, include_execution_payload=True),
+            }
         if tool_call.tool_name == "edit_scheduled_task":
             updated = update_scheduled_task(
                 scheduled_task,
@@ -208,9 +216,10 @@ def execute_native_tool_call(tool_call: ToolCall) -> dict[str, object]:
     if tool_call.tool_name == "list_scheduled_tasks":
         scheduled_tasks = list_scheduled_tasks(
             agent=tool_call.run.agent,
-            enabled_only=bool(args.get("enabled_only", False)),
+            enabled_only=_coerce_bool(args.get("enabled_only", False)),
             limit=int(args.get("limit") or 10),
         )
+        include_execution_payload = _coerce_bool(args.get("include_execution_payload", False))
         return {
             "request_id": str(tool_call.id),
             "status": "COMPLETED",
@@ -220,7 +229,10 @@ def execute_native_tool_call(tool_call: ToolCall) -> dict[str, object]:
             "duration_ms": 0,
             "result": {
                 "count": len(scheduled_tasks),
-                "results": [serialize_scheduled_task(task) for task in scheduled_tasks],
+                "results": [
+                    serialize_scheduled_task(task, include_execution_payload=include_execution_payload)
+                    for task in scheduled_tasks
+                ],
             },
         }
     if tool_call.tool_name == "spawn_subrun":
@@ -280,6 +292,33 @@ def execute_native_tool_call(tool_call: ToolCall) -> dict[str, object]:
                 "duration_ms": 0,
                 "result": {"ok": False, "error": str(exc)},
             }
+        return {
+            "request_id": str(tool_call.id),
+            "status": "COMPLETED",
+            "exit_code": 0,
+            "stdout": "",
+            "stderr": "",
+            "duration_ms": 0,
+            "result": result,
+        }
+
+    if tool_call.tool_name == "send_telegram":
+        target = str(args.get("target") or "paired").strip().lower()
+        if target != "paired":
+            raise RuntimeError("send_telegram currently only supports target='paired'.")
+        result = send_paired_telegram_message(
+            run_id=str(tool_call.run_id),
+            text=str(args.get("text") or ""),
+            name=str(args.get("name") or "") or None,
+            parse_mode=str(args.get("parse_mode") or "") or None,
+            disable_web_page_preview=args.get("disable_web_page_preview"),
+            disable_notification=args.get("disable_notification"),
+            reply_to_message_id=args.get("reply_to_message_id"),
+            allow_sending_without_reply=args.get("allow_sending_without_reply"),
+            protect_content=args.get("protect_content"),
+            message_thread_id=args.get("message_thread_id"),
+            reply_markup=dict(args.get("reply_markup") or {}) if args.get("reply_markup") is not None else None,
+        )
         return {
             "request_id": str(tool_call.id),
             "status": "COMPLETED",

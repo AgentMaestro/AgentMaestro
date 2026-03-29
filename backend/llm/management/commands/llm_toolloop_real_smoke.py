@@ -5,17 +5,22 @@ import hashlib
 import json
 import os
 import re
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Sequence
 
 from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
+from django.utils import timezone
 from logging_utils import scrub_sensitive_text
 
+from agents.models import Agent
+from google_bridge.models import GoogleAccount
 from llm.models import AgentRole, LLMModelProfile, LLMRun, MessageRole
 from llm.services.runner import LLMRunner
 from llm.services.tool_schemas import get_tool_arg_templates, get_tool_schemas
+from runs.models import AgentRun
 
 
 # RUN INSTRUCTIONS:
@@ -161,6 +166,67 @@ def _verify_python_digest(
     return fails
 
 
+def _verify_gmail_or_fanout(
+    result: dict[str, Any], tool_names: list[str], denials: list[str], run: LLMRun
+) -> list[str]:
+    text = (result.get("text") or "").lower()
+    fails: list[str] = []
+    if "google_bridge" not in tool_names:
+        fails.append("google_bridge not executed")
+    bridge_call = run.tool_calls.filter(tool_name="google_bridge").order_by("created_at").last()
+    strategy = ""
+    call_count = 0
+    if bridge_call and isinstance(bridge_call.result, dict):
+        payload = dict(bridge_call.result.get("result") or bridge_call.result)
+        strategy = str(payload.get("execution_strategy") or "").strip().lower()
+        query_plan = dict(payload.get("query_plan") or {})
+        call_count = int(query_plan.get("call_count") or 0)
+    if strategy and strategy != "query_fanout":
+        fails.append(f"expected query_fanout strategy, got {strategy}")
+    if call_count < 3:
+        fails.append(f"query_plan call_count too small: {call_count}")
+    if "gmail" not in text:
+        fails.append("final output missing gmail reference")
+    if result.get("status") != "completed":
+        fails.append(f"status {result.get('status')} != completed")
+    if denials:
+        fails.append(f"policy denials present ({', '.join(denials)})")
+    return fails
+
+
+def _ensure_google_orchestration_run(label: str, model_name: str) -> tuple[GoogleAccount, AgentRun]:
+    account = (
+        GoogleAccount.objects.select_related("workspace", "owner")
+        .filter(is_active=True)
+        .order_by("-last_synced_at", "-updated_at", "email", "google_subject")
+        .first()
+    )
+    if account is None:
+        raise CommandError("Gmail OR smoke requires at least one active GoogleAccount in the database.")
+
+    suffix = uuid.uuid4().hex[:6]
+    owner = account.owner
+    agent = Agent.objects.create(
+        workspace=account.workspace,
+        owner=owner,
+        name=f"Gmail smoke {label} {suffix}",
+        default_model=model_name,
+        soul="Keep replies concise and grounded.",
+    )
+    run = AgentRun.objects.create(
+        workspace=account.workspace,
+        agent=agent,
+        started_by=owner,
+        status=AgentRun.Status.RUNNING,
+        channel=AgentRun.Channel.API,
+        execution_mode=AgentRun.ExecutionMode.INTERACTIVE,
+        trigger_kind=AgentRun.TriggerKind.SYSTEM,
+        input_text=f"llm toolloop real smoke: {label}",
+        started_at=timezone.now(),
+    )
+    return account, run
+
+
 BACKEND_ROOT = str(settings.BASE_DIR.resolve())
 SANDBOX_ROOT = str(Path(getattr(settings, "TOOLRUNNER_SANDBOX_ROOT", "/tmp/agentmaestro/sandbox")).resolve())
 PROMPT_INSTRUCTION = (
@@ -214,6 +280,17 @@ SCENARIOS: list[Scenario] = [
         verify=_verify_python_digest,
         max_tool_rounds=5,
     ),
+    Scenario(
+        name="Gmail OR fan-out",
+        prompt=(
+            "Use google_bridge once to run a Gmail list search with account_scope=all, include_read=true, max_results=50, "
+            "and a query of from:(kayak.com OR hulumail.com OR ally.com). "
+            "Your goal is to confirm the bridge fans this into separate Gmail clauses instead of treating it as a single literal string. "
+            "After the tool call, report the query fan-out behavior and keep the answer short."
+        ),
+        verify=_verify_gmail_or_fanout,
+        max_tool_rounds=4,
+    ),
 ]
 
 
@@ -237,6 +314,7 @@ class Command(BaseCommand):
             raise CommandError("OPENAI_API_KEY is required to run llm_toolloop_real_smoke")
         profile = self._ensure_profile()
         runner = LLMRunner()
+        _google_account, google_run = _ensure_google_orchestration_run("gmail_or_fanout", profile.model)
         sanity = asyncio.run(runner.run(prompt="Say 'hi'", profile_name=profile.name, tools=None))
         if sanity["status"] != "completed":
             self.stdout.write(scrub_sensitive_text(f"Sanity check failed run_id={sanity['run_id']} error={sanity['error']}"))
@@ -249,6 +327,7 @@ class Command(BaseCommand):
                     profile_name=profile.name,
                     tools=get_tool_schemas(),
                     max_tool_rounds=scenario.max_tool_rounds,
+                    orchestration_run_id=str(google_run.id) if scenario.name == "Gmail OR fan-out" else None,
                 )
             )
             run = LLMRun.objects.get(id=result["run_id"])

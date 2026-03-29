@@ -188,11 +188,16 @@ class ToolApprovalGrantAdmin(admin.ModelAdmin):
 
 @admin.register(ToolCall)
 class ToolCallAdmin(admin.ModelAdmin):
-    list_display = ("id", "tool_name", "status", "requires_approval", "approval_grant", "run_link")
+    list_display = ("id", "tool_name", "status", "requires_approval", "approval_grant", "updated_at_display", "run_link")
     list_filter = ("status", "requires_approval")
     search_fields = ("id", "tool_name", "run__id")
+    ordering = ("-updated_at",)
 
     def run_link(self, obj: ToolCall) -> str:
         url = reverse("ui:run_detail", kwargs={"run_id": obj.run_id})
         return format_html('<a href="{}">{}</a>', url, obj.run_id)
     run_link.short_description = "Run"
+
+    @admin.display(description="Updated At", ordering="updated_at")
+    def updated_at_display(self, obj: ToolCall) -> str:
+        return format_datetime_eastern(obj.updated_at)

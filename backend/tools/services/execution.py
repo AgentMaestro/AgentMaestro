@@ -29,11 +29,13 @@ _NATIVE_TOOL_NAMES = {
     "search_memory",
     "get_current_datetime",
     "schedule_task",
+    "get_scheduled_task",
     "edit_scheduled_task",
     "disable_scheduled_task",
     "enable_scheduled_task",
     "list_scheduled_tasks",
     "spawn_subrun",
+    "send_telegram",
     "google_bridge",
     "scheduled_headless_run_gate",
 }
@@ -596,7 +598,11 @@ def execute_tool_call(tool_call_id: str) -> ToolCall:
         exit_code = data.get("exit_code")
         stdout = data.get("stdout") or ""
         stderr = data.get("stderr") or ""
-        result_payload = data.get("result") or {}
+        raw_result_payload = data.get("result") or {}
+        if isinstance(raw_result_payload, dict) and isinstance(raw_result_payload.get("tool_result"), dict):
+            result_payload = raw_result_payload.get("tool_result") or {}
+        else:
+            result_payload = raw_result_payload
     except httpx.HTTPStatusError as exc:
         error_payload = _toolrunner_error_payload(exc.response)
         result_payload = {

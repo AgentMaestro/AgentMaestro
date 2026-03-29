@@ -16,7 +16,9 @@ from memory.scheduled_tasks import (
     claim_due_scheduled_tasks,
     cleanup_scheduled_task_active_runs,
     create_scheduled_task,
+    get_scheduled_task,
     list_scheduled_tasks,
+    serialize_scheduled_task,
     update_scheduled_task,
 )
 from memory.tasks import run_due_scheduled_tasks
@@ -71,6 +73,14 @@ def test_create_scheduled_task_creates_eposodic_memory_and_lists_it(scheduled_ta
 
     listed = list_scheduled_tasks(agent=agent, enabled_only=True, limit=5)
     assert [task.id for task in listed] == [scheduled_task.id]
+    serialized = serialize_scheduled_task(scheduled_task)
+    assert "execution_payload" not in serialized
+    detail = get_scheduled_task(agent=agent, scheduled_task_id=str(scheduled_task.id))
+    assert detail is not None
+    assert serialize_scheduled_task(detail, include_execution_payload=True)["execution_payload"] == {
+        "location": "Richmond, VA",
+        "source_domain": "weather.com",
+    }
 
 
 @override_settings(TIME_ZONE="Europe/London")
@@ -122,6 +132,11 @@ def test_edit_disable_enable_scheduled_task_round_trip(scheduled_task_agent):
     assert enabled.enabled is True
     assert enabled.next_run_at is not None
     assert [task.id for task in list_scheduled_tasks(agent=agent, enabled_only=True, limit=5)] == [scheduled_task.id]
+    listed_with_payload = serialize_scheduled_task(
+        list_scheduled_tasks(agent=agent, enabled_only=True, limit=5)[0],
+        include_execution_payload=True,
+    )
+    assert listed_with_payload["execution_payload"] == {"location": "Richmond, VA", "source_domain": "weather.com"}
 
 
 

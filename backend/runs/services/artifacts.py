@@ -128,6 +128,14 @@ def delete_run_artifact(artifact: Artifact) -> None:
     )
 
 
+def _delete_artifact_storage(storage_path: Path) -> None:
+    if storage_path.exists():
+        try:
+            storage_path.unlink()
+        except IsADirectoryError:
+            shutil.rmtree(storage_path, ignore_errors=True)
+
+
 def serialize_artifact(artifact: Artifact) -> dict[str, object]:
     storage_path = Path(str(artifact.storage_path or ""))
     size_bytes = None
@@ -237,8 +245,10 @@ def purge_consumed_artifacts(*, older_than_days: int = 30, limit: int | None = N
 
         artifact_id = str(artifact.id)
         run_id = str(artifact.run_id)
+        storage_path = Path(str(artifact.storage_path or ""))
         with transaction.atomic():
             artifact.delete()
+        _delete_artifact_storage(storage_path)
         _cleanup_artifact_directory(artifact)
         deleted += 1
         logger.info(

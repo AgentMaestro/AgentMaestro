@@ -66,10 +66,12 @@ _FALLBACK_TOOL_NAMES = [
     "remember",
     "search_memory",
     "schedule_task",
+    "get_scheduled_task",
     "edit_scheduled_task",
     "disable_scheduled_task",
     "enable_scheduled_task",
     GOOGLE_BRIDGE_TOOL_NAME,
+    "send_telegram",
     "list_scheduled_tasks",
     "get_current_datetime",
     "spawn_subrun",
@@ -86,6 +88,7 @@ _FALLBACK_TOOL_NAMES = [
     "git_apply",
     "git_branch_create",
     "git_checkout",
+    "git_commit",
     "git_push",
     "run_command",
     "run_command_safe",
@@ -232,6 +235,13 @@ _TOOL_TEMPLATES: Dict[str, Dict[str, Any]] = {
         "absolute_root": "C:\\tmp\\agentmaestro\\smoke_tools",
         "patch_unified": "--- a/hello.py\n+++ b/hello.py\n@@ -1,1 +1,1 @@\n-print('hello')\n+print('hello world')\n",
     },
+    "send_telegram": {
+        "target": "paired",
+        "name": "system - task complete",
+        "text": "Hello from the agent.",
+        "parse_mode": "HTML",
+        "disable_web_page_preview": True,
+    },
     "shell_exec": {
         "cmd": ["powershell", "-NoProfile", "-Command", "Get-Location"],
         "cwd": ".",
@@ -357,10 +367,17 @@ _TOOL_TEMPLATES: Dict[str, Dict[str, Any]] = {
             "repo_dir": "C:/Dev/AgentMaestro",
         },
     },
+    "get_scheduled_task": {"scheduled_task_id": "scheduled-task-id-from-list"},
     "disable_scheduled_task": {"scheduled_task_id": "scheduled-task-id-from-list"},
     "enable_scheduled_task": {"scheduled_task_id": "scheduled-task-id-from-list"},
     GOOGLE_BRIDGE_TOOL_NAME: deepcopy(GOOGLE_BRIDGE_TOOL_EXAMPLES),
-    "list_scheduled_tasks": {"enabled_only": True, "limit": 10},
+    "send_telegram": {
+        "target": "paired",
+        "text": "Hello from the agent.",
+        "parse_mode": "HTML",
+        "disable_web_page_preview": True,
+    },
+    "list_scheduled_tasks": {"enabled_only": True, "limit": 10, "include_execution_payload": True},
     "spawn_subrun": {
         "input_text": "Research the current weather outlook for Ocala tennis conditions and return a concise summary.",
         "metadata": {"purpose": "focused research", "topic": "weather"},
@@ -504,6 +521,7 @@ _TOOL_RESPONSE_FIELDS: Dict[str, Dict[str, str]] = {
         "tool": "The tool name.",
         "compact": "Whether compact mode was requested. When true, the compact envelope is returned and legacy top-level fields are not included.",
         "query": "The search text, glob, or regex that was searched.",
+        "scope": "The scope value supplied by the caller.",
         "requested_scope": "The scope value supplied by the caller.",
         "resolved_scope": "The exact filesystem root or file that was searched.",
         "items": "Standardized match records with path, name, kind, and score. Ordering is stable and sorted by score, then path.",
@@ -518,9 +536,10 @@ _TOOL_RESPONSE_FIELDS: Dict[str, Dict[str, str]] = {
         "tool": "The tool name.",
         "compact": "Whether compact mode was requested. When true, the compact envelope is returned and legacy top-level fields are not included.",
         "query": "The scanned path or directory.",
+        "scope": "The scope value supplied by the caller.",
         "requested_scope": "The scope value supplied by the caller.",
         "resolved_scope": "The exact filesystem root or file that was scanned.",
-        "items": "Standardized symbol records with path, name, kind, line, column, container, and signature. Ordering is stable and grouped by path.",
+        "items": "Standardized symbol records with path, name, kind, line, column, container/scope, and signature. Ordering is stable and grouped by path.",
         "returned_count": "Number of items actually returned in `items`.",
         "max_results_used": "The effective max_results limit applied to this result.",
         "selection": "Primary selected symbol record when the tool has one. Compact mode trims this to a short summary with path, name, kind, line, column, container/scope, signature, and score when available.",
@@ -532,6 +551,7 @@ _TOOL_RESPONSE_FIELDS: Dict[str, Dict[str, str]] = {
         "tool": "The tool name.",
         "compact": "Whether compact mode was requested. When true, the compact envelope is returned and legacy top-level fields are not included.",
         "query": "The requested symbol name (`symbol_name`).",
+        "scope": "The scope value supplied by the caller.",
         "requested_scope": "The scope value supplied by the caller.",
         "resolved_scope": "The exact filesystem root or file searched for the lookup.",
         "items": "Standardized symbol records with path, name, kind, line, column, container, score, and signature. Ordering is stable and exact matches are ranked before fuzzy matches.",
@@ -546,6 +566,7 @@ _TOOL_RESPONSE_FIELDS: Dict[str, Dict[str, str]] = {
         "tool": "The tool name.",
         "compact": "Whether compact mode was requested. When true, the compact envelope is returned and legacy top-level fields are not included.",
         "query": "The searched symbol name.",
+        "scope": "The scope value supplied by the caller.",
         "requested_scope": "The scope value supplied by the caller.",
         "resolved_scope": "The exact filesystem root or file searched for the lookup.",
         "items": "Standardized reference records with path, name, kind, line, column, and a short line-numbered excerpt. Ordering is stable and follows scan order with deterministic sorting.",
@@ -560,6 +581,7 @@ _TOOL_RESPONSE_FIELDS: Dict[str, Dict[str, str]] = {
         "tool": "The tool name.",
         "compact": "Whether compact mode was requested. When true, the compact envelope is returned and legacy top-level fields are not included.",
         "query": "The requested symbol name.",
+        "scope": "The scope value supplied by the caller.",
         "requested_scope": "The scope value supplied by the caller.",
         "resolved_scope": "The exact filesystem root or file searched for the lookup.",
         "items": "Standardized candidate records with path, name, kind, line, column, container, score, signature, and a short line-numbered excerpt. Ordering is stable and the best match is first.",
@@ -659,9 +681,44 @@ _TOOL_RESPONSE_FIELDS: Dict[str, Dict[str, str]] = {
         "last_error": "The last recorded scheduling error if available.",
     },
     GOOGLE_BRIDGE_TOOL_NAME: GOOGLE_BRIDGE_TOOL_RESPONSE_FIELDS,
+    "send_telegram": {
+        "target": "The delivery target, currently paired only.",
+        "name": "Optional lower-case label prepended to the message with a local timestamp.",
+        "text": "The message body sent to Telegram.",
+        "parse_mode": "Telegram parse mode used for the message, if any.",
+        "disable_web_page_preview": "Whether link previews were disabled.",
+        "disable_notification": "Whether the message was sent silently.",
+        "reply_to_message_id": "Reply target message ID, if provided.",
+        "allow_sending_without_reply": "Whether Telegram was allowed to send without the referenced reply message.",
+        "protect_content": "Whether content protection was requested.",
+        "message_thread_id": "Forum thread ID, if provided.",
+        "reply_markup": "Telegram reply markup payload, if provided.",
+        "conversation_id": "Internal paired conversation identifier used for delivery.",
+        "chat_id": "Telegram chat ID resolved from the paired conversation.",
+        "telegram_message_id": "The message ID returned by Telegram, when available.",
+        "comms_message_id": "Internal comms message identifier created for the delivery.",
+        "control_message_id": "Optional mirrored control message identifier.",
+        "delivered": "True when the paired Telegram conversation accepted the message.",
+    },
+    "get_scheduled_task": {
+        "scheduled_task_id": "Scheduled-task identifier returned by list_scheduled_tasks or schedule_task.",
+        "title": "Stored human-friendly task title.",
+        "task_type": "The stored task type, which is always other_task.",
+        "enabled": "Whether the recurring task is active.",
+        "execution_payload": "The stored scheduled-task payload that will be available to the next run.",
+        "recurrence_rule_id": "Linked recurrence-rule identifier for the task.",
+        "schedule_kind": "The recurring schedule model used by the task.",
+        "execution_mode": "The scheduled-task execution mode, always headless_run.",
+        "timezone": "The IANA timezone used to calculate due times.",
+        "local_time": "A compatibility wall-clock time derived from the recurrence rule.",
+        "recurrence_summary": "Human-readable recurrence description for operators and UIs.",
+        "next_run_at": "The next UTC datetime when the task is due.",
+        "last_result_summary": "The last completion summary if available.",
+        "last_error": "The last recorded scheduling error if available.",
+    },
     "list_scheduled_tasks": {
         "count": "Number of scheduled tasks returned.",
-        "results": "Concise scheduled-task records ordered by next run time, including scheduled_task_id, execution mode, and run linkage.",
+        "results": "Concise scheduled-task records ordered by next run time, including scheduled_task_id, execution mode, run linkage, and optionally execution_payload when requested.",
         "scheduled_task_id": "Stable task identifier included in each result row for follow-up edit, disable, or enable actions.",
     },
     "spawn_subrun": {
@@ -936,7 +993,8 @@ _TOOL_ADDITIONAL_DOCS: Dict[str, str] = {
     "QUERY NOTES:\n"
     "- `query` can be a literal filename, partial path, glob-style pattern, or regex.\n"
     "- This is a path/name search only; it does not inspect file contents.\n"
-    "- Search one path/name query at a time. For unrelated targets, make separate calls.\n"
+    "- Search one path/name query at a time.\n"
+    "- If you need multiple targets, make separate calls or use regex mode with `|` for alternatives.\n"
     "- Use `is_regex=true` for regex searches; use `|` for alternatives instead of the word `OR`, for example `code_navigation.py|run_command_safe`.\n"
     "- In regex mode, exact path/name hits still sort ahead of fuzzy or partial matches.\n",
     "list_symbols": "\n\nPATH NOTES:\n"
@@ -990,6 +1048,7 @@ _TOOL_ADDITIONAL_DOCS: Dict[str, str] = {
     "- Use the navigation tools sequentially when the next step depends on the prior result; otherwise independent navigation lookups can be parallelized.\n\n"
     "RESULT NOTES:\n"
     "- Reference hits include the file path, line, column, reference kind, and nearby context.\n"
+    "- The first hit is surfaced in `selection` for quick triage.\n"
     "- `context_lines` controls the amount of surrounding source shown for each hit.",
     "jump_to_symbol": "\n\nPATH NOTES:\n"
     "- `scope` is the canonical name for the jump scope.\n"
@@ -1122,7 +1181,12 @@ _TOOL_ADDITIONAL_DOCS: Dict[str, str] = {
     "- If a timezone argument is omitted, the bridge assumes the local Tango timezone from `TIME_ZONE` / `settings.TIME_ZONE` rather than UTC.\n"
     "- If the schedule depends on a relative date like tomorrow or next Friday and the current local date is not already known, call `get_current_datetime` first and anchor the schedule in that local time.\n"
     "- Use `title` and `execution_payload` to describe the recurring job clearly so the future headless run has enough context.\n"
+    "- Use `get_scheduled_task` when you want to preview a single task's full payload before editing it.\n"
     "- list_scheduled_tasks already returns scheduled_task_id, so use that identifier for future edit, disable, or enable operations.\n",
+    "get_scheduled_task": "\n\nSCHEDULING NOTES:\n"
+    "- `get_scheduled_task` returns the full stored task record for a single `scheduled_task_id`.\n"
+    "- Use this before editing when you want to preview the current `execution_payload` and recurrence details safely.\n"
+    "- Use `scheduled_task_id` from `list_scheduled_tasks` or `schedule_task` to target the task.\n",
     "edit_scheduled_task": "\n\nSCHEDULING NOTES:\n"
     "- `edit_scheduled_task` updates an existing scheduled task without creating a new one.\n"
     "- Use `scheduled_task_id` from `list_scheduled_tasks` or `schedule_task` to target the task.\n"
@@ -1135,12 +1199,25 @@ _TOOL_ADDITIONAL_DOCS: Dict[str, str] = {
     "enable_scheduled_task": "\n\nSCHEDULING NOTES:\n"
     "- `enable_scheduled_task` reactivates a disabled task and recomputes its next run time from the stored recurrence rule.\n"
     "- Use `scheduled_task_id` from `list_scheduled_tasks` or `schedule_task`.\n",
+    "list_scheduled_tasks": "\n\nSCHEDULING NOTES:\n"
+    "- `list_scheduled_tasks` returns lightweight rows for browsing scheduled work.\n"
+    "- Set `include_execution_payload=true` when you want to preview the stored payload before editing or rerunning a task.\n"
+    "- Use `scheduled_task_id` from the list results to target later edit, disable, or enable operations.\n",
     GOOGLE_BRIDGE_TOOL_NAME: "\n\nGOOGLE BRIDGE NOTES:\n"
-    "- Use this tool for direct Google Gmail, Gmail settings filter, and Calendar reads and writes from the agent, plus Gmail draft/send/trash/delete workflows.\n"
+    "- Use this tool for direct Google Gmail, Gmail settings filter, Calendar, Drive, Docs, and Sheets reads and writes from the agent, plus Gmail draft/send workflows and Gmail trash/delete workflows. Calendar create, update, and delete workflows are supported.\n"
     "- The payload is JSON-in / JSON-out and matches the same bridge contract used by scheduled headless runs.\n"
     "- Current execution supports Gmail reads, Gmail draft/send/trash/delete workflows, Gmail settings filter management, and Calendar create, update, and delete workflows. For Gmail list reads, a bare list defaults to unread messages. Use include_read=true when you want all mail, or provide a query/label filter for a narrower mailbox view. Gmail list/read query filters support exact sender, sender domain, subject, and top-level OR splitting across those clauses. Use account_scope=all when you want the bridge to fan out across every active connected account and merge the results. For Gmail trash/delete queries, use account_scope=all when you want the same query to apply across every connected account. For Calendar list reads, omit calendar_id or use all to query every calendar on the connected account; primary stays available when you explicitly want one calendar. Future Google surfaces can reuse the same tool name and payload contract.\n"
     "- For Gmail reads, use query filters such as from:info@airbnb.com for exact sender, from:airbnb.com for sender-domain, subject:(\"Airbnb\") for subject search, plus label_ids or include_read for mailbox filtering. Gmail settings filters use criteria and action objects instead of the top-level query field, criteria.query is planned before filter creation so OR clauses can fan out into multiple candidate filters or fail fast when the clause cap is exceeded, and dry_run previews the candidate match set before writing. For Gmail trash/delete, never use read as a lookup step. OR is supported for Gmail list/read searches and bulk trash/delete cleanup only at the top level, where it is split into separate Gmail clauses before merging or deleting. Nested OR inside parentheses is rejected as malformed. For bulk cleanup, choose the Gmail query shape that matches your intent: subject:(\"Airbnb\") for subject-based cleanup, from:info@airbnb.com for exact sender cleanup, and from:airbnb.com for sender-domain cleanup. If you need multiple cleanup targets in one call, join them with OR and the bridge will split them into separate Gmail clauses as long as each clause is complete. For Gmail writes and Calendar writes, if a timezone argument is omitted, the bridge assumes the local Tango timezone from `TIME_ZONE` / `settings.TIME_ZONE` rather than UTC. If a date depends on 'tomorrow', 'next Friday', or another relative expression and the current local date is not already known, call `get_current_datetime` first and anchor the schedule in that local time. For Gmail writes, create a draft first and then send it when ready. The preferred pattern in each case is action_kind=delete with operation=trash (or omit operation and let it default) plus the matching Gmail query. Trash is the safe default; set delete_mode=delete only when you explicitly want permanent deletion. Gmail OR fan-out is capped at 10 top-level clauses by default; set TOOLRUNNER_GMAIL_OR_CLAUSE_LIMIT to adjust it. If the agent accidentally writes `from:@domain.com` or adds stray spaces after query tokens, the bridge normalizes that to the canonical Gmail form.\n"
     "- Use `steps` for ordered multi-step plans when you need to combine multiple Google reads in one call.\n",
+    "send_telegram": "\n\nTELEGRAM NOTES:\n"
+    "- Use this tool to send a direct message to the agent's paired Telegram conversation.\n"
+    "- The target is currently paired only; the backend resolves the Telegram chat server-side.\n"
+    "- If `name` is provided, the backend prepends a bold lower-case label line with a local 12-hour timestamp, for example `system - task complete   10:24am`.\n"
+    "- The arguments mirror Telegram's `sendMessage` fields for text, formatting, link previews, notification behavior, reply threading, content protection, and reply markup.\n",
+    "git_commit": "\n\nPATH NOTES:\n"
+    "- `repo_dir` is the repository root or repo-relative working directory.\n"
+    "- `paths_to_add` should point to files inside the selected repository.\n"
+    "- Use `add_all=true` only when you intentionally want every tracked change included.\n",
     "search_memory": "\n\nMEMORY NOTES:\n"
     "- `search_memory` performs simple text lookup over durable memory records.\n"
     "- Narrow by `scope_type`, `scope_id`, and `memory_kind` when the target scope is known.\n"

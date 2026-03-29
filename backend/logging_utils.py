@@ -13,7 +13,8 @@ _URL_RE = re.compile(r"https?://[^\s<>\"]+")
 _BEARER_RE = re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._\-~+/=]{12,}")
 _OPENAI_KEY_RE = re.compile(r"\bsk-(?:proj-)?[A-Za-z0-9_-]{20,}\b")
 _SLACK_TOKEN_RE = re.compile(r"\bxox[baprs]-[A-Za-z0-9-]{10,}\b")
-_GITHUB_TOKEN_RE = re.compile(r"\bgh[pousr]_[A-Za-z0-9_]{20,}\b")
+_SLACK_LEGACY_TOKEN_RE = re.compile(r"\bslack-token-[A-Za-z0-9._\-~+/=]{8,}\b")
+_GITHUB_TOKEN_RE = re.compile(r"\bgh[pousr]_[A-Za-z0-9_]{10,}\b")
 _TELEGRAM_TOKEN_RE = re.compile(r"\b\d{6,}:[A-Za-z0-9_-]{20,}\b")
 _SECRET_LABEL_RE = re.compile(
     r"(?i)\b(token|secret|api[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret)\s*([:=])\s*([^\s,;]+)"
@@ -40,6 +41,7 @@ def scrub_sensitive_text(text: str | None) -> str:
     protected = _BEARER_RE.sub("Bearer [REDACTED]", protected)
     protected = _OPENAI_KEY_RE.sub("[REDACTED]", protected)
     protected = _SLACK_TOKEN_RE.sub("[REDACTED]", protected)
+    protected = _SLACK_LEGACY_TOKEN_RE.sub("[REDACTED]", protected)
     protected = _GITHUB_TOKEN_RE.sub("[REDACTED]", protected)
     protected = _TELEGRAM_TOKEN_RE.sub("[REDACTED]", protected)
     protected = _SECRET_LABEL_RE.sub(

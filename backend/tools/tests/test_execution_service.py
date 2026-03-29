@@ -184,6 +184,58 @@ def test_execute_tool_call_success(monkeypatch, fake_result_bus):
     TOOLRUNNER_OUTPUT_LIMIT=128,
     TOOLRUNNER_HTTP_TIMEOUT=10,
 )
+def test_execute_tool_call_unwraps_toolrunner_wrapper_for_file_read(monkeypatch, fake_result_bus):
+    tool_call = _build_test_run("file-read-wrapper")
+    response = httpx.Response(
+        200,
+        json={
+            "request_id": str(uuid.uuid4()),
+            "status": "COMPLETED",
+            "exit_code": None,
+            "stdout": "",
+            "stderr": "",
+            "duration_ms": 12,
+            "result": {
+                "tool": "file_read",
+                "policy": {"repo_root": "C:\\Dev\\AgentMaestro"},
+                "tool_result": {
+                    "ok": True,
+                    "result": {
+                        "requested_path": "C:/Dev/AgentMaestro/AGENTS.md",
+                        "content": "# AGENTS.md\n",
+                    },
+                    "meta": {"policy": {"allowed_roots": ["C:\\Dev"]}},
+                },
+            },
+        },
+    )
+    monkeypatch.setattr("tools.services.execution.httpx.Client", lambda *args, **kwargs: DummyClient(response))
+
+    execute_tool_call(str(tool_call.id))
+
+    tool_call.refresh_from_db()
+    assert tool_call.status == ToolCall.Status.COMPLETED
+    assert tool_call.result == {
+        "ok": True,
+        "result": {
+            "requested_path": "C:/Dev/AgentMaestro/AGENTS.md",
+            "content": "# AGENTS.md\n",
+        },
+        "meta": {"policy": {"allowed_roots": ["C:\\Dev"]}},
+    }
+
+    calls, _layer = fake_result_bus
+    payload = calls[0][2]
+    assert payload["result"] == tool_call.result
+
+
+@override_settings(
+    TOOLRUNNER_URL="http://example/v1/execute",
+    TOOLRUNNER_SECRET="test-secret",
+    TOOLRUNNER_TIMEOUT=5,
+    TOOLRUNNER_OUTPUT_LIMIT=128,
+    TOOLRUNNER_HTTP_TIMEOUT=10,
+)
 def test_execute_tool_call_sanitizes_nul_bytes_before_save(monkeypatch, fake_result_bus):
     tool_call = _build_test_run("nul-bytes")
     response = httpx.Response(
@@ -512,3 +564,75 @@ def test_execute_native_scheduled_task_management_tools_skip_toolrunner_http(mon
         assert tool_call.result["scheduled_task_id"] == str(scheduled_task.id)
         assert tool_call.result["enabled"] is expected_enabled
         assert scheduled_task.enabled is expected_enabled
+
+
+@override_settings(
+    TOOLRUNNER_URL="http://example/v1/execute",
+    TOOLRUNNER_SECRET="test-secret",
+    TOOLRUNNER_TIMEOUT=5,
+    TOOLRUNNER_OUTPUT_LIMIT=128,
+    TOOLRUNNER_HTTP_TIMEOUT=10,
+)
+def test_execute_native_send_telegram_skips_toolrunner_http(monkeypatch, fake_result_bus):
+    tool_call = _build_test_run("native-send-telegram")
+    tool_call.tool_name = "send_telegram"
+    tool_call.args = {
+        "target": "paired",
+        "name": "system - task complete",
+        "text": "Hello from the agent.",
+        "parse_mode": "HTML",
+        "disable_web_page_preview": True,
+    }
+    tool_call.save(update_fields=["tool_name", "args", "updated_at"])
+    ToolDefinition.objects.create(
+        workspace=tool_call.run.workspace,
+        name="send_telegram",
+        enabled=True,
+        args_schema={
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["target", "text"],
+            "properties": {
+                "target": {"type": "string", "enum": ["paired"]},
+                "name": {"type": "string"},
+                "text": {"type": "string"},
+                "parse_mode": {"type": "string"},
+                "disable_web_page_preview": {"type": "boolean"},
+            },
+        },
+    )
+
+    def _fail_client(*args, **kwargs):
+        raise AssertionError("http client should not be used for native telegram tools")
+
+    captured: dict[str, object] = {}
+
+    def fake_send(*, run_id: str, text: str, **kwargs):
+        captured["run_id"] = run_id
+        captured["text"] = text
+        captured["kwargs"] = kwargs
+        return {
+            "target": "paired",
+            "delivered": True,
+            "conversation_id": "conversation-1",
+            "chat_id": "chat-1",
+            "telegram_message_id": "message-1",
+            "comms_message_id": "comms-1",
+            "control_message_id": None,
+            "response": {"message_id": "message-1"},
+        }
+
+    monkeypatch.setattr("tools.services.execution.httpx.Client", _fail_client)
+    monkeypatch.setattr("tools.services.native_tools.send_paired_telegram_message", fake_send)
+
+    execute_tool_call(str(tool_call.id))
+
+    tool_call.refresh_from_db()
+    assert tool_call.status == ToolCall.Status.COMPLETED
+    assert tool_call.result["delivered"] is True
+    assert tool_call.result["chat_id"] == "chat-1"
+    assert captured["run_id"] == str(tool_call.run_id)
+    assert captured["kwargs"]["name"] == "system - task complete"
+    assert captured["text"] == "Hello from the agent."
+    assert captured["kwargs"]["parse_mode"] == "HTML"
+    assert captured["kwargs"]["disable_web_page_preview"] is True

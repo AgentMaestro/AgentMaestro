@@ -90,6 +90,88 @@ def test_parse_query_supports_not_and_implicit_and():
     }
 
 
+def test_parse_query_supports_contains_operator():
+    node = parse_query("name contains 'README'")
+
+    assert node == QueryField(
+        name="name",
+        value=QueryTerm("README"),
+        operator="contains",
+    )
+    assert node.to_dict() == {
+        "type": "field",
+        "name": "name",
+        "value": {"type": "term", "value": "README"},
+        "operator": "contains",
+    }
+
+
+def test_parse_query_supports_equals_alias_for_field_clause():
+    node = parse_query("mimeType = 'application/vnd.google-apps.document'")
+
+    assert node == QueryField(
+        name="mimetype",
+        value=QueryTerm("application/vnd.google-apps.document"),
+    )
+    assert node.to_dict() == {
+        "type": "field",
+        "name": "mimetype",
+        "value": {"type": "term", "value": "application/vnd.google-apps.document"},
+    }
+
+
+def test_parse_query_supports_drive_comparison_operators():
+    node = parse_query("modifiedTime >= '2024-01-01T00:00:00Z'")
+
+    assert node == QueryField(
+        name="modifiedtime",
+        value=QueryTerm("2024-01-01T00:00:00Z"),
+        operator=">=",
+    )
+    assert node.to_dict() == {
+        "type": "field",
+        "name": "modifiedtime",
+        "value": {"type": "term", "value": "2024-01-01T00:00:00Z"},
+        "operator": ">=",
+    }
+
+
+def test_parse_query_supports_additional_drive_comparison_operators():
+    node = parse_query("createdTime <= '2024-02-01T00:00:00Z' AND trashed != false")
+
+    assert node == QueryAnd(
+        (
+            QueryField(
+                name="createdtime",
+                value=QueryTerm("2024-02-01T00:00:00Z"),
+                operator="<=",
+            ),
+            QueryField(
+                name="trashed",
+                value=QueryTerm("false"),
+                operator="!=",
+            ),
+        )
+    )
+    assert node.to_dict() == {
+        "type": "and",
+        "items": [
+            {
+                "type": "field",
+                "name": "createdtime",
+                "value": {"type": "term", "value": "2024-02-01T00:00:00Z"},
+                "operator": "<=",
+            },
+            {
+                "type": "field",
+                "name": "trashed",
+                "value": {"type": "term", "value": "false"},
+                "operator": "!=",
+            },
+        ],
+    }
+
+
 def test_parse_query_returns_empty_node_for_blank_input():
     assert parse_query("   ") == QueryEmpty()
 

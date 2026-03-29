@@ -20,6 +20,7 @@ from llm.services.tool_code import extract_code_like_tool_calls
 from llm.services.tool_schemas import get_tool_schemas
 from llm.services.toolrunner_bridge import run_tool
 from runs.services.input_items import build_ws_request_input_items
+from runs.services.tool_output import compact_tool_output_text
 
 logger = get_app_logger(__name__)
 HEADLESS_WS_INIT_LOG_PREFIX = "[HEADLESS-WS-INIT]"
@@ -328,7 +329,7 @@ class LLMRunner:
                                 error=error_txt,
                             )
 
-                            tool_message_content = json.dumps(result_payload, ensure_ascii=False)
+                            tool_message_content = compact_tool_output_text(tool_name, result_payload)
                             await self._persist_message(
                                 run,
                                 MessageRole.TOOL,

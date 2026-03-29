@@ -84,12 +84,24 @@ class ToolSchemaCoverageTests(TestCase):
         self.assertIn("google_bridge", fallback_names)
         self.assertFalse(registry_tools["google_bridge"]["requires_approval"])
 
+    def test_send_telegram_tool_is_registered(self):
+        registry_tools = {tool["name"]: tool for group in TOOL_REGISTRY for tool in group["tools"]}
+        fallback_names = {tool["name"] for tool in get_tool_schemas()}
+
+        self.assertIn("send_telegram", registry_tools)
+        self.assertIn("send_telegram", fallback_names)
+        self.assertEqual(registry_tools["send_telegram"]["risk"], ToolRisk.ELEVATED)
+        self.assertIn("target", registry_tools["send_telegram"]["args_schema"]["properties"])
+        self.assertIn("text", registry_tools["send_telegram"]["args_schema"]["properties"])
+        self.assertIn("name", registry_tools["send_telegram"]["args_schema"]["properties"])
+
     def test_scheduled_task_management_tools_are_registered(self):
         registry_tools = {tool["name"]: tool for group in TOOL_REGISTRY for tool in group["tools"]}
         fallback_names = {tool["name"] for tool in get_tool_schemas()}
 
         for tool_name in {
             "schedule_task",
+            "get_scheduled_task",
             "edit_scheduled_task",
             "disable_scheduled_task",
             "enable_scheduled_task",
@@ -106,6 +118,23 @@ class ToolSchemaCoverageTests(TestCase):
         self.assertIn("get_current_datetime", registry_tools)
         self.assertIn("get_current_datetime", fallback_names)
         self.assertFalse(registry_tools["get_current_datetime"]["requires_approval"])
+
+    def test_scheduled_task_detail_tool_is_registered(self):
+        registry_tools = {tool["name"]: tool for group in TOOL_REGISTRY for tool in group["tools"]}
+        fallback_names = {tool["name"] for tool in get_tool_schemas()}
+        schema_tools = {tool["name"]: tool for tool in get_tool_schemas()}
+
+        self.assertIn("get_scheduled_task", registry_tools)
+        self.assertIn("get_scheduled_task", fallback_names)
+        self.assertFalse(registry_tools["get_scheduled_task"]["requires_approval"])
+        self.assertIn(
+            "execution_payload",
+            schema_tools["get_scheduled_task"]["response_fields"],
+        )
+        self.assertIn(
+            "include_execution_payload",
+            registry_tools["list_scheduled_tasks"]["args_schema"]["properties"],
+        )
 
     def test_code_navigation_tools_are_registered(self):
         registry_tools = {tool["name"]: tool for group in TOOL_REGISTRY for tool in group["tools"]}

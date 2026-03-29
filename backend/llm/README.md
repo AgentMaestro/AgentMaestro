@@ -217,6 +217,15 @@ Current fallback tool list:
 - `lint_runner`
 - `typecheck_runner`
 
+Google Bridge notes:
+
+- `google_bridge` is the model-visible JSON bridge for Gmail, Gmail settings filters, Calendar, Drive, Docs, and Sheets.
+- Drive queries support native Drive syntax such as `name contains 'README'`, `mimeType = 'application/vnd.google-apps.document'`, `modifiedTime >= '2024-01-01T00:00:00Z'`, `createdTime < '2024-02-01T00:00:00Z'`, and `trashed = false`.
+- Drive clauses should be joined with `and`, not comma-separated or space-separated.
+- `mimeType` is accepted as an alias for `mime_type` in Drive query payloads.
+- Docs and Sheets support direct `file_id` reads plus export workflows, with `document_id` and `spreadsheet_id` as aliases where appropriate.
+- When `google_bridge` returns a file result, it preserves the structured payload needed for attachment normalization and artifact handling.
+
 `webhook` is cataloged separately but is not part of the fallback `get_tool_schemas()` list yet because it still uses the dedicated ToolRunner webhook endpoint rather than the normal `/v1/run/tool` dispatch path.
 
 Use `python manage.py llm_print_tool_templates` to print each schema together with an example argument dict. Copy the example keys directly into prompts so the bridge does not reject malformed calls (e.g., `file_write` uses `"path"`, not `"filename"`).
@@ -252,6 +261,8 @@ Use short prompts and stop after the first failure. A compact five-tool pass tha
 3. `search_code`: "Find `OPENAI_TRANSPORT`. Reply with the file path only."
 4. `remember`: "Remember: keep answers short. Reply: saved."
 5. `run_tests`: "Run the smallest safe smoke test. Reply pass/fail only."
+6. `google_bridge`: "Use google_bridge once to run a Drive list search with account_scope=primary, max_results=50, and a query of name contains 'README' and mimeType = 'application/vnd.google-apps.document' and trashed = false. Your goal is to confirm the bridge renders native Drive q syntax with and between clauses, then report the rendered query and keep the answer short."
+7. `send_telegram`: "Use send_telegram with target=paired, optionally name='system - task complete', and a short message body. Reply with delivered/failed only."
 
 ## Console stream
 

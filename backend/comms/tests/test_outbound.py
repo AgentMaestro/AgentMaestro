@@ -1,15 +1,17 @@
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 import pytest
 
 from django.contrib.auth import get_user_model
 from django.utils import timezone
+from django.test import override_settings
 
 from agents.models import Agent
 from comms.models import CommsConversation, Transport, TransportEndpoint
 from comms.services.agent_chat_bridge import (
     active_run_for_agent,
     paired_conversation_for_agent,
+    send_paired_telegram_message,
     send_run_transport_message,
 )
 from comms.services.outbound import send_telegram_message, send_telegram_text
@@ -258,6 +260,58 @@ def test_send_run_transport_message_honors_explicit_parse_mode(monkeypatch):
     assert delivered is True
     assert captured["kwargs"]["parse_mode"] == "HTML"
     assert captured["text"] == "Hello *world*"
+
+
+@pytest.mark.django_db
+@override_settings(TIME_ZONE="America/New_York")
+def test_send_paired_telegram_message_prepends_name_and_timestamp(monkeypatch):
+    transport = Transport.objects.create(key="telegram", display_name="Telegram")
+    endpoint = TransportEndpoint.objects.create(transport=transport, kind="bot", config={})
+    control_conversation = ControlConversation.objects.create(kind="comms_mirror", title="Ops")
+    owner = get_user_model().objects.create_user(username="telegram-owner", password="x")
+    workspace = Workspace.objects.create(name="Workspace Telegram")
+    agent = Agent.objects.create(name="Agent One", slug="agent-one", owner=owner, workspace=workspace)
+    conversation = CommsConversation.objects.create(
+        transport=transport,
+        external_conversation_id="chat-1",
+        control_conversation=control_conversation,
+        endpoint=endpoint,
+    )
+    agent.default_conversation = conversation.control_conversation
+    agent.save(update_fields=["default_conversation"])
+    run = AgentRun.objects.create(
+        workspace=workspace,
+        agent=agent,
+        started_by=get_user_model().objects.create_user(username="tg-user", password="x"),
+        status=AgentRun.Status.RUNNING,
+        channel=AgentRun.Channel.DASHBOARD,
+        execution_mode=AgentRun.ExecutionMode.INTERACTIVE,
+        trigger_kind=AgentRun.TriggerKind.USER_CHAT,
+        input_text="telegram tool",
+    )
+    run.started_at = timezone.now()
+    run.save(update_fields=["started_at"])
+
+    captured: dict[str, object] = {}
+
+    def fake_send(conversation_arg, text, **kwargs):
+        captured["text"] = text
+        captured["kwargs"] = kwargs
+        return {"response": {"ok": True, "result": {"message_id": 777}}, "comms_message_id": 1, "control_message_id": 2}
+
+    fixed_local = timezone.make_aware(datetime(2026, 3, 29, 10, 24), timezone.get_current_timezone())
+    monkeypatch.setattr("comms.services.agent_chat_bridge.send_conversation_message", fake_send)
+    monkeypatch.setattr("comms.services.agent_chat_bridge.timezone.localtime", lambda dt: fixed_local)
+
+    payload = send_paired_telegram_message(
+        run_id=str(run.id),
+        text="Hello from the agent.",
+        name="System - Task Complete",
+    )
+
+    assert payload["delivered"] is True
+    assert captured["kwargs"]["parse_mode"] == "HTML"
+    assert captured["text"] == "<b>system - task complete   10:24am</b>\nHello from the agent."
 
 
 def test_render_mirror_telegram_html_flattens_headings_lists_blockquotes_tables_and_code_blocks():

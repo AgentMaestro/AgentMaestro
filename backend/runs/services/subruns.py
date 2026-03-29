@@ -35,6 +35,13 @@ NETWORK_ERROR_SUBRUN_FAILURE_THRESHOLD = 2
 logger = get_app_logger(__name__)
 
 
+def _trim_text(value: Any, limit: int) -> str:
+    text = str(value or "")
+    if len(text) <= limit:
+        return text
+    return f"{text[: max(0, limit - 3)].rstrip()}..."
+
+
 def _normalize_join_policy(value: str) -> str:
     normalized = str(value or SubrunLink.JoinPolicy.WAIT_ALL).strip().upper()
     mapping = {
@@ -88,6 +95,8 @@ def _build_subrun_event_payload(
         "child_run_id": str(child.id),
         "child_status": child.status,
         "ended_at": child.ended_at.isoformat() if child.ended_at else None,
+        "child_final_text": _trim_text(child.final_text, 2000),
+        "child_error_summary": _trim_text(child.error_summary, 600),
     }
     if child.correlation_id:
         payload["correlation_id"] = str(child.correlation_id)
@@ -205,6 +214,7 @@ def spawn_subrun(
     group_id: Optional[str] = None,
     schedule_child: bool = True,
     child_execution_mode: Optional[str] = None,
+    block_parent: bool = True,
 ) -> AgentRun:
     """
     Spawn a child run with a join policy; parents wait or resume according to the SubrunLink.
@@ -304,7 +314,7 @@ def spawn_subrun(
         correlation_id=correlation_identifier,
     )
 
-    if parent.status != AgentRun.Status.WAITING_FOR_SUBRUN:
+    if block_parent and parent.status != AgentRun.Status.WAITING_FOR_SUBRUN:
         transition_run(run_id=parent_run_id, new_status=AgentRun.Status.WAITING_FOR_SUBRUN)
 
     if schedule_child:
@@ -320,7 +330,7 @@ def complete_subrun(*, child_run_id: str, schedule_parent: bool = True) -> Optio
     """
     child = AgentRun.objects.select_for_update().get(id=child_run_id)
     parent = child.parent_run
-    if not parent or parent.status != AgentRun.Status.WAITING_FOR_SUBRUN:
+    if not parent:
         return None
 
     try:
@@ -382,6 +392,13 @@ def complete_subrun(*, child_run_id: str, schedule_parent: bool = True) -> Optio
         should_resume = not active_links or timeout_expired
     else:
         should_resume = not active_links
+
+    if parent.status != AgentRun.Status.WAITING_FOR_SUBRUN:
+        append_run_note(
+            parent,
+            f"Background subrun {child.id} completed with status {child.status.lower()}.",
+        )
+        return None
 
     if should_resume:
         transition_run(run_id=str(parent.id), new_status=AgentRun.Status.RUNNING)

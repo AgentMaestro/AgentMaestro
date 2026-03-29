@@ -26,13 +26,17 @@ class QueryLiteral:
     field_name: str | None
     value: str
     negated: bool = False
+    operator: str | None = None
 
     def to_dict(self) -> dict[str, object]:
-        return {
+        data = {
             "field_name": self.field_name,
             "value": self.value,
             "negated": self.negated,
         }
+        if self.operator:
+            data["operator"] = self.operator
+        return data
 
 
 @dataclass(frozen=True, slots=True)
@@ -128,7 +132,7 @@ def plan_google_query(
     rendered_clauses: list[QueryClause] = []
     seen_clause_strings: set[str] = set()
     for literals in clause_literals:
-        query_string = _render_clause(literals)
+        query_string = _render_clause(literals, resource_kind=capabilities.resource_kind)
         if query_string in seen_clause_strings:
             continue
         seen_clause_strings.add(query_string)
@@ -165,17 +169,24 @@ def _build_clauses(
     supported_operators: frozenset[str],
     field_name: str | None = None,
     negated: bool = False,
+    operator: str | None = None,
 ) -> tuple[tuple[QueryLiteral, ...], ...]:
     if isinstance(node, QueryEmpty):
         return (tuple(),)
     if isinstance(node, QueryTerm):
-        return ((QueryLiteral(field_name, node.value, negated),),)
+        return ((QueryLiteral(field_name, node.value, negated, operator),),)
     if isinstance(node, QueryField):
-        normalized_name = str(node.name or "").strip().lower()
+        normalized_name = _canonicalize_query_field_name(resource_kind, str(node.name or "").strip().lower())
         if normalized_name not in supported_fields:
             raise QueryPlannerError(
                 f"Unsupported query field '{normalized_name}' for {resource_kind}."
             )
+        normalized_operator = str(node.operator or "").strip().lower() or None
+        if normalized_operator:
+            if resource_kind != "drive" or not _is_supported_drive_operator(normalized_name, normalized_operator):
+                raise QueryPlannerError(
+                    f"Unsupported query operator '{normalized_operator}' for {resource_kind} field '{normalized_name}'."
+                )
         if resource_kind == "calendar" and normalized_name == "q":
             return _build_clauses(
                 node.value,
@@ -184,6 +195,7 @@ def _build_clauses(
                 supported_operators=supported_operators,
                 field_name=None,
                 negated=negated,
+                operator=operator,
             )
         return _build_clauses(
             node.value,
@@ -192,11 +204,12 @@ def _build_clauses(
             supported_operators=supported_operators,
             field_name=normalized_name,
             negated=negated,
+            operator=normalized_operator or operator,
         )
     if isinstance(node, QueryNot):
         if "NOT" not in supported_operators:
             raise QueryPlannerError(f"NOT is not supported for {resource_kind} queries.")
-        return _build_clauses(node.item, field_name=field_name, negated=not negated)
+        return _build_clauses(node.item, resource_kind=resource_kind, supported_fields=supported_fields, supported_operators=supported_operators, field_name=field_name, negated=not negated, operator=operator)
     if isinstance(node, QueryAnd):
         if "AND" not in supported_operators:
             raise QueryPlannerError(f"AND is not supported for {resource_kind} queries.")
@@ -211,6 +224,7 @@ def _build_clauses(
                         supported_operators=supported_operators,
                         field_name=field_name,
                         negated=True,
+                        operator=operator,
                     )
                 )
             return tuple(_dedupe_clauses(clauses))
@@ -223,6 +237,7 @@ def _build_clauses(
                 supported_operators=supported_operators,
                 field_name=field_name,
                 negated=False,
+                operator=operator,
             )
             clauses = _combine_and(clauses, item_clauses)
         return tuple(_dedupe_clauses(clauses))
@@ -239,6 +254,7 @@ def _build_clauses(
                     supported_operators=supported_operators,
                     field_name=field_name,
                     negated=True,
+                    operator=operator,
                 )
                 clauses = _combine_and(clauses, item_clauses)
             return tuple(_dedupe_clauses(clauses))
@@ -252,10 +268,24 @@ def _build_clauses(
                     supported_operators=supported_operators,
                     field_name=field_name,
                     negated=False,
+                    operator=operator,
                 )
             )
         return tuple(_dedupe_clauses(clauses))
     raise QueryPlannerError(f"Unsupported query node '{type(node).__name__}'.")
+
+
+def _canonicalize_query_field_name(resource_kind: str, field_name: str) -> str:
+    normalized_field_name = str(field_name or "").strip().lower()
+    if resource_kind == "drive" and normalized_field_name == "mimetype":
+        return "mime_type"
+    if resource_kind == "drive" and normalized_field_name in {"modifiedtime", "modified_time"}:
+        return "modified_time"
+    if resource_kind == "drive" and normalized_field_name in {"createdtime", "created_time"}:
+        return "created_time"
+    if resource_kind == "drive" and normalized_field_name == "trashed":
+        return "trashed"
+    return normalized_field_name
 
 
 def _combine_and(
@@ -284,17 +314,37 @@ def _dedupe_clauses(clauses: list[tuple[QueryLiteral, ...]]) -> list[tuple[Query
     return unique
 
 
-def _render_clause(literals: tuple[QueryLiteral, ...]) -> str:
+def _render_clause(literals: tuple[QueryLiteral, ...], *, resource_kind: str | None = None) -> str:
     if not literals:
         return ""
-    return " ".join(_render_literal(literal) for literal in literals)
+    if resource_kind == "drive":
+        return " and ".join(_render_literal(literal, resource_kind=resource_kind) for literal in literals)
+    return " ".join(_render_literal(literal, resource_kind=resource_kind) for literal in literals)
 
 
-def _render_literal(literal: QueryLiteral) -> str:
-    prefix = "-" if literal.negated else ""
-    value = _quote_query_value(str(literal.value or ""))
+def _render_literal(literal: QueryLiteral, *, resource_kind: str | None = None) -> str:
+    if resource_kind == "drive":
+        prefix = "not " if literal.negated else ""
+        field_name = _render_drive_field_name(str(literal.field_name or ""))
+        operator = str(literal.operator or "").strip().lower()
+        if operator == "contains":
+            value = _quote_drive_contains_value(str(literal.value or ""))
+            return f"{prefix}{field_name} contains {value}"
+        if operator in {"<", "<=", "=", "!=", ">", ">="}:
+            value = _quote_drive_value(field_name, operator, str(literal.value or ""))
+            return f"{prefix}{field_name} {operator} {value}"
+        value = _quote_drive_value(field_name, "=", str(literal.value or ""))
+        if field_name:
+            return f"{prefix}{field_name} = {value}"
+        return f"{prefix}{value}"
+    prefix = "not " if literal.negated and literal.operator == "contains" else ("-" if literal.negated else "")
     if literal.field_name:
+        if literal.operator == "contains":
+            value = _quote_drive_contains_value(str(literal.value or ""))
+            return f"{prefix}{literal.field_name} contains {value}"
+        value = _quote_query_value(str(literal.value or ""))
         return f"{prefix}{literal.field_name}:{value}"
+    value = _quote_query_value(str(literal.value or ""))
     return f"{prefix}{value}"
 
 
@@ -306,6 +356,52 @@ def _quote_query_value(value: str) -> str:
         escaped = text.replace("\\", "\\\\").replace('"', '\\"')
         return f'"{escaped}"'
     return text
+
+
+def _quote_drive_contains_value(value: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return "''"
+    escaped = text.replace("\\", "\\\\").replace("'", "\\'")
+    return f"'{escaped}'"
+
+
+def _quote_drive_value(field_name: str, operator: str, value: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return "''"
+    if str(field_name or "").strip().lower() == "trashed" and text.lower() in {"true", "false"}:
+        return text.lower()
+    if text.lower() in {"true", "false"} and operator in {"=", "!="}:
+        return text.lower()
+    return _quote_drive_contains_value(text)
+
+
+def _render_drive_field_name(field_name: str) -> str:
+    normalized = str(field_name or "").strip().lower()
+    if normalized in {"mime_type", "mimetype"}:
+        return "mimeType"
+    if normalized in {"modified_time", "modifiedtime"}:
+        return "modifiedTime"
+    if normalized in {"created_time", "createdtime"}:
+        return "createdTime"
+    return normalized
+
+
+def _is_supported_drive_operator(field_name: str, operator: str) -> bool:
+    normalized_field = str(field_name or "").strip().lower()
+    normalized_operator = str(operator or "").strip().lower()
+    if normalized_field == "name":
+        return normalized_operator in {"contains", "=", "!="}
+    if normalized_field == "mime_type":
+        return normalized_operator in {"=", "!="}
+    if normalized_field in {"modified_time", "created_time"}:
+        return normalized_operator in {"<", "<=", "=", "!=", ">", ">="}
+    if normalized_field == "trashed":
+        return normalized_operator in {"=", "!="}
+    if normalized_field == "q":
+        return normalized_operator == "contains"
+    return False
 
 
 def _needs_quotes(text: str) -> bool:

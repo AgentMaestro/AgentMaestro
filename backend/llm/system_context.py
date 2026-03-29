@@ -191,12 +191,23 @@ def _build_capability_notices(tool_names: Iterable[str]) -> list[str]:
     if "google_bridge" in names:
         sections.append(
             "Capability: Google Bridge Query Language\n"
-            "- The `google_bridge` tool parses a generic boolean query language with `AND`, `OR`, `NOT`, and parentheses.\n"
+            "- The `google_bridge` tool parses a generic boolean query language with `AND`, `OR`, `NOT`, field contains clauses, and parentheses.\n"
             "- Grouped alternation is allowed inside fielded clauses, for example `from:(dsmith@aol.com OR dsmyth@aol.com)` or `to:(sktennis7@gmail.com OR kissinger.scott@gmail.com)`.\n"
             "- Use `|` only for regex-based code search tools; do not use it in Google bridge queries.\n"
             "- Supported query fields vary by Google surface. Check the tool schema examples for Gmail, Calendar, Drive, Docs, and Sheets support before generating a query.\n"
+            "- Drive supports `name contains 'README'`-style filename filters, which compile to native server-side Drive queries. Drive also accepts `mimeType = 'application/vnd.google-apps.document'`, `modifiedTime >= '2024-01-01T00:00:00Z'`, `createdTime < '2024-02-01T00:00:00Z'`, `modifiedTime <= '2024-02-01T00:00:00Z'`, `modifiedTime > '2024-01-01T00:00:00Z'`, `createdTime != '2024-01-15T00:00:00Z'`, and `trashed = false`; the bridge canonicalizes those Drive aliases to the Google query syntax the API expects.\n"
+            "- Drive comparisons use the native Drive operators, and multiple Drive clauses should be joined with `and`, for example `name contains 'README' and mimeType = 'application/vnd.google-apps.document' and trashed = false`.\n"
             "- The bridge compiles queries into one or more concrete backend calls, so grouped `OR` clauses may fan out into multiple requests and `NOT` stays part of the compiled plan.\n"
             "- Keep query intent inside the query language rather than splitting it into ad hoc text.\n"
+        )
+    if "send_telegram" in names:
+        sections.append(
+            "Capability: Telegram Send\n"
+            "- The `send_telegram` tool sends a direct message to the agent's paired Telegram conversation.\n"
+            "- The target is currently paired only; the backend resolves the chat server-side so the model does not choose a chat ID directly yet.\n"
+            "- If `name` is provided, the backend prepends a bold lower-case label line with a local 12-hour timestamp, for example `system - task complete   10:24am`.\n"
+            "- Prefer `name` for short, high-signal notices such as completion, failure, approval-needed, retrying, or other on-call style alerts; keep the message body brief and actionable.\n"
+            "- Message arguments mirror Telegram's `sendMessage` fields, including `parse_mode`, link preview control, notification control, reply threading, content protection, and reply markup.\n"
         )
     if "schedule_task" in names:
         sections.append(

@@ -1,4 +1,4 @@
-from runs.services.input_items import build_ws_request_input_items
+from runs.services.input_items import build_input_items, build_ws_request_input_items
 
 
 def test_build_ws_request_input_items_uses_explicit_provider_call_ids_for_tool_outputs():
@@ -46,4 +46,28 @@ def test_build_ws_request_input_items_keeps_artifact_context_when_system_context
     assert items[0]["content"][0]["text"].startswith("ATTACHED FILE CONTEXT")
     assert "Instruction: Use this content directly." in items[0]["content"][0]["text"]
     assert items[1]["role"] == "user"
+
+
+def test_build_input_items_compacts_large_google_bridge_tool_output():
+    history = [
+        {
+            "role": "tool",
+            "tool_call_id": "tool_row_1",
+            "provider_call_id": "call_1",
+            "tool_name": "google_bridge",
+            "content": (
+                '{"ok":true,"integration_kind":"google","resource_kind":"gmail","action_kind":"read",'
+                '"operation":"list","summary_text":"Returned 50 Gmail messages.","result":'
+                '{"messages":[{"id":"msg-1","snippet":"%s"}]}}'
+                % ("x" * 8000)
+            ),
+        }
+    ]
+
+    items = build_input_items(history, previous_response_id="resp_123", outstanding_provider_call_id="call_1")
+
+    assert len(items) == 1
+    assert items[0]["type"] == "function_call_output"
+    assert len(items[0]["output"]) < 6000
+    assert "Returned 50 Gmail messages." in items[0]["output"]
 

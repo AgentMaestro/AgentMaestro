@@ -17,10 +17,12 @@ def test_scheduled_task_management_schema_advertises_edit_disable_enable():
     tool_names = {tool["name"] for tool in get_tool_schemas()}
 
     assert "edit_scheduled_task" in tool_names
+    assert "get_scheduled_task" in tool_names
     assert "disable_scheduled_task" in tool_names
     assert "enable_scheduled_task" in tool_names
 
     edit_tool = next(tool for tool in get_tool_schemas() if tool["name"] == "edit_scheduled_task")
+    get_tool = next(tool for tool in get_tool_schemas() if tool["name"] == "get_scheduled_task")
     disable_tool = next(
         tool for tool in get_tool_schemas() if tool["name"] == "disable_scheduled_task"
     )
@@ -29,17 +31,23 @@ def test_scheduled_task_management_schema_advertises_edit_disable_enable():
     )
 
     edit_description = edit_tool["parameters"]["description"]
+    get_description = get_tool["parameters"]["description"]
     disable_description = disable_tool["parameters"]["description"]
     enable_description = enable_tool["parameters"]["description"]
 
     assert "scheduled_task_id" in edit_description
+    assert "execution_payload" in get_description
+    assert "preview the current" in get_description
     assert "soft-delete" in disable_description
     assert "recomputes its next run time" in enable_description
     schedule_tool = next(tool for tool in get_tool_schemas() if tool["name"] == "schedule_task")
     assert (
-        "list_scheduled_tasks already returns scheduled_task_id"
+        "Use `get_scheduled_task` when you want to preview a single task's full payload"
         in schedule_tool["parameters"]["description"]
     )
+    list_tool = next(tool for tool in get_tool_schemas() if tool["name"] == "list_scheduled_tasks")
+    assert "include_execution_payload" in list_tool["parameters"]["properties"]
+    assert "preview the stored payload" in list_tool["parameters"]["description"]
 
 
 def test_get_current_datetime_schema_advertises_tango_timezone():

@@ -15,7 +15,20 @@ from core.services.timezones import get_current_datetime_iso8601, get_local_time
 from tools.models import ToolDefinition
 from tools.services.tool_validation import ToolArgumentValidationError, validate_required_tool_arguments
 
-_NATIVE_TOOL_NAMES = {"remember", "search_memory", "get_current_datetime", "schedule_task", "list_scheduled_tasks", "edit_scheduled_task", "disable_scheduled_task", "enable_scheduled_task", "spawn_subrun", "google_bridge"}
+_NATIVE_TOOL_NAMES = {
+    "remember",
+    "search_memory",
+    "get_current_datetime",
+    "schedule_task",
+    "get_scheduled_task",
+    "list_scheduled_tasks",
+    "edit_scheduled_task",
+    "disable_scheduled_task",
+    "enable_scheduled_task",
+    "spawn_subrun",
+    "send_telegram",
+    "google_bridge",
+}
 
 
 def _sign(body: bytes, secret: bytes) -> tuple[str, str]:
@@ -55,11 +68,13 @@ def _coerce_expires_at(value: object):
 
 
 def _run_native_tool(tool_name: str, args: Dict[str, Any], orchestration_run_id: Optional[str]) -> Dict[str, Any]:
-    from google_bridge.services.bridge import execute_google_task
+    from google_bridge.services.bridge import build_google_task_objective, execute_google_task
+    from comms.services.agent_chat_bridge import send_paired_telegram_message
     from memory.scheduled_tasks import (
         create_scheduled_task,
         disable_scheduled_task,
         enable_scheduled_task,
+        get_scheduled_task,
         list_scheduled_tasks,
         serialize_scheduled_task,
         update_scheduled_task,
@@ -68,6 +83,7 @@ def _run_native_tool(tool_name: str, args: Dict[str, Any], orchestration_run_id:
     from memory.services import search_memory as search_memory_records
     from runs.models import AgentRun
     from runs.services.subruns import run_subrun_flow
+    from runs.services.subruns import spawn_subrun
 
     if not orchestration_run_id:
         raise RuntimeError(f"Native tool '{tool_name}' requires orchestration_run_id.")
@@ -196,15 +212,15 @@ def _run_native_tool(tool_name: str, args: Dict[str, Any], orchestration_run_id:
         }
         return {"ok": True, "result": result, "meta": {"native": True}, "error": None}
 
-    if tool_name in {"edit_scheduled_task", "disable_scheduled_task", "enable_scheduled_task"}:
-        from memory.models import ScheduledTask
-
+    if tool_name in {"get_scheduled_task", "edit_scheduled_task", "disable_scheduled_task", "enable_scheduled_task"}:
         scheduled_task_id = str(args.get("scheduled_task_id") or "").strip()
         if not scheduled_task_id:
             raise RuntimeError(f"{tool_name} requires scheduled_task_id.")
-        scheduled_task = ScheduledTask.objects.select_related("recurrence_rule").filter(id=scheduled_task_id, agent=run.agent).first()
+        scheduled_task = get_scheduled_task(agent=run.agent, scheduled_task_id=scheduled_task_id)
         if scheduled_task is None:
             raise RuntimeError("Scheduled task not found for the current agent.")
+        if tool_name == "get_scheduled_task":
+            return {"ok": True, "result": serialize_scheduled_task(scheduled_task, include_execution_payload=True), "meta": {"native": True}, "error": None}
         if tool_name == "edit_scheduled_task":
             updated = update_scheduled_task(
                 scheduled_task,
@@ -225,12 +241,16 @@ def _run_native_tool(tool_name: str, args: Dict[str, Any], orchestration_run_id:
     if tool_name == "list_scheduled_tasks":
         scheduled_tasks = list_scheduled_tasks(
             agent=run.agent,
-            enabled_only=bool(args.get("enabled_only", False)),
+            enabled_only=_coerce_bool(args.get("enabled_only", False)),
             limit=int(args.get("limit") or 10),
         )
+        include_execution_payload = _coerce_bool(args.get("include_execution_payload", False))
         result = {
             "count": len(scheduled_tasks),
-            "results": [serialize_scheduled_task(task) for task in scheduled_tasks],
+            "results": [
+                serialize_scheduled_task(task, include_execution_payload=include_execution_payload)
+                for task in scheduled_tasks
+            ],
         }
         return {"ok": True, "result": result, "meta": {"native": True}, "error": None}
 
@@ -247,7 +267,62 @@ def _run_native_tool(tool_name: str, args: Dict[str, Any], orchestration_run_id:
         )
         return {"ok": True, "result": result, "meta": {"native": True}, "error": None}
 
+    if tool_name == "send_telegram":
+        target = str(args.get("target") or "paired").strip().lower()
+        if target != "paired":
+            raise RuntimeError("send_telegram currently only supports target='paired'.")
+        result = send_paired_telegram_message(
+            run_id=str(run.id),
+            text=str(args.get("text") or ""),
+            name=str(args.get("name") or "") or None,
+            parse_mode=str(args.get("parse_mode") or "") or None,
+            disable_web_page_preview=args.get("disable_web_page_preview"),
+            disable_notification=args.get("disable_notification"),
+            reply_to_message_id=args.get("reply_to_message_id"),
+            allow_sending_without_reply=args.get("allow_sending_without_reply"),
+            protect_content=args.get("protect_content"),
+            message_thread_id=args.get("message_thread_id"),
+            reply_markup=dict(args.get("reply_markup") or {}) if args.get("reply_markup") is not None else None,
+        )
+        return {"ok": True, "result": result, "meta": {"native": True}, "error": None}
+
     if tool_name == "google_bridge":
+        if _should_queue_google_cleanup_subrun(args):
+            objective, prompt = build_google_task_objective(args or {})
+            child = spawn_subrun(
+                parent_run_id=str(run.id),
+                input_text=prompt,
+                metadata={
+                    "integration_kind": "google",
+                    "resource_kind": "gmail",
+                    "operation": str(args.get("operation") or "trash").strip().lower(),
+                    "background": True,
+                    "summary": objective,
+                },
+                join_policy="WAIT_ALL",
+                failure_policy="IGNORE_FAILURE",
+                schedule_child=True,
+                child_execution_mode=AgentRun.ExecutionMode.HEADLESS,
+                block_parent=False,
+            )
+            summary_text = (
+                f"Queued Gmail cleanup in background subrun {child.id}. "
+                "Results will arrive asynchronously in the run timeline."
+            )
+            return {
+                "ok": True,
+                "result": {
+                    "queued": True,
+                    "background": True,
+                    "parent_run_id": str(run.id),
+                    "child_run_id": str(child.id),
+                    "execution_mode": child.execution_mode,
+                    "summary_text": summary_text,
+                    "objective": objective,
+                },
+                "meta": {"native": True, "queued": True, "background_subrun": True},
+                "error": None,
+            }
         try:
             result = execute_google_task(
                 payload=args or {},
@@ -259,6 +334,20 @@ def _run_native_tool(tool_name: str, args: Dict[str, Any], orchestration_run_id:
         return {"ok": bool(result.get("ok", True)), "result": result, "meta": {"native": True}, "error": None}
 
     raise RuntimeError(f"Unsupported native tool: {tool_name}")
+
+
+def _should_queue_google_cleanup_subrun(args: Dict[str, Any]) -> bool:
+    resource_kind = str(args.get("resource_kind") or "").strip().lower()
+    operation = str(args.get("operation") or "").strip().lower()
+    query = str(args.get("query") or "").strip()
+    message_id = str(args.get("message_id") or "").strip()
+    if resource_kind != "gmail":
+        return False
+    if operation not in {"trash", "delete"}:
+        return False
+    if message_id:
+        return False
+    return bool(query)
 
 
 async def run_tool(

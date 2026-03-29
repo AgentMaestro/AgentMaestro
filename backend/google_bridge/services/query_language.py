@@ -32,9 +32,13 @@ class QueryTerm(QueryNode):
 class QueryField(QueryNode):
     name: str
     value: QueryNode
+    operator: str | None = None
 
     def to_dict(self) -> dict[str, object]:
-        return {"type": "field", "name": self.name, "value": self.value.to_dict()}
+        data = {"type": "field", "name": self.name, "value": self.value.to_dict()}
+        if self.operator:
+            data["operator"] = self.operator
+        return data
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,8 +105,35 @@ def _tokenize(text: str) -> list[_Token]:
             tokens.append(_Token("COLON", ch, index))
             index += 1
             continue
-        if ch == '"':
+        if ch == "<":
+            if index + 1 < len(text) and text[index + 1] == "=":
+                tokens.append(_Token("LTE", "<=", index))
+                index += 2
+            else:
+                tokens.append(_Token("LT", ch, index))
+                index += 1
+            continue
+        if ch == ">":
+            if index + 1 < len(text) and text[index + 1] == "=":
+                tokens.append(_Token("GTE", ">=", index))
+                index += 2
+            else:
+                tokens.append(_Token("GT", ch, index))
+                index += 1
+            continue
+        if ch == "!":
+            if index + 1 < len(text) and text[index + 1] == "=":
+                tokens.append(_Token("NEQ", "!=", index))
+                index += 2
+                continue
+            raise QueryLanguageError("Malformed query: unexpected '!'.", index)
+        if ch == "=":
+            tokens.append(_Token("EQUALS", ch, index))
+            index += 1
+            continue
+        if ch in {'"', "'"}:
             start = index
+            quote_char = ch
             index += 1
             value_chars: list[str] = []
             escaped = False
@@ -113,7 +144,7 @@ def _tokenize(text: str) -> list[_Token]:
                     escaped = False
                 elif current == "\\":
                     escaped = True
-                elif current == '"':
+                elif current == quote_char:
                     tokens.append(_Token("STRING", "".join(value_chars), start))
                     index += 1
                     break
@@ -182,10 +213,21 @@ class _QueryParser:
             node = self._parse_or()
             self._expect("RPAREN")
             return node
-        if token.kind == "WORD" and self._peek_next().kind == "COLON":
+        if token.kind == "WORD" and self._peek_next().kind in {"COLON", "EQUALS", "NEQ", "LT", "LTE", "GT", "GTE"}:
             field_name = self._advance().value.strip().lower()
-            self._advance()
-            return QueryField(field_name, self._parse_field_value())
+            operator_token = self._advance()
+            operator = operator_token.value
+            if operator_token.kind in {"COLON", "EQUALS"}:
+                operator = None
+            return QueryField(field_name, self._parse_field_value(), operator=operator)
+        if (
+            token.kind == "WORD"
+            and self._peek_next().kind == "WORD"
+            and self._peek_next().value.strip().lower() == "contains"
+        ):
+            field_name = self._advance().value.strip().lower()
+            operator = self._advance().value.strip().lower()
+            return QueryField(field_name, self._parse_field_value(), operator=operator)
         if token.kind == "STRING":
             self._advance()
             return QueryTerm(token.value)
@@ -215,7 +257,7 @@ class _QueryParser:
             return False
         if token.value.upper() != operator:
             return False
-        if self._peek_next().kind == "COLON":
+        if self._peek_next().kind in {"COLON", "EQUALS", "NEQ", "LT", "LTE", "GT", "GTE"}:
             return False
         self._advance()
         return True
@@ -225,7 +267,7 @@ class _QueryParser:
             return True
         if token.kind != "WORD":
             return False
-        if self._peek_next().kind == "COLON":
+        if self._peek_next().kind in {"COLON", "EQUALS", "NEQ", "LT", "LTE", "GT", "GTE"}:
             return True
         return token.value.upper() not in _BOOLEAN_OPERATORS
 
@@ -235,6 +277,10 @@ class _QueryParser:
     def _peek_next(self) -> _Token:
         next_index = min(self._index + 1, len(self._tokens) - 1)
         return self._tokens[next_index]
+
+    def _peek_offset(self, offset: int) -> _Token:
+        target_index = min(self._index + max(0, offset), len(self._tokens) - 1)
+        return self._tokens[target_index]
 
     def _advance(self) -> _Token:
         token = self._tokens[self._index]

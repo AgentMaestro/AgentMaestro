@@ -292,9 +292,10 @@ _TOOL_EXAMPLES = {
             },
         }
     ],
+    "get_scheduled_task": {"scheduled_task_id": "scheduled-task-id-from-list"},
     "disable_scheduled_task": [{"scheduled_task_id": "scheduled-task-id-from-list"}],
     "enable_scheduled_task": [{"scheduled_task_id": "scheduled-task-id-from-list"}],
-    "list_scheduled_tasks": {"enabled_only": True, "limit": 10},
+    "list_scheduled_tasks": {"enabled_only": True, "limit": 10, "include_execution_payload": True},
     "spawn_subrun": {
         "input_text": "Research the current weather outlook for Ocala tennis conditions and return a concise summary.",
         "metadata": {"purpose": "focused research", "topic": "weather"},
@@ -508,9 +509,28 @@ _TOOL_ADDITIONAL_DOCS = {
     "- Example: `sprint|roadmap|milestone|next sprint|planning`.\n\n"
     "RESULT NOTES:\n"
     "- Match snippets include `line`, `col`, and `line_text` when the tool can derive them from the scanned text.",
+    "search_files": "\n\nPATH NOTES:\n"
+    "- `scope` is the canonical name for the search root.\n"
+    "- `scope` may be omitted, repo-relative, or absolute.\n"
+    "- scope may point to a file, a directory, or a repo root scope.\n"
+    "- Repo-relative scopes resolve from the repository root when one is provided in policy context.\n"
+    "- Absolute roots are permitted only when they fall under the allowed roots for the run.\n"
+    "- Hidden files and directories are included unless excluded by the default ignore rules.\n"
+    "- Test paths are included by default unless `include_tests=false` is set.\n"
+    "- Use this when you need to locate files or directories by name or path. Do not use it for content search; use `search_code` instead. This tool matches names and paths only and does not search file contents.\n",
     "web_search": "\n\nRESEARCH NOTES:\n"
     "- `web_search` returns lightweight search metadata only. Use `fetch_url` for page content.\n"
     "- Provider failures usually indicate missing credentials, timeout, or upstream HTTP errors.",
+    "search_files": "\n\nPATH NOTES:\n"
+    "- `scope` is the canonical name for the search root.\n"
+    "- `scope` may be omitted, repo-relative, or absolute.\n"
+    "- scope may point to a file, a directory, or a repo root scope.\n"
+    "- Repo-relative scopes resolve from the repository root when one is provided in policy context.\n"
+    "- Absolute roots are permitted only when they fall under the allowed roots for the run.\n"
+    "- Hidden files and directories are included unless excluded by the default ignore rules.\n"
+    "- Test paths are included by default unless `include_tests=false` is set.\n"
+    "- Use this when you need to locate files or directories by name or path. Do not use it for content search; use `search_code` instead. This tool matches names and paths only and does not search file contents.\n"
+    "- Search one path/name query at a time.\n",
     "fetch_url": "\n\nFETCH NOTES:\n"
     "- Only public http/https URLs are allowed. Localhost, private-network, and internal addresses are rejected.\n"
     "- `content` returns extracted readable text, not raw HTML.\n"
@@ -534,7 +554,12 @@ _TOOL_ADDITIONAL_DOCS = {
     "- If a timezone argument is omitted, the bridge assumes the local Tango timezone from `TIME_ZONE` / `settings.TIME_ZONE` rather than UTC.\n"
     "- If the schedule depends on a relative date like tomorrow or next Friday and the current local date is not already known, call `get_current_datetime` first and anchor the schedule in that local time.\n"
     "- Use `title` and `execution_payload` to describe the recurring job clearly so the future headless run has enough context.\n"
+    "- Use `get_scheduled_task` when you want to preview a single task's full payload before editing it.\n"
     "- list_scheduled_tasks already returns scheduled_task_id, so use that identifier for future edit, disable, or enable operations.\n",
+    "get_scheduled_task": "\n\nSCHEDULING NOTES:\n"
+    "- `get_scheduled_task` returns the full stored task record for a single `scheduled_task_id`.\n"
+    "- Use this before editing when you want to preview the current `execution_payload` and recurrence details safely.\n"
+    "- Use `scheduled_task_id` from `list_scheduled_tasks` or `schedule_task` to target the task.\n",
     "search_memory": "\n\nMEMORY NOTES:\n"
     "- `search_memory` performs simple text lookup over durable memory records.\n"
     "- Narrow by `scope_type`, `scope_id`, and `memory_kind` when the target scope is known.\n"
@@ -725,9 +750,26 @@ _TOOL_RESPONSE_FIELDS = {
         "last_result_summary": "The last completion summary if available.",
         "last_error": "The last recorded scheduling error if available.",
     },
+    "get_scheduled_task": {
+        "scheduled_task_id": "Scheduled-task identifier returned by list_scheduled_tasks or schedule_task.",
+        "title": "Stored human-friendly task title.",
+        "task_type": "The stored task type, which is always other_task.",
+        "enabled": "Whether the recurring task is active.",
+        "execution_payload": "The stored scheduled-task payload that will be available to the next run.",
+        "recurrence_rule_id": "Linked recurrence-rule identifier for the task.",
+        "schedule_kind": "The recurring schedule model used by the task.",
+        "execution_mode": "The scheduled-task execution mode, always headless_run.",
+        "timezone": "The IANA timezone used to calculate due times.",
+        "local_time": "A compatibility wall-clock time derived from the recurrence rule.",
+        "recurrence_summary": "Human-readable recurrence description for operators and UIs.",
+        "next_run_at": "The next UTC datetime when the task is due.",
+        "last_result_summary": "The last completion summary if available.",
+        "last_error": "The last recorded scheduling error if available.",
+    },
     "list_scheduled_tasks": {
         "count": "Number of scheduled tasks returned.",
-        "results": "Concise scheduled-task records ordered by next run time, including scheduled_task_id, recurrence summaries, and run linkage.",
+        "results": "Concise scheduled-task records ordered by next run time, including scheduled_task_id, recurrence summaries, run linkage, and optionally execution_payload when requested.",
+        "scheduled_task_id": "Stable task identifier included in each result row for follow-up edit, disable, or enable actions.",
     },
     "spawn_subrun": {
         "parent_run_id": "The parent run that requested the child run.",
@@ -1029,7 +1071,7 @@ TOOL_REGISTRY = [
         "tools": [
             {
                 "name": "search_files",
-                "description": "Search repository paths and file names by literal text, glob-style patterns, or regex. Use this when you need to locate files, directories, or a root scope by name or path. Do not use it for content search; use `search_code` instead. This tool matches names and paths only and does not search file contents. Hidden paths are included unless they are excluded by the default ignore rules; Test paths are included by default unless `include_tests` is turned off. Use `scope` as the canonical input name for the search root. Rank expectations are exact path/name matches first, then fuzzy/partial matches. Search one path/name query at a time; if you need multiple targets, make separate calls or use regex mode with `|` for alternatives, for example `code_navigation.py|run_command_safe`. In regex mode, exact path/name hits still sort ahead of fuzzy or partial matches. Use sequentially when the next navigation step depends on this result; independent navigation lookups can be parallelized. Compact mode returns a standardized envelope with `tool`, `compact`, `query`, `requested_scope`, `resolved_scope`, `items`, `returned_count`, `max_results_used`, `selection`, `selection_excerpt`, `stats`, and `truncated`. For exact file hits, `selection_excerpt` may be `exact file match` so the compact result is self-explanatory.",
+                "description": "Search repository paths and file names by literal text, glob-style patterns, or regex. Use this when you need to locate files, directories, or a root scope by name or path. Do not use it for content search; use `search_code` instead. This tool matches names and paths only and does not search file contents. Hidden paths are included unless they are excluded by the default ignore rules; Test paths are included by default unless `include_tests` is turned off. Use `scope` as the canonical input name for the search root. Rank expectations are exact path/name matches first, then fuzzy/partial matches. Search one path/name query at a time. If you need multiple targets, make separate calls or use regex mode with `|` for alternatives, for example `code_navigation.py|run_command_safe`. In regex mode, exact path/name hits still sort ahead of fuzzy or partial matches. Use sequentially when the next navigation step depends on this result; independent navigation lookups can be parallelized. Compact mode returns a standardized envelope with `tool`, `compact`, `query`, `requested_scope`, `resolved_scope`, `items`, `returned_count`, `max_results_used`, `selection`, `selection_excerpt`, `stats`, and `truncated`. For exact file hits, `selection_excerpt` may be `exact file match` so the compact result is self-explanatory.",
                 "risk": ToolRisk.SAFE,
                 "requires_approval": False,
                 "released": True,
@@ -1911,7 +1953,7 @@ TOOL_REGISTRY = [
             },
             {
                 "name": "edit_scheduled_task",
-                "description": "Edit an existing scheduled task attached to the current agent. Use this to change the title, recurrence, timezone, local_time, enabled state, or execution_payload without creating a new task. If a timezone is omitted, the bridge assumes the local Tango timezone from `TIME_ZONE` / `settings.TIME_ZONE` rather than UTC. If the schedule depends on a relative date like tomorrow or next Friday and the current local date is not already known, call `get_current_datetime` first and anchor the schedule in that local time.",
+                "description": "Edit an existing scheduled task attached to the current agent. Use this to change the title, recurrence, timezone, local_time, enabled state, or execution_payload without creating a new task. If a timezone is omitted, the bridge assumes the local Tango timezone from `TIME_ZONE` / `settings.TIME_ZONE` rather than UTC. If you want to preview the current payload before editing, call `get_scheduled_task` first. If the schedule depends on a relative date like tomorrow or next Friday and the current local date is not already known, call `get_current_datetime` first and anchor the schedule in that local time.",
                 "risk": ToolRisk.SAFE,
                 "args_schema": {
                     "type": "object",
@@ -1979,6 +2021,21 @@ TOOL_REGISTRY = [
                 "released": True,
             },
             {
+                "name": "get_scheduled_task",
+                "description": "Fetch a single scheduled task attached to the current agent so you can preview the current execution_payload and recurrence details before editing.",
+                "risk": ToolRisk.SAFE,
+                "args_schema": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "scheduled_task_id": {"type": "string"},
+                    },
+                    "required": ["scheduled_task_id"],
+                },
+                "requires_approval": False,
+                "released": True,
+            },
+            {
                 "name": "disable_scheduled_task",
                 "description": "Soft delete a scheduled task by setting enabled=false while preserving task history and identifiers.",
                 "risk": ToolRisk.SAFE,
@@ -2010,7 +2067,7 @@ TOOL_REGISTRY = [
             },
             {
                 "name": "list_scheduled_tasks",
-                "description": "List recurring tasks attached to the current agent.",
+                "description": "List recurring tasks attached to the current agent. Set include_execution_payload=true when you need to preview the stored payload alongside the scheduling metadata.",
                 "risk": ToolRisk.SAFE,
                 "args_schema": {
                     "type": "object",
@@ -2018,6 +2075,7 @@ TOOL_REGISTRY = [
                     "properties": {
                         "enabled_only": {"type": "boolean", "default": False},
                         "limit": {"type": "integer", "minimum": 1, "maximum": 50, "default": 10},
+                        "include_execution_payload": {"type": "boolean", "default": False},
                     },
                 },
                 "requires_approval": False,
@@ -2056,7 +2114,7 @@ TOOL_REGISTRY = [
     },
     {
         "name": GOOGLE_BRIDGE_TOOL_GROUP_NAME,
-        "description": 'Google bridge for Gmail, Gmail settings filters, Calendar, Drive, Docs, and Sheets reads plus Gmail draft/send/trash/delete workflows and Calendar read/create/update/delete workflows. Bare Gmail list reads default to unread messages. Use include_read=true when you want all Gmail messages, or provide a query/label filter for a narrower mailbox view. Gmail list/read query filters support exact sender, sender domain, subject, and top-level OR splitting across those clauses. Gmail settings filter management is available for list/create/update/delete, criteria.query is planned before filter creation, and dry_run can preview the candidate match set before any filter is written. Use account_scope=all when you want the bridge to fan out across every active connected account and merge the results. For Gmail trash/delete queries, use account_scope=all when you want the same query to apply across every connected account. Calendar list reads can omit calendar_id or use all to inspect every calendar on the connected account, while primary stays available when you explicitly want one calendar. Drive pickers and Google file attachments should normalize into the same pending attachment flow as local files. For Gmail reads, use query filters such as from:info@airbnb.com for exact sender, from:airbnb.com for sender-domain, subject:("Airbnb") for subject search, plus label_ids or include_read for mailbox filtering. For Gmail trash/delete, never use read as a lookup step. OR is supported for Gmail list/read searches and bulk trash/delete cleanup only at the top level, where it is split into separate Gmail clauses before merging or deleting. Nested OR inside parentheses is rejected as malformed. For bulk cleanup, choose the Gmail query shape that matches your intent: subject:("Airbnb") for subject-based cleanup, from:info@airbnb.com for exact sender cleanup, and from:airbnb.com for sender-domain cleanup. If you need multiple cleanup targets in one call, join them with OR and the bridge will split them into separate Gmail clauses as long as each clause is complete. For Gmail and Calendar writes, if a timezone argument is omitted, the bridge assumes the local Tango timezone from `TIME_ZONE` / `settings.TIME_ZONE` rather than UTC. For Gmail writes, create a draft first and then send it when ready. Calendar create, update, and delete workflows are supported. The preferred delete pattern in each case is action_kind=delete with operation=trash (or omit operation and let it default) plus the matching Gmail query. Keep delete_mode at trash unless you explicitly want permanent deletion. Gmail OR fan-out is capped at 10 top-level clauses by default; set TOOLRUNNER_GMAIL_OR_CLAUSE_LIMIT to adjust it. If the agent accidentally writes `from:@domain.com` or adds stray spaces after query tokens, the bridge normalizes that to the canonical Gmail form. The payload contract stays JSON-in / JSON-out so future Google surfaces can reuse the same shape.',
+        "description": 'Google bridge for Gmail, Gmail settings filters, Calendar, Drive, Docs, and Sheets reads plus Gmail draft/send workflows and Gmail trash/delete workflows and Calendar read/create/update/delete workflows are supported. Bare Gmail list reads default to unread messages. Use include_read=true when you want all Gmail messages, or provide a query/label filter for a narrower mailbox view. Gmail list/read query filters support exact sender, sender domain, subject, and top-level OR splitting across those clauses. Gmail settings filter management is available for list/create/update/delete, criteria.query is planned before filter creation, and dry_run can preview the candidate match set before any filter is written. Use account_scope=all when you want the bridge to fan out across every active connected account and merge the results. For Gmail trash/delete queries, use account_scope=all when you want the same query to apply across every connected account. Calendar list reads can omit calendar_id or use all to inspect every calendar on the connected account, while primary stays available when you explicitly want one calendar. Drive pickers and Google file attachments should normalize into the same pending attachment flow as local files. For Gmail reads, use query filters such as from:info@airbnb.com for exact sender, from:airbnb.com for sender-domain, subject:("Airbnb") for subject search, plus label_ids or include_read for mailbox filtering. For Gmail trash/delete, never use read as a lookup step. OR is supported for Gmail list/read searches and bulk trash/delete cleanup only at the top level, where it is split into separate Gmail clauses before merging or deleting. Nested OR inside parentheses is rejected as malformed. For bulk cleanup, choose the Gmail query shape that matches your intent: subject:("Airbnb") for subject-based cleanup, from:info@airbnb.com for exact sender cleanup, and from:airbnb.com for sender-domain cleanup. If you need multiple cleanup targets in one call, join them with OR and the bridge will split them into separate Gmail clauses as long as each clause is complete. For Gmail and Calendar writes, if a timezone argument is omitted, the bridge assumes the local Tango timezone from `TIME_ZONE` / `settings.TIME_ZONE` rather than UTC. For Gmail writes, create a draft first and then send it when ready. Calendar create, update, and delete workflows are supported. The preferred delete pattern in each case is action_kind=delete with operation=trash (or omit operation and let it default) plus the matching Gmail query. Keep delete_mode at trash unless you explicitly want permanent deletion. Gmail OR fan-out is capped at 10 top-level clauses by default; set TOOLRUNNER_GMAIL_OR_CLAUSE_LIMIT to adjust it. If the agent accidentally writes `from:@domain.com` or adds stray spaces after query tokens, the bridge normalizes that to the canonical Gmail form. The payload contract stays JSON-in / JSON-out so future Google surfaces can reuse the same shape.',
         "tools": [
             {
                 "name": GOOGLE_BRIDGE_TOOL_NAME,
@@ -2433,6 +2491,68 @@ TOOL_REGISTRY = [
                         "parse": {"type": "string", "enum": ["mypy", "pyright", "tsc", "none"]},
                     },
                     "required": ["tool"],
+                },
+                "requires_approval": False,
+                "released": True,
+            },
+            {
+                "name": "send_telegram",
+                "description": "Send a message to the agent's paired Telegram conversation. Target is currently paired only; future versions may support explicit chat IDs. Optional name prepends a bold lower-case timestamp line.",
+                "risk": ToolRisk.ELEVATED,
+                "args_schema": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["target", "text"],
+                    "properties": {
+                        "target": {
+                            "type": "string",
+                            "enum": ["paired"],
+                            "description": "Delivery target. Currently paired only; future versions may allow explicit chat IDs.",
+                        },
+                        "text": {
+                            "type": "string",
+                            "description": "Message body to send to the paired Telegram conversation.",
+                        },
+                        "name": {
+                            "type": "string",
+                            "description": "Optional lower-case label prepended to the message with a local timestamp.",
+                        },
+                        "parse_mode": {
+                            "type": "string",
+                            "enum": ["MarkdownV2", "HTML", "Markdown"],
+                            "description": "Telegram message formatting mode, mirroring sendMessage.parse_mode.",
+                        },
+                        "disable_web_page_preview": {
+                            "type": "boolean",
+                            "description": "Whether to disable link previews, mirroring sendMessage.disable_web_page_preview.",
+                        },
+                        "disable_notification": {
+                            "type": "boolean",
+                            "description": "Whether to send the message silently, mirroring sendMessage.disable_notification.",
+                        },
+                        "reply_to_message_id": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "description": "Reply target message ID, mirroring sendMessage.reply_to_message_id.",
+                        },
+                        "allow_sending_without_reply": {
+                            "type": "boolean",
+                            "description": "Allow the reply to send even if the referenced message is missing, mirroring sendMessage.allow_sending_without_reply.",
+                        },
+                        "protect_content": {
+                            "type": "boolean",
+                            "description": "Whether to protect forwarded content, mirroring sendMessage.protect_content.",
+                        },
+                        "message_thread_id": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "description": "Forum topic thread ID, mirroring sendMessage.message_thread_id.",
+                        },
+                        "reply_markup": {
+                            "type": "object",
+                            "description": "Telegram reply markup payload, mirroring sendMessage.reply_markup.",
+                        },
+                    },
                 },
                 "requires_approval": False,
                 "released": True,
