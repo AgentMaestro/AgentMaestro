@@ -71,3 +71,30 @@ def test_build_input_items_compacts_large_google_bridge_tool_output():
     assert len(items[0]["output"]) < 6000
     assert "Returned 50 Gmail messages." in items[0]["output"]
 
+
+def test_build_input_items_compacts_people_bridge_tool_output():
+    history = [
+        {
+            "role": "tool",
+            "tool_call_id": "tool_row_1",
+            "provider_call_id": "call_1",
+            "tool_name": "google_bridge",
+            "content": (
+                '{"ok":true,"integration_kind":"google","resource_kind":"people","action_kind":"read",'
+                '"operation":"list","summary_text":"Returned 2 Google contacts.","result":'
+                '{"connections":[{"resourceName":"people/c1","names":[{"displayName":"Scott Kissinger"}],'
+                '"emailAddresses":[{"value":"scott@example.com"}]},'
+                '{"resourceName":"people/c2","names":[{"displayName":"Scott Contact"}]}],'
+                '"nextPageToken":"","nextSyncToken":"sync-1","totalPeople":2,"totalItems":2}}'
+            ),
+        }
+    ]
+
+    items = build_input_items(history, previous_response_id="resp_123", outstanding_provider_call_id="call_1")
+
+    assert len(items) == 1
+    assert items[0]["type"] == "function_call_output"
+    assert len(items[0]["output"]) < 6000
+    assert "Returned 2 Google contacts." in items[0]["output"]
+    assert "connections_count" in items[0]["output"]
+

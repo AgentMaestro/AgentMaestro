@@ -29,6 +29,11 @@ _PROMPT_FIELD_ORDER = (
     "email",
     "google_subject",
     "query",
+    "person_fields",
+    "read_mask",
+    "person",
+    "update_person_fields",
+    "resource_name",
     "message_id",
     "filter_id",
     "criteria",
@@ -40,6 +45,12 @@ _PROMPT_FIELD_ORDER = (
     "spreadsheet_id",
     "range",
     "export_mime_type",
+    "page_size",
+    "page_token",
+    "sort_order",
+    "request_sync_token",
+    "sync_token",
+    "sources",
     "include_read",
     "to",
     "cc",
@@ -607,6 +618,21 @@ def _execute_google_task_for_account(
             data, summary_text = _execute_drive_export_for_account(client=client, normalized=normalized)
         else:
             raise GoogleBridgeTaskError(f"Unsupported Google drive operation '{operation}'.")
+    elif resource_kind == "people":
+        if operation == "list":
+            data, summary_text = _execute_people_list_for_account(client=client, normalized=normalized)
+        elif operation == "search":
+            data, summary_text = _execute_people_search_for_account(client=client, normalized=normalized)
+        elif operation == "read":
+            data, summary_text = _execute_people_read_for_account(client=client, normalized=normalized)
+        elif operation == "create":
+            data, summary_text = _execute_people_create_for_account(client=client, normalized=normalized)
+        elif operation == "update":
+            data, summary_text = _execute_people_update_for_account(client=client, normalized=normalized)
+        elif operation == "delete":
+            data, summary_text = _execute_people_delete_for_account(client=client, normalized=normalized)
+        else:
+            raise GoogleBridgeTaskError(f"Unsupported Google people operation '{operation}'.")
     elif resource_kind == "docs":
         if operation == "export":
             data, summary_text = _execute_docs_export_for_account(client=client, normalized=normalized)
@@ -740,6 +766,162 @@ def _execute_calendar_list_for_account(
         "matched_queries": [query for query in queries if query],
     }
     return data, _summarize_calendar_list(data)
+
+
+def _execute_people_list_for_account(
+    *,
+    client: GoogleBridgeClient,
+    normalized: dict[str, object],
+) -> tuple[dict[str, object], str]:
+    person_fields = str(normalized.get("person_fields") or "").strip()
+    if not person_fields:
+        raise GoogleBridgeTaskError("People list tasks require person_fields.")
+    data = client.list_people_connections(
+        person_fields=person_fields,
+        page_size=int(normalized.get("page_size") or 100),
+        page_token=str(normalized.get("page_token") or ""),
+        sort_order=str(normalized.get("sort_order") or ""),
+        request_sync_token=_normalize_bool(normalized.get("request_sync_token")),
+        sync_token=str(normalized.get("sync_token") or ""),
+        sources=_normalize_string_list(normalized.get("sources")),
+    )
+    normalized_data = {
+        "connections": list(data.get("connections") or []),
+        "nextPageToken": data.get("nextPageToken") or "",
+        "nextSyncToken": data.get("nextSyncToken") or "",
+        "totalPeople": int(data.get("totalPeople") or 0),
+        "totalItems": int(data.get("totalItems") or 0),
+        "person_fields": person_fields,
+        "page_size": int(normalized.get("page_size") or 100),
+        "page_token": str(normalized.get("page_token") or ""),
+        "sort_order": str(normalized.get("sort_order") or ""),
+        "request_sync_token": bool(_normalize_bool(normalized.get("request_sync_token"))),
+        "sync_token": str(normalized.get("sync_token") or ""),
+        "sources": _normalize_string_list(normalized.get("sources")),
+    }
+    return normalized_data, _summarize_people_connections(normalized_data)
+
+
+def _execute_people_search_for_account(
+    *,
+    client: GoogleBridgeClient,
+    normalized: dict[str, object],
+) -> tuple[dict[str, object], str]:
+    query = str(normalized.get("query") or "").strip()
+    if not query:
+        raise GoogleBridgeTaskError("People search tasks require query.")
+    read_mask = str(normalized.get("read_mask") or normalized.get("person_fields") or "").strip()
+    if not read_mask:
+        raise GoogleBridgeTaskError("People search tasks require read_mask or person_fields.")
+    data = client.search_people_contacts(
+        query=query,
+        read_mask=read_mask,
+        page_size=int(normalized.get("page_size") or 10),
+        page_token=str(normalized.get("page_token") or ""),
+        sources=_normalize_string_list(normalized.get("sources")),
+    )
+    normalized_data = {
+        "results": list(data.get("results") or []),
+        "query": query,
+        "read_mask": read_mask,
+        "page_size": int(normalized.get("page_size") or 10),
+        "page_token": str(normalized.get("page_token") or ""),
+        "sources": _normalize_string_list(normalized.get("sources")),
+    }
+    return normalized_data, _summarize_people_search(normalized_data)
+
+
+def _execute_people_read_for_account(
+    *,
+    client: GoogleBridgeClient,
+    normalized: dict[str, object],
+) -> tuple[dict[str, object], str]:
+    resource_name = str(normalized.get("resource_name") or "").strip()
+    if not resource_name:
+        raise GoogleBridgeTaskError("People read tasks require resource_name.")
+    person_fields = str(normalized.get("person_fields") or "").strip()
+    if not person_fields:
+        raise GoogleBridgeTaskError("People read tasks require person_fields.")
+    data = client.get_people(
+        resource_name,
+        person_fields=person_fields,
+        sources=_normalize_string_list(normalized.get("sources")),
+    )
+    normalized_data = dict(data)
+    normalized_data["resource_name"] = resource_name
+    normalized_data["person_fields"] = person_fields
+    normalized_data["sources"] = _normalize_string_list(normalized.get("sources"))
+    return normalized_data, _summarize_people_person(normalized_data)
+
+
+def _execute_people_create_for_account(
+    *,
+    client: GoogleBridgeClient,
+    normalized: dict[str, object],
+) -> tuple[dict[str, object], str]:
+    person = _normalize_people_contact_payload(normalized.get("person"))
+    if not person:
+        raise GoogleBridgeTaskError("People create tasks require person.")
+    person_fields = _normalize_people_field_mask(normalized.get("person_fields")) or "names,emailAddresses,phoneNumbers,metadata"
+    data = client.create_people_contact(
+        person=person,
+        person_fields=person_fields,
+    )
+    normalized_data = dict(data)
+    normalized_data["person"] = person
+    normalized_data["person_fields"] = person_fields
+    return normalized_data, _summarize_people_person_action(normalized_data, action="created")
+
+
+def _execute_people_update_for_account(
+    *,
+    client: GoogleBridgeClient,
+    normalized: dict[str, object],
+) -> tuple[dict[str, object], str]:
+    resource_name = str(normalized.get("resource_name") or "").strip()
+    if not resource_name:
+        raise GoogleBridgeTaskError("People update tasks require resource_name.")
+    person = _normalize_people_contact_payload(normalized.get("person"))
+    if not person:
+        raise GoogleBridgeTaskError("People update tasks require person.")
+    update_person_fields = _normalize_people_field_mask(normalized.get("update_person_fields"))
+    if not update_person_fields:
+        raise GoogleBridgeTaskError("People update tasks require update_person_fields.")
+    if not _people_contact_has_sources(person):
+        raise GoogleBridgeTaskError("People update tasks require person.metadata.sources.")
+    if not _people_contact_has_etag(person):
+        raise GoogleBridgeTaskError(
+            "People update tasks require person.etag or person.metadata.sources[].etag. Read the contact first, then reuse the current etag before updating."
+        )
+    person_fields = _normalize_people_field_mask(normalized.get("person_fields")) or "names,emailAddresses,phoneNumbers,metadata"
+    data = client.update_people_contact(
+        resource_name,
+        person=person,
+        person_fields=person_fields,
+        update_person_fields=update_person_fields,
+    )
+    normalized_data = dict(data)
+    normalized_data["resource_name"] = resource_name
+    normalized_data["person"] = person
+    normalized_data["person_fields"] = person_fields
+    normalized_data["update_person_fields"] = update_person_fields
+    return normalized_data, _summarize_people_person_action(normalized_data, action="updated")
+
+
+def _execute_people_delete_for_account(
+    *,
+    client: GoogleBridgeClient,
+    normalized: dict[str, object],
+) -> tuple[dict[str, object], str]:
+    resource_name = str(normalized.get("resource_name") or "").strip()
+    if not resource_name:
+        raise GoogleBridgeTaskError("People delete tasks require resource_name.")
+    client.delete_people_contact(resource_name)
+    normalized_data = {
+        "resource_name": resource_name,
+        "deleted": True,
+    }
+    return normalized_data, f"Google contact deleted. Resource: {resource_name}"
 
 
 def _execute_drive_list_for_account(
@@ -954,6 +1136,15 @@ def _execute_google_step(
     if (
         normalized.get("account_scope") == "all"
         and len(selected_accounts) > 1
+        and resource_kind == "people"
+        and operation in {"create", "update", "delete"}
+    ):
+        raise GoogleBridgeTaskError(
+            "People write tasks require a specific connected account. Use email or google_subject to target the account explicitly."
+        )
+    if (
+        normalized.get("account_scope") == "all"
+        and len(selected_accounts) > 1
         and resource_kind == "drive"
         and operation in {"list", "read"}
         and not str(normalized.get("file_id") or "").strip()
@@ -970,12 +1161,29 @@ def _execute_google_step(
     elif (
         normalized.get("account_scope") == "all"
         and len(selected_accounts) > 1
+        and resource_kind == "people"
+        and operation in {"list", "search"}
+    ):
+        result, summary_text = _execute_merged_people_task(selected_accounts, normalized, operation)
+    elif (
+        normalized.get("account_scope") == "all"
+        and len(selected_accounts) > 1
         and resource_kind == "drive"
         and operation in {"read", "export"}
         and str(normalized.get("file_id") or "").strip()
     ):
         raise GoogleBridgeTaskError(
             "Drive file read/export tasks require a specific connected account. Use email or google_subject to target the account explicitly."
+        )
+    elif (
+        normalized.get("account_scope") == "all"
+        and len(selected_accounts) > 1
+        and resource_kind == "people"
+        and operation == "read"
+        and str(normalized.get("resource_name") or "").strip()
+    ):
+        raise GoogleBridgeTaskError(
+            "People read-by-resource-name tasks require a specific connected account. Use email or google_subject to target the account explicitly."
         )
     elif normalized.get("account_scope") == "all" and len(selected_accounts) > 1 and resource_kind in {"docs", "sheets"}:
         raise GoogleBridgeTaskError(
@@ -1108,6 +1316,64 @@ def _execute_merged_list_task(
     return (
         {"items": merged_items, "calendars": merged_calendars, "accounts": account_summaries},
         f"Found {len(merged_items)} calendar events across {len(accounts)} accounts and {len(merged_calendars)} calendars.",
+    )
+
+
+def _execute_merged_people_task(
+    accounts: list[GoogleAccount],
+    normalized: dict[str, object],
+    operation: str,
+) -> tuple[dict[str, object], str]:
+    merged_people: list[dict[str, object]] = []
+    account_summaries: list[dict[str, object]] = []
+    seen_resource_names: set[str] = set()
+    for connection in accounts:
+        data, summary_text = _execute_google_task_for_account(connection, normalized, "people", operation)
+        account_summaries.append(
+            {
+                "google_subject": connection.google_subject,
+                "email": connection.email,
+                "summary_text": summary_text,
+            }
+        )
+        if operation == "search":
+            items = list(data.get("results") or [])
+            for item in items:
+                person = _extract_people_person(item)
+                resource_name = _people_resource_name(person)
+                if resource_name and resource_name in seen_resource_names:
+                    continue
+                if resource_name:
+                    seen_resource_names.add(resource_name)
+                merged_people.append({"person": person})
+        else:
+            items = list(data.get("connections") or [])
+            for item in items:
+                person = dict(item or {})
+                resource_name = _people_resource_name(person)
+                if resource_name and resource_name in seen_resource_names:
+                    continue
+                if resource_name:
+                    seen_resource_names.add(resource_name)
+                merged_people.append(person)
+
+    max_results = int(normalized.get("max_results") or 20)
+    merged_people = merged_people[:max_results]
+    if operation == "search":
+        return (
+            {"results": merged_people, "accounts": account_summaries, "query": str(normalized.get("query") or "").strip()},
+            f"Returned {len(merged_people)} Google contacts search results across {len(accounts)} accounts.",
+        )
+    return (
+        {
+            "connections": merged_people,
+            "accounts": account_summaries,
+            "nextPageToken": "",
+            "nextSyncToken": "",
+            "totalPeople": len(merged_people),
+            "totalItems": len(merged_people),
+        },
+        f"Returned {len(merged_people)} Google contacts across {len(accounts)} accounts.",
     )
 
 
@@ -1270,9 +1536,9 @@ def _normalize_google_step(step: dict | None, *, defaults: dict[str, object] | N
     account_scope = str(raw.get("account_scope") or "primary").strip().lower()
     if integration_kind != "google":
         raise GoogleBridgeTaskError(f"Google step {step_index} only accepts integration_kind=google.")
-    if resource_kind not in {"gmail", "gmail_settings", "calendar", "drive", "docs", "sheets"}:
+    if resource_kind not in {"gmail", "gmail_settings", "calendar", "drive", "docs", "sheets", "people"}:
         raise GoogleBridgeTaskError(
-            f"Google step {step_index} requires resource_kind=gmail, gmail_settings, calendar, drive, docs, or sheets."
+            f"Google step {step_index} requires resource_kind=gmail, gmail_settings, calendar, drive, docs, sheets, or people."
         )
     if account_scope not in {"primary", "all"}:
         raise GoogleBridgeTaskError(f"Google step {step_index} requires account_scope=primary or all.")
@@ -1456,6 +1722,96 @@ def _normalize_google_step(step: dict | None, *, defaults: dict[str, object] | N
                 raise GoogleBridgeTaskError(f"Google step {step_index} requires operation=delete for Calendar delete workflows.")
             if not raw["event_id"]:
                 raise GoogleBridgeTaskError(f"Google step {step_index} requires event_id for Calendar delete workflows.")
+    elif resource_kind == "people":
+        if action_kind == "list":
+            action_kind = "read"
+        if action_kind not in {"read", "search", "create", "update", "delete"}:
+            raise GoogleBridgeTaskError(
+                f"Google step {step_index} currently supports read, search, create, update, and delete actions for People contacts."
+            )
+        raw["person_fields"] = _normalize_people_field_mask(raw.get("person_fields") or raw.get("read_mask"))
+        raw["read_mask"] = _normalize_people_field_mask(raw.get("read_mask") or raw.get("person_fields"))
+        raw["resource_name"] = str(raw.get("resource_name") or "").strip()
+        raw["page_token"] = str(raw.get("page_token") or "").strip()
+        raw["sort_order"] = str(raw.get("sort_order") or "").strip()
+        raw["sync_token"] = str(raw.get("sync_token") or "").strip()
+        raw["sources"] = _normalize_string_list(raw.get("sources"))
+        page_size_default = 10 if operation == "search" else 100
+        if action_kind == "search" and operation == "list":
+            operation = "search"
+        if action_kind in {"create", "update", "delete"} and operation == "list":
+            operation = action_kind
+        if action_kind in {"create", "update", "delete"} and operation != action_kind:
+            raise GoogleBridgeTaskError(
+                f"Google step {step_index} requires operation={action_kind} for People {action_kind} workflows."
+            )
+        raw["page_size"] = int(raw.get("page_size") or page_size_default)
+        raw["person"] = _normalize_people_contact_payload(raw.get("person"))
+        raw["update_person_fields"] = _normalize_people_field_mask(raw.get("update_person_fields"))
+        if operation == "list":
+            if raw["query"]:
+                raise GoogleBridgeTaskError(
+                    f"Google step {step_index} does not support query strings for People list workflows."
+                )
+            if not raw["person_fields"]:
+                raise GoogleBridgeTaskError(f"Google step {step_index} requires person_fields for People list workflows.")
+        elif operation == "search":
+            if not raw["query"]:
+                raise GoogleBridgeTaskError(f"Google step {step_index} requires query for People search workflows.")
+            if not raw["read_mask"]:
+                raise GoogleBridgeTaskError(
+                    f"Google step {step_index} requires read_mask or person_fields for People search workflows."
+                )
+        elif operation == "read":
+            if not raw["resource_name"]:
+                raise GoogleBridgeTaskError(f"Google step {step_index} requires resource_name for People read workflows.")
+            if not raw["person_fields"]:
+                raise GoogleBridgeTaskError(f"Google step {step_index} requires person_fields for People read workflows.")
+        elif operation == "create":
+            if action_kind != "create":
+                raise GoogleBridgeTaskError(
+                    f"Google step {step_index} requires action_kind=create for People create workflows."
+                )
+            if not raw["person"]:
+                raise GoogleBridgeTaskError(f"Google step {step_index} requires person for People create workflows.")
+            if not raw["person_fields"]:
+                raw["person_fields"] = "names,emailAddresses,phoneNumbers,metadata"
+            raw["read_mask"] = raw["person_fields"]
+        elif operation == "update":
+            if action_kind != "update":
+                raise GoogleBridgeTaskError(
+                    f"Google step {step_index} requires action_kind=update for People update workflows."
+                )
+            if not raw["resource_name"]:
+                raise GoogleBridgeTaskError(f"Google step {step_index} requires resource_name for People update workflows.")
+            if not raw["person"]:
+                raise GoogleBridgeTaskError(f"Google step {step_index} requires person for People update workflows.")
+            if not raw["update_person_fields"]:
+                raise GoogleBridgeTaskError(
+                    f"Google step {step_index} requires update_person_fields for People update workflows."
+                )
+            if not _people_contact_has_sources(raw["person"]):
+                raise GoogleBridgeTaskError(
+                    f"Google step {step_index} requires person.metadata.sources for People update workflows."
+                )
+            if not _people_contact_has_etag(raw["person"]):
+                raise GoogleBridgeTaskError(
+                    f"Google step {step_index} requires person.etag or person.metadata.sources[].etag for People update workflows. Read the contact first, then reuse the current etag before updating."
+                )
+            if not raw["person_fields"]:
+                raw["person_fields"] = "names,emailAddresses,phoneNumbers,metadata"
+            raw["read_mask"] = raw["person_fields"]
+        elif operation == "delete":
+            if action_kind != "delete":
+                raise GoogleBridgeTaskError(
+                    f"Google step {step_index} requires action_kind=delete for People delete workflows."
+                )
+            if not raw["resource_name"]:
+                raise GoogleBridgeTaskError(f"Google step {step_index} requires resource_name for People delete workflows.")
+        else:
+            raise GoogleBridgeTaskError(
+                f"Google step {step_index} currently supports list, search, read, create, update, and delete operations for People contacts."
+            )
     else:
         if action_kind == "list":
             action_kind = "read"
@@ -1605,6 +1961,80 @@ def _normalize_string_list(value: object) -> list[str]:
         return result
     text = str(value).strip()
     return [text] if text else []
+
+
+def _normalize_people_field_mask(value: object) -> str:
+    if value in (None, ""):
+        return ""
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return ""
+        parts = [part.strip() for part in text.split(",") if part.strip()]
+        return ",".join(parts)
+    if isinstance(value, dict):
+        return _normalize_people_field_mask(list(value.values()))
+    if isinstance(value, Iterable):
+        parts: list[str] = []
+        for item in value:
+            text = str(item or "").strip()
+            if text:
+                parts.extend(part.strip() for part in text.split(",") if part.strip())
+        return ",".join(parts)
+    text = str(value).strip()
+    return text
+
+
+def _normalize_people_contact_payload(value: object) -> dict[str, object]:
+    if not isinstance(value, dict):
+        return {}
+    payload = dict(value)
+    resource_name = str(payload.get("resourceName") or payload.get("resource_name") or "").strip()
+    if resource_name:
+        payload["resourceName"] = resource_name
+    else:
+        payload.pop("resourceName", None)
+        payload.pop("resource_name", None)
+    metadata = payload.get("metadata")
+    if isinstance(metadata, dict):
+        metadata_payload = {
+            str(key): raw_value
+            for key, raw_value in metadata.items()
+            if raw_value not in (None, "", [], {}, ())
+        }
+        if metadata_payload:
+            payload["metadata"] = metadata_payload
+        else:
+            payload.pop("metadata", None)
+    return payload
+
+
+def _people_contact_has_sources(person: dict[str, object]) -> bool:
+    metadata = person.get("metadata")
+    if not isinstance(metadata, dict):
+        return False
+    sources = metadata.get("sources")
+    if isinstance(sources, list):
+        return any(source for source in sources)
+    return bool(sources)
+
+
+def _people_contact_has_etag(person: dict[str, object]) -> bool:
+    etag = str(person.get("etag") or "").strip()
+    if etag:
+        return True
+    metadata = person.get("metadata")
+    if not isinstance(metadata, dict):
+        return False
+    sources = metadata.get("sources")
+    if not isinstance(sources, list):
+        return False
+    for source in sources:
+        if not isinstance(source, dict):
+            continue
+        if str(source.get("etag") or "").strip():
+            return True
+    return False
 
 
 def _normalize_bool(value: object) -> bool:
@@ -2005,6 +2435,115 @@ def _summarize_drive_list(data: dict, *, query: str = "") -> str:
     if query:
         return f"Returned {len(files)} Drive files for query '{query}'. Files: {'; '.join(previews)}."
     return f"Returned {len(files)} Drive files. Files: {'; '.join(previews)}."
+
+
+def _summarize_people_connections(data: dict) -> str:
+    connections = list(data.get("connections") or [])
+    if not connections:
+        return "No Google contacts were returned."
+    previews: list[str] = []
+    for item in connections[:5]:
+        person = dict(item or {})
+        parts = _summarize_people_person_parts(person)
+        if parts:
+            previews.append(" | ".join(parts))
+    return f"Returned {len(connections)} Google contacts. Contacts: {'; '.join(previews)}."
+
+
+def _summarize_people_search(data: dict) -> str:
+    results = list(data.get("results") or [])
+    query = str(data.get("query") or "").strip()
+    if not results:
+        return "No Google contacts matched the search query." if not query else f"No Google contacts matched query '{query}'."
+    previews: list[str] = []
+    for item in results[:5]:
+        person = _extract_people_person(item)
+        parts = _summarize_people_person_parts(person)
+        if parts:
+            previews.append(" | ".join(parts))
+    if query:
+        return f"Returned {len(results)} Google contacts for query '{query}'. Contacts: {'; '.join(previews)}."
+    return f"Returned {len(results)} Google contacts. Contacts: {'; '.join(previews)}."
+
+
+def _summarize_people_person(data: dict) -> str:
+    parts = _summarize_people_person_parts(dict(data or {}))
+    if not parts:
+        return "Google contact retrieved."
+    return "Google contact retrieved. " + " ".join(parts)
+
+
+def _summarize_people_person_action(data: dict, *, action: str) -> str:
+    parts = _summarize_people_person_parts(dict(data or {}))
+    if not parts:
+        return f"Google contact {action}."
+    return f"Google contact {action}. " + " ".join(parts)
+
+
+def _summarize_people_person_parts(person: dict[str, object]) -> list[str]:
+    parts: list[str] = []
+    resource_name = _people_resource_name(person)
+    if resource_name:
+        parts.append(f"Resource: {resource_name}")
+    display_name = _people_display_name(person)
+    if display_name:
+        parts.append(f"Name: {display_name}")
+    email = _people_primary_email(person)
+    if email:
+        parts.append(f"Email: {email}")
+    phone = _people_primary_phone(person)
+    if phone:
+        parts.append(f"Phone: {phone}")
+    return parts
+
+
+def _extract_people_person(item: object) -> dict[str, object]:
+    if isinstance(item, dict):
+        person = item.get("person")
+        if isinstance(person, dict):
+            return dict(person)
+        return dict(item)
+    return {}
+
+
+def _people_resource_name(person: dict[str, object]) -> str:
+    return str(person.get("resourceName") or person.get("resource_name") or "").strip()
+
+
+def _people_display_name(person: dict[str, object]) -> str:
+    names = person.get("names") or []
+    if isinstance(names, list):
+        for item in names:
+            if not isinstance(item, dict):
+                continue
+            display_name = str(item.get("displayName") or "").strip()
+            if display_name:
+                return display_name
+    return str(person.get("displayName") or "").strip()
+
+
+def _people_primary_email(person: dict[str, object]) -> str:
+    emails = person.get("emailAddresses") or []
+    if isinstance(emails, list):
+        for item in emails:
+            if not isinstance(item, dict):
+                continue
+            address = str(item.get("value") or "").strip()
+            if address:
+                return address
+    return ""
+
+
+def _people_primary_phone(person: dict[str, object]) -> str:
+    phones = person.get("phoneNumbers") or []
+    if isinstance(phones, list):
+        for item in phones:
+            if not isinstance(item, dict):
+                continue
+            number = str(item.get("value") or "").strip()
+            if number:
+                return number
+    return ""
 
 
 def _summarize_drive_file(data: dict) -> str:

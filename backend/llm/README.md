@@ -219,11 +219,15 @@ Current fallback tool list:
 
 Google Bridge notes:
 
-- `google_bridge` is the model-visible JSON bridge for Gmail, Gmail settings filters, Calendar, Drive, Docs, and Sheets.
+- `google_bridge` is the model-visible JSON bridge for Gmail, Gmail settings filters, Calendar, Drive, Docs, Sheets, and People.
 - Drive queries support native Drive syntax such as `name contains 'README'`, `mimeType = 'application/vnd.google-apps.document'`, `modifiedTime >= '2024-01-01T00:00:00Z'`, `createdTime < '2024-02-01T00:00:00Z'`, and `trashed = false`.
 - Drive clauses should be joined with `and`, not comma-separated or space-separated.
 - `mimeType` is accepted as an alias for `mime_type` in Drive query payloads.
 - Docs and Sheets support direct `file_id` reads plus export workflows, with `document_id` and `spreadsheet_id` as aliases where appropriate.
+- People supports read/search plus single-contact writes with `query` plus `read_mask` for search, `person_fields` for list/read and create/update response shaping, `person` plus `person_fields` for create, `resource_name` plus `person`, `person.etag` or `person.metadata.sources[].etag`, and `update_person_fields` for update, and `resource_name` for delete.
+- People search example: `resource_kind=people`, `action_kind=search`, `query='Scott Kissinger'`, `read_mask='names,emailAddresses,phoneNumbers'`, `page_size=5`.
+- People update example: read the contact first, then use `resource_kind=people`, `action_kind=update`, `account_scope=primary` (or explicit `email` / `google_subject`), `resource_name='people/...'`, `person.etag='...'`, `person.metadata.sources[0].etag='...'`, `person_fields='names,emailAddresses,phoneNumbers,metadata'`, `update_person_fields='phoneNumbers'`, and the updated `person={...}`.
+- People update note: always read the contact first and reuse the exact returned `resource_name`, `etag`, and source `etag`; do not guess or synthesize those values.
 - When `google_bridge` returns a file result, it preserves the structured payload needed for attachment normalization and artifact handling.
 
 `webhook` is cataloged separately but is not part of the fallback `get_tool_schemas()` list yet because it still uses the dedicated ToolRunner webhook endpoint rather than the normal `/v1/run/tool` dispatch path.

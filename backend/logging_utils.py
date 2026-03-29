@@ -8,6 +8,7 @@ from django.conf import settings
 from scrubadub import Scrubber
 
 _SCRUBBER = Scrubber()
+_SCRUBBER.remove_detector("phone")
 _EMAIL_RE = re.compile(r"\b[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}\b")
 _URL_RE = re.compile(r"https?://[^\s<>\"]+")
 _BEARER_RE = re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._\-~+/=]{12,}")

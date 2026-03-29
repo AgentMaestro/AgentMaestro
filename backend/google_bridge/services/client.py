@@ -171,6 +171,133 @@ class GoogleBridgeClient:
             f"https://gmail.googleapis.com/gmail/v1/users/me/settings/filters/{filter_id}",
         )
 
+    def list_people_connections(
+        self,
+        *,
+        person_fields: str,
+        page_size: int = 100,
+        page_token: str = "",
+        sort_order: str = "",
+        request_sync_token: bool = False,
+        sync_token: str = "",
+        sources: list[str] | None = None,
+    ) -> dict:
+        params: dict[str, object] = {
+            "personFields": str(person_fields or "").strip(),
+            "pageSize": max(1, min(int(page_size or 100), 1000)),
+        }
+        if page_token.strip():
+            params["pageToken"] = page_token.strip()
+        if sort_order.strip():
+            params["sortOrder"] = sort_order.strip()
+        if request_sync_token:
+            params["requestSyncToken"] = "true"
+        if sync_token.strip():
+            params["syncToken"] = sync_token.strip()
+        if sources:
+            params["sources"] = [str(source).strip() for source in sources if str(source).strip()]
+        return self._request("GET", "https://people.googleapis.com/v1/people/me/connections", params=params)
+
+    def search_people_contacts(
+        self,
+        *,
+        query: str,
+        read_mask: str,
+        page_size: int = 10,
+        page_token: str = "",
+        sources: list[str] | None = None,
+    ) -> dict:
+        params: dict[str, object] = {
+            "query": str(query or "").strip(),
+            "readMask": str(read_mask or "").strip(),
+            "pageSize": max(1, min(int(page_size or 10), 30)),
+        }
+        if page_token.strip():
+            params["pageToken"] = page_token.strip()
+        if sources:
+            params["sources"] = [str(source).strip() for source in sources if str(source).strip()]
+        return self._request("GET", "https://people.googleapis.com/v1/people:searchContacts", params=params)
+
+    def get_people(self, resource_name: str, *, person_fields: str, sources: list[str] | None = None) -> dict:
+        params: dict[str, object] = {
+            "personFields": str(person_fields or "").strip(),
+        }
+        if sources:
+            params["sources"] = [str(source).strip() for source in sources if str(source).strip()]
+        resource_path = quote(str(resource_name or "").strip(), safe="/")
+        if not resource_path:
+            raise GoogleApiError("People get requires a resource name.")
+        return self._request(
+            "GET",
+            f"https://people.googleapis.com/v1/{resource_path}",
+            params=params,
+        )
+
+    def create_people_contact(self, *, person: dict, person_fields: str) -> dict:
+        person_fields_value = str(person_fields or "").strip()
+        if not person_fields_value:
+            raise GoogleApiError("People create requires person_fields.")
+        if not isinstance(person, dict):
+            raise GoogleApiError("People create requires a person object.")
+        params: dict[str, object] = {
+            "personFields": person_fields_value,
+        }
+        payload = dict(person)
+        payload.pop("resourceName", None)
+        payload.pop("resource_name", None)
+        if not payload:
+            raise GoogleApiError("People create requires a person payload.")
+        return self._request(
+            "POST",
+            "https://people.googleapis.com/v1/people:createContact",
+            params=params,
+            json=payload,
+        )
+
+    def update_people_contact(
+        self,
+        resource_name: str,
+        *,
+        person: dict,
+        person_fields: str,
+        update_person_fields: str,
+    ) -> dict:
+        person_fields_value = str(person_fields or "").strip()
+        update_person_fields_value = str(update_person_fields or "").strip()
+        if not person_fields_value:
+            raise GoogleApiError("People update requires person_fields.")
+        if not update_person_fields_value:
+            raise GoogleApiError("People update requires update_person_fields.")
+        if not isinstance(person, dict):
+            raise GoogleApiError("People update requires a person object.")
+        params: dict[str, object] = {
+            "personFields": person_fields_value,
+            "updatePersonFields": update_person_fields_value,
+        }
+        payload = dict(person)
+        payload.pop("resource_name", None)
+        resource_path = quote(str(resource_name or "").strip(), safe="/")
+        if not resource_path:
+            raise GoogleApiError("People update requires a resource name.")
+        if not payload:
+            raise GoogleApiError("People update requires a person payload.")
+        payload["resourceName"] = str(resource_name or "").strip()
+        return self._request(
+            "PATCH",
+            f"https://people.googleapis.com/v1/{resource_path}:updateContact",
+            params=params,
+            json=payload,
+        )
+
+    def delete_people_contact(self, resource_name: str) -> dict:
+        resource_path = quote(str(resource_name or "").strip(), safe="/")
+        if not resource_path:
+            raise GoogleApiError("People delete requires a resource name.")
+        return self._request(
+            "DELETE",
+            f"https://people.googleapis.com/v1/{resource_path}:deleteContact",
+        )
+
     def list_drive_files(
         self,
         *,

@@ -1,3 +1,4 @@
+from google_bridge.services.schema import GOOGLE_BRIDGE_TOOL_EXAMPLES
 from llm.services.tool_schemas import get_tool_schemas
 
 
@@ -183,6 +184,7 @@ def test_google_bridge_schema_advertises_mutation_aware_payload_contract():
     assert "drive" in resource_kind
     assert "docs" in resource_kind
     assert "sheets" in resource_kind
+    assert "search" in google_tool["parameters"]["properties"]["action_kind"]["enum"]
     assert "Draft and send are supported for Gmail writes" in action_kind
     assert "draft first" in action_kind
     assert "trash/delete workflows" in action_kind
@@ -194,6 +196,37 @@ def test_google_bridge_schema_advertises_mutation_aware_payload_contract():
     assert "supported query fields vary by surface" in query_description.lower()
     assert "drive list/read" in query_description.lower()
     assert "docs and sheets reads use direct file identifiers" in query_description.lower()
+
+
+def test_google_bridge_schema_advertises_people_support():
+    google_tool = next(tool for tool in get_tool_schemas() if tool["name"] == "google_bridge")
+
+    tool_description = google_tool["description"].lower()
+    description = google_tool["parameters"]["description"].lower()
+    query_description = google_tool["parameters"]["properties"]["query"]["description"].lower()
+    resource_kind = google_tool["parameters"]["properties"]["resource_kind"]["description"].lower()
+    operation_description = google_tool["parameters"]["properties"]["operation"]["description"].lower()
+
+    assert "people" in tool_description
+    assert "people" in description
+    assert "people" in resource_kind
+    assert "people" in operation_description
+    assert "people contact search uses query plus read_mask" in query_description
+    assert "search contacts with query plus read_mask" in description
+    assert "read a single contact with resource_name plus person_fields" in description
+    assert "create a contact with person and person_fields" in description
+    assert "update a contact with resource_name, person, person_fields, and update_person_fields" in description
+    assert "delete a contact with resource_name" in description
+
+
+def test_google_bridge_schema_advertises_people_write_examples():
+    example_text = str(GOOGLE_BRIDGE_TOOL_EXAMPLES).lower()
+
+    assert "action_kind': 'create'" in example_text
+    assert "action_kind': 'update'" in example_text
+    assert "action_kind': 'delete'" in example_text
+    assert "update_person_fields" in example_text
+    assert "resource_name': 'people/c1234567890" in example_text
 
 
 def test_lint_and_format_schema_advertise_cmd_only_for_command():

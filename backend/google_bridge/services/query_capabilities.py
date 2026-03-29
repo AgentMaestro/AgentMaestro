@@ -63,6 +63,21 @@ _DRIVE_QUERY_FIELDS = frozenset(
     }
 )
 
+_PEOPLE_QUERY_FIELDS = frozenset(
+    {
+        "query",
+        "person_fields",
+        "read_mask",
+        "resource_name",
+        "page_size",
+        "page_token",
+        "sort_order",
+        "request_sync_token",
+        "sync_token",
+        "sources",
+    }
+)
+
 
 def get_google_query_capabilities(*, resource_kind: str, action_kind: str, operation: str) -> GoogleQueryCapabilities:
     resource = str(resource_kind or "").strip().lower()
@@ -95,6 +110,16 @@ def get_google_query_capabilities(*, resource_kind: str, action_kind: str, opera
             query_enabled=action == "read" and operation_name in {"list", "read"},
             supported_fields=_DRIVE_QUERY_FIELDS,
             supported_operators=frozenset({"AND", "OR", "NOT"}),
+        )
+
+    if resource == "people":
+        return GoogleQueryCapabilities(
+            resource_kind="people",
+            action_kinds=frozenset({"read", "create", "update", "delete"}),
+            query_enabled=False,
+            supported_fields=_PEOPLE_QUERY_FIELDS,
+            supported_operators=frozenset(),
+            supports_parentheses=False,
         )
 
     if resource in {"docs", "sheets"}:

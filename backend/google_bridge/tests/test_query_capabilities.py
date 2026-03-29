@@ -7,6 +7,9 @@ def test_google_query_capabilities_document_surface_support():
     drive = get_google_query_capabilities(resource_kind="drive", action_kind="read", operation="list")
     docs = get_google_query_capabilities(resource_kind="docs", action_kind="read", operation="read")
     sheets = get_google_query_capabilities(resource_kind="sheets", action_kind="read", operation="read")
+    people_list = get_google_query_capabilities(resource_kind="people", action_kind="read", operation="list")
+    people_search = get_google_query_capabilities(resource_kind="people", action_kind="read", operation="search")
+    people_read = get_google_query_capabilities(resource_kind="people", action_kind="read", operation="read")
 
     assert gmail.query_enabled is True
     assert gmail.resource_kind == "gmail"
@@ -39,3 +42,24 @@ def test_google_query_capabilities_document_surface_support():
     assert sheets.supported_fields == frozenset()
     assert sheets.supported_operators == frozenset()
     assert sheets.supports_parentheses is False
+
+    assert people_list.query_enabled is False
+    assert people_list.resource_kind == "people"
+    assert people_list.action_kinds == frozenset({"read", "create", "update", "delete"})
+    assert {"person_fields", "read_mask", "resource_name", "page_size", "page_token", "sort_order", "request_sync_token", "sync_token", "sources"}.issubset(
+        people_list.supported_fields
+    )
+    assert people_list.supported_operators == frozenset()
+    assert people_list.supports_parentheses is False
+
+    assert people_search.query_enabled is False
+    assert people_search.resource_kind == "people"
+    assert people_search.supported_fields == people_list.supported_fields
+    assert people_search.supported_operators == frozenset()
+    assert people_search.supports_parentheses is False
+
+    assert people_read.query_enabled is False
+    assert people_read.resource_kind == "people"
+    assert people_read.supported_fields == people_list.supported_fields
+    assert people_read.supported_operators == frozenset()
+    assert people_read.supports_parentheses is False

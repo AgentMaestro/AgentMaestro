@@ -97,7 +97,19 @@ def _compact_google_result(result: dict[str, Any]) -> dict[str, Any]:
         if value not in (None, ""):
             summary[key] = _compact_value(value)
 
-    for key in ("messages", "items", "files", "filters", "filter", "preview_filters", "calendars", "accounts", "steps"):
+    for key in (
+        "messages",
+        "items",
+        "files",
+        "filters",
+        "filter",
+        "preview_filters",
+        "calendars",
+        "accounts",
+        "connections",
+        "results",
+        "steps",
+    ):
         value = result.get(key)
         if isinstance(value, list):
             summary[f"{key}_count"] = len(value)
@@ -105,7 +117,18 @@ def _compact_google_result(result: dict[str, Any]) -> dict[str, Any]:
         elif value is not None:
             summary[key] = _compact_value(value)
 
-    for key in ("resultSizeEstimate", "queued", "background", "child_run_id", "parent_run_id", "execution_mode"):
+    for key in (
+        "resultSizeEstimate",
+        "queued",
+        "background",
+        "child_run_id",
+        "parent_run_id",
+        "execution_mode",
+        "nextPageToken",
+        "nextSyncToken",
+        "totalPeople",
+        "totalItems",
+    ):
         value = result.get(key)
         if value not in (None, ""):
             summary[key] = _compact_value(value)

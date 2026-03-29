@@ -28,7 +28,11 @@ def _make_account():
         owner=user,
         google_subject="sub-123",
         email="user@example.com",
-        scopes=["https://www.googleapis.com/auth/gmail.readonly"],
+        scopes=[
+            "https://www.googleapis.com/auth/gmail.readonly",
+            "https://www.googleapis.com/auth/contacts.readonly",
+            "https://www.googleapis.com/auth/contacts",
+        ],
         token_expires_at=timezone.now() + timedelta(hours=1),
         is_active=True,
     )
@@ -2631,6 +2635,365 @@ def test_execute_google_task_canonicalizes_drive_date_and_boolean_aliases(monkey
 
     assert captured["q"] == "modifiedTime >= '2024-01-01T00:00:00Z' and createdTime < '2024-02-01T00:00:00Z' and trashed = false"
     assert result["result"]["query"] == "modifiedTime >= '2024-01-01T00:00:00Z' and createdTime < '2024-02-01T00:00:00Z' and trashed = false"
+
+
+def test_execute_google_task_supports_people_list_search_and_read(monkeypatch):
+    workspace, user, account = _make_account()
+
+    captured: dict[str, object] = {}
+
+    class FakeClient:
+        def __init__(self, connection):
+            self.connection = connection
+
+        def list_people_connections(
+            self,
+            *,
+            person_fields: str,
+            page_size: int = 100,
+            page_token: str = "",
+            sort_order: str = "",
+            request_sync_token: bool = False,
+            sync_token: str = "",
+            sources: list[str] | None = None,
+        ):
+            captured["list"] = {
+                "person_fields": person_fields,
+                "page_size": page_size,
+                "page_token": page_token,
+                "sort_order": sort_order,
+                "request_sync_token": request_sync_token,
+                "sync_token": sync_token,
+                "sources": sources,
+            }
+            return {
+                "connections": [
+                    {
+                        "resourceName": "people/c123",
+                        "names": [{"displayName": "Scott Kissinger"}],
+                        "emailAddresses": [{"value": "scott@example.com"}],
+                    }
+                ],
+                "nextPageToken": "",
+                "nextSyncToken": "sync-1",
+                "totalPeople": 1,
+            }
+
+        def search_people_contacts(
+            self,
+            *,
+            query: str,
+            read_mask: str,
+            page_size: int = 10,
+            page_token: str = "",
+            sources: list[str] | None = None,
+        ):
+            captured["search"] = {
+                "query": query,
+                "read_mask": read_mask,
+                "page_size": page_size,
+                "page_token": page_token,
+                "sources": sources,
+            }
+            return {
+                "results": [
+                    {
+                        "person": {
+                            "resourceName": "people/c456",
+                            "names": [{"displayName": "Scott Kissinger"}],
+                            "emailAddresses": [{"value": "scott@example.com"}],
+                        }
+                    }
+                ],
+                "totalItems": 1,
+            }
+
+        def get_people(self, resource_name: str, *, person_fields: str, sources: list[str] | None = None):
+            captured["read"] = {"resource_name": resource_name, "person_fields": person_fields, "sources": sources}
+            return {
+                "resourceName": resource_name,
+                "names": [{"displayName": "Scott Kissinger"}],
+                "emailAddresses": [{"value": "scott@example.com"}],
+            }
+
+        def create_people_contact(self, *, person: dict, person_fields: str):
+            captured["create"] = {"person": person, "person_fields": person_fields}
+            return {
+                "resourceName": "people/c789",
+                "names": [{"displayName": "New Contact"}],
+                "emailAddresses": [{"value": "new@example.com"}],
+            }
+
+        def update_people_contact(self, resource_name: str, *, person: dict, person_fields: str, update_person_fields: str):
+            captured["update"] = {
+                "resource_name": resource_name,
+                "person": person,
+                "person_fields": person_fields,
+                "update_person_fields": update_person_fields,
+            }
+            return {
+                "resourceName": resource_name,
+                "etag": "etag-1",
+                "metadata": {"sources": [{"type": "CONTACT", "etag": "source-etag-1"}]},
+                "names": [{"displayName": "Updated Contact"}],
+                "emailAddresses": [{"value": "updated@example.com"}],
+            }
+
+        def delete_people_contact(self, resource_name: str):
+            captured["delete"] = {"resource_name": resource_name}
+            return {}
+
+    monkeypatch.setattr("google_bridge.services.bridge.GoogleBridgeClient", FakeClient)
+
+    list_result = execute_google_task(
+        payload={
+            "integration_kind": "google",
+            "resource_kind": "people",
+            "action_kind": "read",
+            "operation": "list",
+            "person_fields": "names,emailAddresses",
+            "page_size": 25,
+            "request_sync_token": True,
+        },
+        workspace=workspace,
+        owner=user,
+        account=account,
+    )
+
+    search_result = execute_google_task(
+        payload={
+            "integration_kind": "google",
+            "resource_kind": "people",
+            "action_kind": "read",
+            "operation": "search",
+            "query": "Scott Kissinger",
+            "read_mask": "names,emailAddresses",
+            "page_size": 10,
+        },
+        workspace=workspace,
+        owner=user,
+        account=account,
+    )
+
+    read_result = execute_google_task(
+        payload={
+            "integration_kind": "google",
+            "resource_kind": "people",
+            "action_kind": "read",
+            "operation": "read",
+            "resource_name": "people/c456",
+            "person_fields": "names,emailAddresses",
+        },
+        workspace=workspace,
+        owner=user,
+        account=account,
+    )
+
+    create_result = execute_google_task(
+        payload={
+            "integration_kind": "google",
+            "resource_kind": "people",
+            "action_kind": "create",
+            "operation": "create",
+            "account_scope": "primary",
+            "person": {
+                "names": [{"givenName": "New", "familyName": "Contact"}],
+                "emailAddresses": [{"value": "new@example.com"}],
+            },
+        },
+        workspace=workspace,
+        owner=user,
+        account=account,
+    )
+
+    update_result = execute_google_task(
+        payload={
+            "integration_kind": "google",
+            "resource_kind": "people",
+            "action_kind": "update",
+            "operation": "update",
+            "account_scope": "primary",
+            "resource_name": "people/c789",
+            "person_fields": "names,emailAddresses,metadata",
+            "update_person_fields": "emailAddresses",
+            "person": {
+                "resourceName": "people/c789",
+                "etag": "etag-1",
+                "metadata": {"sources": [{"type": "CONTACT"}]},
+                "emailAddresses": [{"value": "updated@example.com"}],
+            },
+        },
+        workspace=workspace,
+        owner=user,
+        account=account,
+    )
+
+    delete_result = execute_google_task(
+        payload={
+            "integration_kind": "google",
+            "resource_kind": "people",
+            "action_kind": "delete",
+            "operation": "delete",
+            "account_scope": "primary",
+            "resource_name": "people/c789",
+        },
+        workspace=workspace,
+        owner=user,
+        account=account,
+    )
+
+    assert captured["list"]["person_fields"] == "names,emailAddresses"
+    assert captured["list"]["page_size"] == 25
+    assert captured["search"]["query"] == "Scott Kissinger"
+    assert captured["search"]["read_mask"] == "names,emailAddresses"
+    assert captured["read"]["resource_name"] == "people/c456"
+    assert captured["create"]["person_fields"] == "names,emailAddresses,phoneNumbers,metadata"
+    assert captured["create"]["person"]["names"][0]["givenName"] == "New"
+    assert captured["update"]["resource_name"] == "people/c789"
+    assert captured["update"]["update_person_fields"] == "emailAddresses"
+    assert captured["delete"]["resource_name"] == "people/c789"
+    assert "Returned 1 Google contacts" in list_result["summary_text"]
+    assert "Returned 1 Google contacts search results" in search_result["summary_text"]
+    assert "Google contact read" in read_result["summary_text"]
+    assert "Google contact created" in create_result["summary_text"]
+    assert "Google contact updated" in update_result["summary_text"]
+    assert "Google contact deleted" in delete_result["summary_text"]
+    assert list_result["result"]["connections"][0]["resourceName"] == "people/c123"
+    assert search_result["result"]["results"][0]["person"]["resourceName"] == "people/c456"
+    assert read_result["result"]["resourceName"] == "people/c456"
+    assert create_result["result"]["resourceName"] == "people/c789"
+    assert update_result["result"]["resourceName"] == "people/c789"
+    assert delete_result["result"]["deleted"] is True
+
+
+def test_normalize_google_payload_allows_people_search_action_kind():
+    payload = normalize_google_payload(
+        {
+            "integration_kind": "google",
+            "resource_kind": "people",
+            "action_kind": "search",
+            "query": "Scott Kissinger",
+            "read_mask": "names,emailAddresses",
+            "page_size": 5,
+        }
+    )
+
+    assert payload["resource_kind"] == "people"
+    assert payload["action_kind"] == "search"
+    assert payload["operation"] == "search"
+    assert payload["query"] == "Scott Kissinger"
+    assert payload["read_mask"] == "names,emailAddresses"
+
+
+def test_execute_google_task_rejects_people_writes_for_account_scope_all():
+    workspace, user, account = _make_account()
+    GoogleAccount.objects.create(
+        workspace=workspace,
+        owner=user,
+        google_subject="sub-456",
+        email="user2@example.com",
+        scopes=[
+            "https://www.googleapis.com/auth/gmail.readonly",
+            "https://www.googleapis.com/auth/contacts.readonly",
+            "https://www.googleapis.com/auth/contacts",
+        ],
+        token_expires_at=timezone.now() + timedelta(hours=1),
+        is_active=True,
+    )
+
+    with pytest.raises(
+        GoogleBridgeTaskError,
+        match="People write tasks require a specific connected account",
+    ):
+        execute_google_task(
+            payload={
+                "integration_kind": "google",
+                "resource_kind": "people",
+                "action_kind": "create",
+                "operation": "create",
+                "account_scope": "all",
+                "person": {
+                    "names": [{"givenName": "New", "familyName": "Contact"}],
+                },
+            },
+            workspace=workspace,
+            owner=user,
+            account=account,
+        )
+
+
+def test_normalize_google_payload_allows_people_write_actions():
+    create_payload = normalize_google_payload(
+        {
+            "integration_kind": "google",
+            "resource_kind": "people",
+            "action_kind": "create",
+            "account_scope": "primary",
+            "person": {
+                "names": [{"givenName": "New", "familyName": "Contact"}],
+            },
+        }
+    )
+    update_payload = normalize_google_payload(
+        {
+            "integration_kind": "google",
+            "resource_kind": "people",
+            "action_kind": "update",
+            "account_scope": "primary",
+            "resource_name": "people/c789",
+            "update_person_fields": "emailAddresses",
+            "person": {
+                "resourceName": "people/c789",
+                "etag": "etag-1",
+                "metadata": {"sources": [{"type": "CONTACT"}]},
+                "emailAddresses": [{"value": "updated@example.com"}],
+            },
+        }
+    )
+    delete_payload = normalize_google_payload(
+        {
+            "integration_kind": "google",
+            "resource_kind": "people",
+            "action_kind": "delete",
+            "account_scope": "primary",
+            "resource_name": "people/c789",
+        }
+    )
+
+    assert create_payload["operation"] == "create"
+    assert update_payload["operation"] == "update"
+    assert delete_payload["operation"] == "delete"
+    assert create_payload["person"]["names"][0]["givenName"] == "New"
+    assert update_payload["update_person_fields"] == "emailAddresses"
+    assert delete_payload["resource_name"] == "people/c789"
+
+
+def test_execute_google_task_requires_people_update_etag():
+    workspace, user, account = _make_account()
+
+    with pytest.raises(
+        GoogleBridgeTaskError,
+        match="requires person.etag or person.metadata.sources\\[\\]\\.etag",
+    ):
+        execute_google_task(
+            payload={
+                "integration_kind": "google",
+                "resource_kind": "people",
+                "action_kind": "update",
+                "operation": "update",
+                "account_scope": "primary",
+                "resource_name": "people/c789",
+                "update_person_fields": "emailAddresses",
+                "person": {
+                    "resourceName": "people/c789",
+                    "metadata": {"sources": [{"type": "CONTACT"}]},
+                    "emailAddresses": [{"value": "updated@example.com"}],
+                },
+            },
+            workspace=workspace,
+            owner=user,
+            account=account,
+        )
 
 
 def test_normalize_google_payload_allows_drive_list_query_without_file_id():

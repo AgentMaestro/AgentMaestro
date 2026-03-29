@@ -5,12 +5,13 @@ from logging_utils import scrub_sensitive_text, scrub_sensitive_value
 class ScrubbingTests(SimpleTestCase):
     def test_scrub_sensitive_text_preserves_emails_and_redacts_tokens(self):
         text = (
-            "Contact user@example.com with Bearer sk-proj-test1234567890abcdef and token=abc123xyz."
+            "Contact user@example.com or +1 (555) 123-4567 with Bearer sk-proj-test1234567890abcdef and token=abc123xyz."
         )
 
         sanitized = scrub_sensitive_text(text)
 
         self.assertIn("user@example.com", sanitized)
+        self.assertIn("+1 (555) 123-4567", sanitized)
         self.assertNotIn("sk-proj-test1234567890abcdef", sanitized)
         self.assertNotIn("abc123xyz", sanitized)
         self.assertIn("Bearer [REDACTED]", sanitized)
