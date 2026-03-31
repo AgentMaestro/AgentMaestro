@@ -90,6 +90,8 @@ Normalization rules used by the current implementation:
 
 `policy_name` is metadata you store with each agent that points at an `LLMModelProfile`. The UI shows `Policy: react` by default; when that policy is selected, the system context builder injects the full ReAct policy text described above. Other policy names still influence the model, temperature, and extras defined in their profile but do not append policy text. Policy definitions live in `backend/llm/policy.MD` (ReAct, Planner, Coder, etc.), and the system context explicitly tells the model where to find the file when a run starts.
 
+The agent itself also stores a `reasoning` setting. That value maps to OpenAI Responses `reasoning.effort` on the first request for a run and is independent from `policy_name`.
+
 Common policies are simply the names of the profiles you seed in Django admin:
 
 - `react` (captures the ReAct guidance: think step-by-step, call tools when needed, wait for responses, and only reply once the task is complete).
@@ -228,6 +230,7 @@ Google Bridge notes:
 - People search example: `resource_kind=people`, `action_kind=search`, `query='Scott Kissinger'`, `read_mask='names,emailAddresses,phoneNumbers'`, `page_size=5`.
 - People update example: read the contact first, then use `resource_kind=people`, `action_kind=update`, `account_scope=primary` (or explicit `email` / `google_subject`), `resource_name='people/...'`, `person.etag='...'`, `person.metadata.sources[0].etag='...'`, `person_fields='names,emailAddresses,phoneNumbers,metadata'`, `update_person_fields='phoneNumbers'`, and the updated `person={...}`.
 - People update note: always read the contact first and reuse the exact returned `resource_name`, `etag`, and source `etag`; do not guess or synthesize those values.
+- For large Gmail sweeps or multi-account cleanup flows that will fan out across many messages, spawn a subrun or child and reclaim the result later instead of keeping the interactive turn blocked.
 - When `google_bridge` returns a file result, it preserves the structured payload needed for attachment normalization and artifact handling.
 
 `webhook` is cataloged separately but is not part of the fallback `get_tool_schemas()` list yet because it still uses the dedicated ToolRunner webhook endpoint rather than the normal `/v1/run/tool` dispatch path.

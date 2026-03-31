@@ -192,6 +192,37 @@ def test_run_tool_executes_native_generic_headless_schedule_task(orchestration_r
     ).exists()
 
 
+def test_run_tool_executes_native_run_scheduled_task(orchestration_run):
+    scheduled_task = create_scheduled_task(
+        agent=orchestration_run.agent,
+        owner=orchestration_run.started_by or orchestration_run.agent.owner,
+        task_type=ScheduledTask.TaskType.OTHER_TASK,
+        local_time_value="05:00",
+        timezone_name="America/New_York",
+        title="daily repo backup summary",
+        execution_payload={
+            "objective": "Create a backup commit for the repository and summarize the last 24 hours of work.",
+            "repo_dir": "C:/Dev/AgentMaestro",
+        },
+    )
+
+    result = asyncio.run(
+        run_tool(
+            "run_scheduled_task",
+            {"scheduled_task_id": str(scheduled_task.id)},
+            orchestration_run_id=str(orchestration_run.id),
+        )
+    )
+
+    assert result["ok"] is True
+    payload = result["result"]
+    assert payload["scheduled_task_id"] == str(scheduled_task.id)
+    assert payload["status"] == "awaiting_approval"
+    assert payload["launched"] is True
+    assert payload["queued"] is False
+    assert payload["waiting_for_approval"] is True
+
+
 def test_run_tool_executes_native_scheduled_task_management_tools(orchestration_run):
     scheduled_task = create_scheduled_task(
         agent=orchestration_run.agent,

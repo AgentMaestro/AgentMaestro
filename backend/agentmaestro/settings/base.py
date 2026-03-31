@@ -425,3 +425,5 @@ SCRUB_PROMPTS_FOR_TESTS = os.getenv("SCRUB_PROMPTS_FOR_TESTS", "0") != "0"
 TESTING = False
 
 TOOLRUNNER_TOOL_CALL_RESULT_TIMEOUT_SECONDS = os.getenv("TOOLRUNNER_TOOL_CALL_RESULT_TIMEOUT_SECONDS", 30)
+
+VOSK_MODEL_PATH = os.getenv("VOSK_MODEL_PATH",  r"C:\Dev\AgentMaestro\backend\agents\models\vosk-model-small-en-us-0.15")

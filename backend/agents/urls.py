@@ -26,3 +26,8 @@ urlpatterns = [
         name="agent_run_preallocate",
     ),
 ]
+from . import views_stt
+
+urlpatterns += [
+    path("<slug:slug>/stt/transcribe/", views_stt.stt_transcribe, name="agent_stt_transcribe"),
+]

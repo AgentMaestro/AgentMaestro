@@ -490,6 +490,47 @@ def test_execute_native_schedule_task_skips_toolrunner_http(monkeypatch, fake_re
 
 
 @override_settings(
+    TOOLRUNNER_URL="http://example/v1/execute",
+    TOOLRUNNER_SECRET="test-secret",
+    TOOLRUNNER_TIMEOUT=5,
+    TOOLRUNNER_OUTPUT_LIMIT=128,
+    TOOLRUNNER_HTTP_TIMEOUT=10,
+)
+def test_execute_native_run_scheduled_task_skips_toolrunner_http(monkeypatch, fake_result_bus):
+    tool_call = _build_test_run("native-run-scheduled")
+    scheduled_task = create_scheduled_task(
+        agent=tool_call.run.agent,
+        owner=tool_call.run.started_by or tool_call.run.agent.owner,
+        task_type=ScheduledTask.TaskType.OTHER_TASK,
+        local_time_value="05:00",
+        timezone_name="America/New_York",
+        title="daily repo backup summary",
+        execution_payload={
+            "objective": "Create a backup commit for the repository and summarize the last 24 hours of work.",
+            "repo_dir": "C:/Dev/AgentMaestro",
+        },
+    )
+    tool_call.tool_name = "run_scheduled_task"
+    tool_call.args = {"scheduled_task_id": str(scheduled_task.id)}
+    tool_call.save(update_fields=["tool_name", "args", "updated_at"])
+    ToolDefinition.objects.create(workspace=tool_call.run.workspace, name="run_scheduled_task", enabled=True)
+
+    def _fail_client(*args, **kwargs):
+        raise AssertionError("http client should not be used for native scheduling tools")
+
+    monkeypatch.setattr("tools.services.execution.httpx.Client", _fail_client)
+
+    execute_tool_call(str(tool_call.id))
+
+    tool_call.refresh_from_db()
+    assert tool_call.status == ToolCall.Status.COMPLETED
+    assert tool_call.result["scheduled_task_id"] == str(scheduled_task.id)
+    assert tool_call.result["status"] == "awaiting_approval"
+    assert tool_call.result["launched"] is True
+    assert tool_call.result["queued"] is False
+
+
+@override_settings(
     TANGO_TIME_ZONE="America/New_York",
     TOOLRUNNER_URL="http://example/v1/execute",
     TOOLRUNNER_SECRET="test-secret",

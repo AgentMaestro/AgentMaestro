@@ -12,6 +12,7 @@ from memory.scheduled_tasks import (
     enable_scheduled_task,
     get_scheduled_task,
     list_scheduled_tasks,
+    run_scheduled_task_now,
     serialize_scheduled_task,
     update_scheduled_task,
 )
@@ -234,6 +235,20 @@ def execute_native_tool_call(tool_call: ToolCall) -> dict[str, object]:
                     for task in scheduled_tasks
                 ],
             },
+        }
+    if tool_call.tool_name == "run_scheduled_task":
+        scheduled_task_id = str(args.get("scheduled_task_id") or "").strip()
+        if not scheduled_task_id:
+            raise RuntimeError("run_scheduled_task requires scheduled_task_id.")
+        result = run_scheduled_task_now(scheduled_task_id)
+        return {
+            "request_id": str(tool_call.id),
+            "status": "COMPLETED",
+            "exit_code": 0,
+            "stdout": "",
+            "stderr": "",
+            "duration_ms": 0,
+            "result": result,
         }
     if tool_call.tool_name == "spawn_subrun":
         result = run_subrun_flow(

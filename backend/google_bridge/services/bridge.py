@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+from base64 import urlsafe_b64decode
+from email import policy
+from email.parser import BytesParser
 import json
 import logging
 import re
+from html import unescape
 from collections.abc import Iterable
 from datetime import datetime, timedelta
 from email.utils import parsedate_to_datetime
@@ -348,7 +352,35 @@ def _execute_google_task_for_account(
         if operation == "read":
             message_id = str(normalized.get("message_id") or "").strip()
             if message_id:
-                data = client.get_gmail_message(message_id)
+                include_body = _normalize_bool(normalized.get("include_body"))
+                include_html = _normalize_bool(normalized.get("include_html"))
+                include_raw = _normalize_bool(normalized.get("include_raw"))
+                include_attachments = _normalize_bool(normalized.get("include_attachments"))
+                message_format = _normalize_gmail_message_format(
+                    normalized,
+                    include_body=include_body,
+                    include_html=include_html,
+                    include_raw=include_raw,
+                    include_attachments=include_attachments,
+                )
+                data = client.get_gmail_message(message_id, format=message_format)
+                if message_format == "full":
+                    data = _expand_gmail_message_parts(
+                        client,
+                        data,
+                        message_id=message_id,
+                        include_body=include_body or message_format == "full",
+                        include_html=include_html or message_format == "full",
+                        include_attachments=include_attachments,
+                    )
+                elif message_format == "raw":
+                    data = _expand_gmail_raw_message(
+                        data,
+                        include_body=include_body,
+                        include_html=include_html,
+                        include_attachments=include_attachments,
+                    )
+                data["message_format"] = message_format
                 summary_text = _summarize_gmail_message(data)
             else:
                 include_read = bool(normalized.get("_gmail_list_include_read"))
@@ -2324,11 +2356,239 @@ def _build_gmail_filter_preview(
     }
 
 
+def _normalize_gmail_message_format(
+    normalized: dict[str, object],
+    *,
+    include_body: bool,
+    include_html: bool,
+    include_raw: bool,
+    include_attachments: bool,
+) -> str:
+    requested = str(normalized.get("format") or "").strip().lower()
+    if requested == "raw":
+        if include_body or include_html or include_attachments:
+            return "full"
+        return "raw"
+    if requested in {"metadata", "full", "minimal"}:
+        if requested == "metadata" and (include_body or include_html or include_attachments):
+            return "full"
+        return requested
+    if include_raw:
+        if include_body or include_html or include_attachments:
+            return "full"
+        return "raw"
+    if include_body or include_html or include_attachments:
+        return "full"
+    return "metadata"
+
+
+def _expand_gmail_message_parts(
+    client: GoogleBridgeClient,
+    data: dict,
+    *,
+    message_id: str,
+    include_body: bool,
+    include_html: bool,
+    include_attachments: bool,
+) -> dict:
+    expanded = dict(data)
+    payload = dict(expanded.get("payload") or {})
+    if not payload:
+        return expanded
+    text_parts, html_parts, attachments = _collect_gmail_message_parts(
+        client,
+        payload,
+        message_id=message_id,
+        include_attachments=include_attachments,
+    )
+    if include_body and text_parts:
+        expanded["body_text"] = "\n\n".join(part for part in text_parts if part.strip())
+    if include_html and html_parts:
+        expanded["body_html"] = "\n\n".join(part for part in html_parts if part.strip())
+    if attachments:
+        expanded["attachments"] = attachments
+    expanded["payload"] = payload
+    return expanded
+
+
+def _expand_gmail_raw_message(
+    data: dict,
+    *,
+    include_body: bool,
+    include_html: bool,
+    include_attachments: bool,
+) -> dict:
+    expanded = dict(data)
+    raw_source = str(expanded.pop("raw", "") or "").strip()
+    if not raw_source:
+        return expanded
+    raw_bytes = _decode_gmail_message_bytes(raw_source)
+    if not raw_bytes:
+        return expanded
+    message = BytesParser(policy=policy.default).parsebytes(raw_bytes)
+    headers = [
+        {"name": str(name), "value": str(value)}
+        for name, value in message.items()
+    ]
+    expanded["payload"] = {
+        "mimeType": message.get_content_type(),
+        "headers": headers,
+    }
+    text_parts, html_parts, attachments = _collect_raw_email_parts(
+        message,
+        include_body=include_body,
+        include_html=include_html,
+        include_attachments=include_attachments,
+    )
+    if include_body and text_parts:
+        expanded["body_text"] = "\n\n".join(part for part in text_parts if part.strip())
+    if include_html and html_parts:
+        expanded["body_html"] = "\n\n".join(part for part in html_parts if part.strip())
+    if attachments:
+        expanded["attachments"] = attachments
+    expanded["raw_source_bytes"] = len(raw_bytes)
+    return expanded
+
+
+def _collect_gmail_message_parts(
+    client: GoogleBridgeClient,
+    payload: dict,
+    *,
+    message_id: str,
+    include_attachments: bool,
+) -> tuple[list[str], list[str], list[dict[str, object]]]:
+    text_parts: list[str] = []
+    html_parts: list[str] = []
+    attachments: list[dict[str, object]] = []
+
+    def visit(part: dict[str, object]) -> None:
+        mime_type = str(part.get("mimeType") or "").strip().lower()
+        filename = str(part.get("filename") or "").strip()
+        body = dict(part.get("body") or {})
+        data = str(body.get("data") or "").strip()
+        attachment_id = str(body.get("attachmentId") or "").strip()
+        part_id = str(part.get("partId") or "").strip()
+
+        if data and mime_type == "text/plain":
+            text_parts.append(_decode_gmail_message_data(data))
+        elif data and mime_type == "text/html":
+            html_parts.append(_decode_gmail_message_data(data))
+        elif data and mime_type.startswith("text/"):
+            text_parts.append(_decode_gmail_message_data(data))
+
+        if include_attachments and (filename or attachment_id):
+            attachment_info: dict[str, object] = {
+                "part_id": part_id,
+                "mime_type": mime_type,
+                "filename": filename,
+                "attachment_id": attachment_id,
+                "size": body.get("size"),
+            }
+            if attachment_id:
+                try:
+                    attachment_data = client.get_gmail_attachment(message_id, attachment_id)
+                except Exception:
+                    attachment_data = {}
+                attachment_body = str(attachment_data.get("data") or "").strip()
+                if attachment_body and mime_type.startswith("text/"):
+                    attachment_info["text"] = _decode_gmail_message_data(attachment_body)
+            attachments.append({key: value for key, value in attachment_info.items() if value not in (None, "", [], {}, ())})
+
+        for child in list(part.get("parts") or []):
+            if isinstance(child, dict):
+                visit(child)
+
+    visit(payload)
+    return text_parts, html_parts, attachments
+
+
+def _collect_raw_email_parts(
+    message,
+    *,
+    include_body: bool,
+    include_html: bool,
+    include_attachments: bool,
+) -> tuple[list[str], list[str], list[dict[str, object]]]:
+    text_parts: list[str] = []
+    html_parts: list[str] = []
+    attachments: list[dict[str, object]] = []
+
+    for part in message.walk():
+        if part.is_multipart():
+            continue
+        mime_type = str(part.get_content_type() or "").strip().lower()
+        filename = str(part.get_filename() or "").strip()
+        content_disposition = str(part.get_content_disposition() or "").strip().lower()
+        content = part.get_content()
+        if include_body and mime_type == "text/plain":
+            text_parts.append(str(content or "").strip())
+        elif include_html and mime_type == "text/html":
+            html_parts.append(str(content or "").strip())
+        elif include_body and mime_type.startswith("text/") and content_disposition != "attachment":
+            text_parts.append(str(content or "").strip())
+        if include_attachments and (content_disposition == "attachment" or filename):
+            attachment_info: dict[str, object] = {
+                "mime_type": mime_type,
+                "filename": filename,
+                "content_disposition": content_disposition,
+            }
+            if mime_type.startswith("text/"):
+                attachment_info["text"] = str(content or "").strip()
+            else:
+                payload = part.get_payload(decode=True) or b""
+                attachment_info["size"] = len(payload)
+            attachments.append({key: value for key, value in attachment_info.items() if value not in (None, "", [], {}, ())})
+
+    return text_parts, html_parts, attachments
+
+
+def _decode_gmail_message_bytes(data: str) -> bytes:
+    text = str(data or "").strip()
+    if not text:
+        return b""
+    padding = "=" * (-len(text) % 4)
+    try:
+        return urlsafe_b64decode(text + padding)
+    except Exception:
+        return b""
+
+
+def _decode_gmail_message_data(data: str) -> str:
+    text = str(data or "").strip()
+    if not text:
+        return ""
+    padding = "=" * (-len(text) % 4)
+    try:
+        decoded = urlsafe_b64decode(text + padding)
+    except Exception:
+        return text
+    return decoded.decode("utf-8", errors="replace")
+
+
+def _compact_message_preview(text: str, *, limit: int = 500) -> str:
+    compact = re.sub(r"\s+", " ", str(text or "").strip())
+    if len(compact) > limit:
+        return compact[:limit].rstrip() + "..."
+    return compact
+
+
+def _html_to_text_preview(text: str, *, limit: int = 500) -> str:
+    cleaned = re.sub(r"(?is)<(script|style).*?>.*?</\1>", " ", str(text or ""))
+    cleaned = re.sub(r"(?is)<br\s*/?>", "\n", cleaned)
+    cleaned = re.sub(r"(?is)</p\s*>", "\n\n", cleaned)
+    cleaned = re.sub(r"(?is)<[^>]+>", " ", cleaned)
+    cleaned = unescape(cleaned)
+    return _compact_message_preview(cleaned, limit=limit)
+
+
 def _summarize_gmail_message(data: dict) -> str:
     headers = {str(header.get("name") or "").lower(): str(header.get("value") or "").strip() for header in data.get("payload", {}).get("headers", [])}
     subject = headers.get("subject", "")
     sender = headers.get("from", "")
     snippet = str(data.get("snippet") or "").strip()
+    body_text = _compact_message_preview(str(data.get("body_text") or "").strip())
+    body_html = _html_to_text_preview(str(data.get("body_html") or "").strip())
+    attachments = list(data.get("attachments") or [])
     parts = ["Gmail message retrieved."]
     if subject:
         parts.append(f"Subject: {subject}")
@@ -2336,6 +2596,20 @@ def _summarize_gmail_message(data: dict) -> str:
         parts.append(f"From: {sender}")
     if snippet:
         parts.append(f"Snippet: {snippet}")
+    if body_text:
+        parts.append(f"Body: {body_text}")
+    elif body_html:
+        parts.append(f"Body: {body_html}")
+    if attachments:
+        attachment_names = ", ".join(
+            _compact_message_preview(str(item.get("filename") or item.get("attachment_id") or ""), limit=80)
+            for item in attachments[:5]
+            if str(item.get("filename") or item.get("attachment_id") or "").strip()
+        )
+        if attachment_names:
+            parts.append(f"Attachments: {len(attachments)} ({attachment_names})")
+        else:
+            parts.append(f"Attachments: {len(attachments)}")
     return " ".join(parts)
 
 

@@ -21,6 +21,7 @@ def test_scheduled_task_management_schema_advertises_edit_disable_enable():
     assert "get_scheduled_task" in tool_names
     assert "disable_scheduled_task" in tool_names
     assert "enable_scheduled_task" in tool_names
+    assert "run_scheduled_task" in tool_names
 
     edit_tool = next(tool for tool in get_tool_schemas() if tool["name"] == "edit_scheduled_task")
     get_tool = next(tool for tool in get_tool_schemas() if tool["name"] == "get_scheduled_task")
@@ -30,17 +31,21 @@ def test_scheduled_task_management_schema_advertises_edit_disable_enable():
     enable_tool = next(
         tool for tool in get_tool_schemas() if tool["name"] == "enable_scheduled_task"
     )
+    run_tool = next(tool for tool in get_tool_schemas() if tool["name"] == "run_scheduled_task")
 
     edit_description = edit_tool["parameters"]["description"]
     get_description = get_tool["parameters"]["description"]
     disable_description = disable_tool["parameters"]["description"]
     enable_description = enable_tool["parameters"]["description"]
+    run_description = run_tool["parameters"]["description"]
 
     assert "scheduled_task_id" in edit_description
     assert "execution_payload" in get_description
     assert "preview the current" in get_description
     assert "soft-delete" in disable_description
     assert "recomputes its next run time" in enable_description
+    assert "off-schedule" in run_description
+    assert "same approval gate" in run_description
     schedule_tool = next(tool for tool in get_tool_schemas() if tool["name"] == "schedule_task")
     assert (
         "Use `get_scheduled_task` when you want to preview a single task's full payload"

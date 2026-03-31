@@ -646,6 +646,7 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
         self._tool_output_payloads: list[dict[str, object]] = []
         self._tool_output_provider_call_ids: list[str] = []
         self._awaiting_tool_output = False
+        self._queued_user_messages: list[dict[str, object]] = []
         self._agents_md_bootstrap_complete = False
         self._response_chain_previous_id: str = ""
         self._artifact_context_ids: set[str] = set()
@@ -816,6 +817,7 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
                 self.run_id,
                 self.model_name,
                 agent_id=str(self.agent.id) if self.agent else None,
+                reasoning=str(getattr(self.agent, "reasoning", "") or "").strip() or None,
             )
             if preserved_previous_response_id and self.session:
                 self.session.previous_response_id = preserved_previous_response_id
@@ -1378,6 +1380,38 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
             return True
         return False
 
+    def _queue_user_message(
+        self,
+        *,
+        text: str,
+        source_transport: str = "",
+        author_label: str = "",
+    ) -> None:
+        queued_text = str(text or "").strip()
+        if not queued_text:
+            return
+        self._queued_user_messages.append(
+            {
+                "text": queued_text,
+                "source_transport": str(source_transport or "").strip(),
+                "author_label": str(author_label or "").strip(),
+            }
+        )
+
+    def _pop_queued_user_message(self) -> dict[str, object] | None:
+        if not self._queued_user_messages:
+            return None
+        return self._queued_user_messages.pop(0)
+
+    def _has_pending_tool_output(self) -> bool:
+        return bool(
+            self._awaiting_tool_output
+            or self._pending_tool_call_id
+            or self._pending_provider_call_id
+            or self._pending_provider_call_ids
+            or not self._tool_result_event.is_set()
+        )
+
     async def _accept_user_message(
         self,
         raw_text: str,
@@ -1435,7 +1469,6 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
                 self.run_id,
                 explicit_memory.id,
             )
-        self.history.append({"role": "user", "content": prompt_text})
         if persist:
             await _persist_chat_history_event(self.run_id or "", "user", prompt_text)
         if emit_message:
@@ -1461,6 +1494,36 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
                     control_payload={"event_type": "chat_message", "role": "user"},
                 )
         run_status = await _get_run_status(self.run_id or "")
+        waiting_for_tool = (
+            run_status == AgentRun.Status.WAITING_FOR_TOOL or self._has_pending_tool_output()
+        )
+        if waiting_for_tool:
+            self._queue_user_message(
+                text=prompt_text,
+                source_transport=source_transport or "",
+                author_label=author_label or "",
+            )
+            queued_count = len(self._queued_user_messages)
+            queued_label = "prompt" if queued_count == 1 else "prompts"
+            await self.send_json(
+                {
+                    "type": "prompt_queued",
+                    "kind": "run_control",
+                    "queued_count": queued_count,
+                    "text": (
+                        f"Queued {queued_count} {queued_label}. "
+                        "It will send after the current tool result finishes."
+                    ),
+                    "timestamp": timezone.now().isoformat(),
+                }
+            )
+            logger.info(
+                "Queued user message while waiting for tool output run=%s queued_messages=%d",
+                self.run_id,
+                len(self._queued_user_messages),
+            )
+            return
+        self.history.append({"role": "user", "content": prompt_text})
         if run_status in {AgentRun.Status.PAUSED, AgentRun.Status.WAITING_FOR_USER}:
             self._queued_user_message = True
             await self.send_json(
@@ -1492,11 +1555,26 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
         if self.run_id:
             await self._hydrate_artifact_context_from_events()
         self._ensure_system_context()
-        async with self._send_lock:
-            if self.use_ws:
-                await self._dispatch_to_provider_ws()
-            else:
-                await self._dispatch_to_provider_http()
+        while True:
+            async with self._send_lock:
+                if self.use_ws:
+                    dispatch_result = await self._dispatch_to_provider_ws()
+                else:
+                    dispatch_result = await self._dispatch_to_provider_http()
+            if dispatch_result != "final_answer":
+                return
+            queued_message = self._pop_queued_user_message()
+            if not queued_message:
+                return
+            queued_text = str(queued_message.get("text") or "").strip()
+            if not queued_text:
+                continue
+            self.history.append({"role": "user", "content": queued_text})
+            logger.info(
+                "Dequeued user message after assistant response run=%s queued_messages_remaining=%d",
+                self.run_id,
+                len(self._queued_user_messages),
+            )
 
     async def _sync_outstanding_provider_call_state(self) -> set[str]:
         if not self.run_id:
@@ -1530,10 +1608,10 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
 
     async def _dispatch_to_provider_ws(self):
         if await self._dispatch_blocked_by_run_status():
-            return
+            return "blocked"
         if not self.session:
             logger.error("Error in consumers._dispatch_to_provider_ws:  No session established")
-            return
+            return "blocked"
         tools = self.session_tools if self.session_tools else None
         reconnect_attempts = 0
         max_reconnects = 1
@@ -1545,7 +1623,7 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
         )
         while True:
             if await self._dispatch_blocked_by_run_status():
-                return
+                return "blocked"
             await self._sync_outstanding_provider_call_state()
             if not self._tool_result_event.is_set():
                 logger.info(
@@ -1563,7 +1641,7 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
                     self._pending_tool_call_id,
                     self._pending_provider_call_id,
                 )
-                return
+                return "waiting_for_tool"
             input_items = self._build_ws_input_items()
             response_payload = {
                 "model": self.session.model if self.session else "unknown",
@@ -1716,7 +1794,7 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
                         self.model_name,
                     )
                     await self._send_error_and_abort(exc)
-                    return
+                    return "error"
 
                 await self._handle_ws_failure(
                     exc,
@@ -1727,7 +1805,7 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
                 )
                 if reconnect_attempts >= max_reconnects:
                     await self._send_error_and_abort(exc)
-                    return
+                    return "error"
                 reconnect_attempts += 1
                 continue
 
@@ -1759,7 +1837,7 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
                         call.get("call_id") or call.get("id"),
                     )
                     await self._handle_tool_call(call)
-                continue
+                return "tool_call"
 
             logger.debug(
                 "Transport assistant_text run=%s transport=%s present=%s",
@@ -1797,11 +1875,12 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
                             control_payload={"event_type": "assistant_message"},
                         )
                 self._clear_tool_output_context()
-                return
+                return "final_answer"
+            return "idle"
 
     async def _dispatch_to_provider_http(self):
         if await self._dispatch_blocked_by_run_status():
-            return
+            return "blocked"
         tools_available = self.tool_definitions if self.tool_definitions else None
         model_candidates = self._model_candidates or [
             {"provider": self.provider, "model": self.model_name or "unknown", "source": "primary"}
@@ -1816,7 +1895,7 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
             model = self.model_name or "unknown"
             while True:
                 if await self._dispatch_blocked_by_run_status():
-                    return
+                    return "blocked"
                 await self._sync_outstanding_provider_call_state()
                 if not self._tool_result_event.is_set():
                     logger.info(
@@ -1827,7 +1906,7 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
                         self._pending_provider_call_id,
                         timezone.now().isoformat(),
                     )
-                    return
+                    return "waiting_for_tool"
                 snapshot_messages = [
                     {"role": entry.get("role"), "content": entry.get("content") or ""}
                     for entry in self.history[-4:]
@@ -1846,6 +1925,7 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
                             self.history,
                             model=model,
                             tools=tools_to_send,
+                            reasoning=str(getattr(self.agent, "reasoning", "") or "").strip() or None,
                             previous_response_id=self._current_previous_response_id(),
                             outstanding_provider_call_ids=(
                                 list(self._tool_output_provider_call_ids)
@@ -1900,7 +1980,7 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
                         await self._switch_model_candidate(candidate_index)
                         break
                     await self._send_http_error(exc)
-                    return
+                    return "error"
                 await self._log_transport_traffic(
                     "HTTP RCV",
                     {
@@ -1967,7 +2047,7 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
                     self._append_tool_call_history(assistant_text, tool_calls)
                     for call in tool_calls:
                         await self._handle_tool_call(call)
-                    return
+                    return "tool_call"
 
                 if assistant_text:
                     self.history.append({"role": "assistant", "content": assistant_text})
@@ -1998,13 +2078,14 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
                                 author_label="assistant",
                                 control_payload={"event_type": "assistant_message"},
                             )
-                    self._clear_tool_output_context()
-                    return
+                self._clear_tool_output_context()
+                return "final_answer"
 
                 candidate_index += 1
                 if moved_to_next_candidate:
                     continue
                 break
+        return "idle"
 
     async def _handle_tool_call(self, call: dict[str, object]):
         tool_name = str(call.get("name") or "").strip()

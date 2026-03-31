@@ -368,6 +368,12 @@ def _build_wizard_sidebar(current_step: int, session_data: dict[str, object]) ->
                 "state": _sidebar_state(current_step=current_step, step_number=2),
             },
             {
+                "label": "reasoning",
+                "value": llm.get("reasoning") or Agent.DEFAULT_REASONING,
+                "href": f"{create_url}?step=2",
+                "state": _sidebar_state(current_step=current_step, step_number=2),
+            },
+            {
                 "label": "backups",
                 "value": f"{len(backup_models)} selected" if backup_models else "none selected",
                 "href": f"{create_url}?step=2",
@@ -402,6 +408,7 @@ def _build_review_context(session_data: dict[str, object], user) -> dict[str, ob
     name = basics.get("name", "")
     llm = dict(session_data.get("llm", {}))
     llm.setdefault("backup_models", [])
+    llm.setdefault("reasoning", Agent.DEFAULT_REASONING)
     llm["backup_retry_policy"] = dict(Agent.DEFAULT_BACKUP_RETRY_POLICY)
     if name:
         unique_name = Agent.generate_unique_name(name)
@@ -443,6 +450,7 @@ def agent_create_wizard(request):
             elif step_def["key"] == "llm" and isinstance(form, AgentLLMForm):
                 cleaned = {
                     "default_model": form.cleaned_data.get("default_model"),
+                    "reasoning": form.cleaned_data.get("reasoning"),
                     "backup_models": _parse_backup_models(form.cleaned_data.get("backup_models")),
                     "temperature": form.cleaned_data.get("temperature"),
                     "policy_name": form.cleaned_data.get("policy_name"),
@@ -513,6 +521,7 @@ def _complete_wizard(request, session_data: dict[str, object], owner_form: forms
                 description=basics.get("description", "") or "",
                 soul=basics.get("soul", ""),
                 default_model=llm.get("default_model", "gpt-5"),
+                reasoning=llm.get("reasoning", Agent.DEFAULT_REASONING),
                 temperature=llm.get("temperature", "0.70"),
                 policy_name=llm.get("policy_name", "react"),
                 backup_models_json=llm.get("backup_models", []),

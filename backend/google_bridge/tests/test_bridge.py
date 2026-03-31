@@ -1,4 +1,5 @@
 from datetime import timedelta
+from base64 import urlsafe_b64encode
 
 import pytest
 from django.contrib.auth import get_user_model
@@ -141,6 +142,161 @@ def test_execute_google_task_returns_json_summary(monkeypatch):
     assert result["result"]["messages"][0]["date"] == "Fri, 21 Mar 2026 09:00:00 -0400"
     assert "Returned 1 Gmail messages" in result["summary_text"]
     assert "use google_bridge with operation=read" in result["summary_text"].lower()
+
+
+def test_execute_google_task_expands_gmail_message_parts(monkeypatch):
+    workspace, user, account = _make_account()
+
+    def encode(text: str) -> str:
+        return urlsafe_b64encode(text.encode("utf-8")).decode("ascii").rstrip("=")
+
+    captured: dict[str, object] = {}
+
+    class FakeClient:
+        def __init__(self, connection):
+            self.connection = connection
+
+        def get_gmail_message(self, message_id: str, *, format: str = "metadata", metadata_headers: list[str] | None = None):
+            captured["message_id"] = message_id
+            captured["format"] = format
+            captured["metadata_headers"] = metadata_headers
+            return {
+                "snippet": "Forwarded snippet",
+                "payload": {
+                    "headers": [
+                        {"name": "Subject", "value": "Your trade was executed"},
+                        {"name": "From", "value": "Schwab Alerts <donotreply@mail.schwab.com>"},
+                        {"name": "Date", "value": "Mon, 30 Mar 2026 12:13:46 +0000 (UTC)"},
+                    ],
+                    "parts": [
+                        {
+                            "partId": "1",
+                            "mimeType": "multipart/alternative",
+                            "parts": [
+                                {
+                                    "partId": "1.1",
+                                    "mimeType": "text/plain",
+                                    "body": {"size": 42, "data": encode("Trade executed\nTicker: SCHW\nShares: 5\nPrice: 78.50")},
+                                },
+                                {
+                                    "partId": "1.2",
+                                    "mimeType": "text/html",
+                                    "body": {"size": 128, "data": encode("<html><body><p>Ticker: SCHW</p><p>Shares: 5</p></body></html>")},
+                                },
+                            ],
+                        },
+                        {
+                            "partId": "2",
+                            "mimeType": "application/pdf",
+                            "filename": "confirmation.pdf",
+                            "body": {"size": 2048, "attachmentId": "att-1"},
+                        },
+                    ],
+                },
+            }
+
+        def get_gmail_attachment(self, message_id: str, attachment_id: str):
+            captured["attachment_message_id"] = message_id
+            captured["attachment_id"] = attachment_id
+            return {"data": encode("attachment text placeholder")}
+
+    monkeypatch.setattr("google_bridge.services.bridge.GoogleBridgeClient", FakeClient)
+
+    result = execute_google_task(
+        payload={
+            "integration_kind": "google",
+            "resource_kind": "gmail",
+            "action_kind": "read",
+            "operation": "read",
+            "message_id": "msg-123",
+            "include_body": True,
+            "include_html": True,
+            "include_attachments": True,
+            "format": "full",
+        },
+        workspace=workspace,
+        owner=user,
+        account=account,
+    )
+
+    assert captured["message_id"] == "msg-123"
+    assert captured["format"] == "full"
+    assert captured["attachment_message_id"] == "msg-123"
+    assert captured["attachment_id"] == "att-1"
+    assert result["result"]["message_format"] == "full"
+    assert "Trade executed" in result["result"]["body_text"]
+    assert "Ticker: SCHW" in result["result"]["body_html"]
+    assert result["result"]["attachments"][0]["filename"] == "confirmation.pdf"
+    assert "Attachments: 1" in result["summary_text"]
+
+
+def test_execute_google_task_decodes_raw_gmail_message(monkeypatch):
+    workspace, user, account = _make_account()
+
+    raw_message = (
+        "From: Schwab Alerts <donotreply@mail.schwab.com>\r\n"
+        "To: Scott Kissinger <scottkissinger@yahoo.com>\r\n"
+        "Subject: Your trade was executed\r\n"
+        "MIME-Version: 1.0\r\n"
+        "Content-Type: multipart/alternative; boundary=\"boundary-1\"\r\n"
+        "\r\n"
+        "--boundary-1\r\n"
+        "Content-Type: text/plain; charset=\"utf-8\"\r\n"
+        "\r\n"
+        "Trade executed\r\n"
+        "Ticker: SCHW\r\n"
+        "Shares: 5\r\n"
+        "Price: 78.50\r\n"
+        "\r\n"
+        "--boundary-1\r\n"
+        "Content-Type: text/html; charset=\"utf-8\"\r\n"
+        "\r\n"
+        "<html><body><p>Trade executed</p><p>Ticker: SCHW</p></body></html>\r\n"
+        "\r\n"
+        "--boundary-1--\r\n"
+    ).encode("utf-8")
+    encoded_raw = urlsafe_b64encode(raw_message).decode("ascii").rstrip("=")
+
+    captured: dict[str, object] = {}
+
+    class FakeClient:
+        def __init__(self, connection):
+            self.connection = connection
+
+        def get_gmail_message(self, message_id: str, *, format: str = "metadata", metadata_headers: list[str] | None = None):
+            captured["message_id"] = message_id
+            captured["format"] = format
+            return {
+                "raw": encoded_raw,
+                "snippet": "Forwarded snippet",
+            }
+
+    monkeypatch.setattr("google_bridge.services.bridge.GoogleBridgeClient", FakeClient)
+
+    result = execute_google_task(
+        payload={
+            "integration_kind": "google",
+            "resource_kind": "gmail",
+            "action_kind": "read",
+            "operation": "read",
+            "message_id": "msg-raw",
+            "format": "raw",
+            "include_body": True,
+            "include_html": True,
+            "include_attachments": True,
+        },
+        workspace=workspace,
+        owner=user,
+        account=account,
+    )
+
+    assert captured["message_id"] == "msg-raw"
+    assert captured["format"] == "raw"
+    assert result["result"]["message_format"] == "raw"
+    assert result["result"]["raw_source_bytes"] == len(raw_message)
+    assert "Trade executed" in result["result"]["body_text"]
+    assert "Ticker: SCHW" in result["result"]["body_html"]
+    assert "raw" not in result["result"]
 
 
 def test_execute_google_task_defaults_gmail_list_to_unread(monkeypatch):

@@ -25,6 +25,7 @@ class BaseLLMClient:
         model: str,
         tools: Optional[List[Dict[str, Any]]] = None,
         temperature: Optional[float] = None,
+        reasoning: Optional[str] = None,
         max_output_tokens: Optional[int] = None,
         previous_response_id: Optional[str] = None,
         outstanding_provider_call_id: Optional[str] = None,

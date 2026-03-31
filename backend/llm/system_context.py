@@ -191,16 +191,19 @@ def _build_capability_notices(tool_names: Iterable[str]) -> list[str]:
     if "google_bridge" in names:
         sections.append(
             "Capability: Google Bridge Query Language\n"
+            "- Canonical reference: `GOOGLE_BRIDGE.md` in the repo root.\n"
             "- The `google_bridge` tool parses a generic boolean query language with `AND`, `OR`, `NOT`, field contains clauses, and parentheses.\n"
             "- Grouped alternation is allowed inside fielded clauses, for example `from:(dsmith@aol.com OR dsmyth@aol.com)` or `to:(sktennis7@gmail.com OR kissinger.scott@gmail.com)`.\n"
             "- Use `|` only for regex-based code search tools; do not use it in Google bridge queries.\n"
             "- Supported query fields vary by Google surface. Check the tool schema examples for Gmail, Calendar, Drive, Docs, and Sheets support before generating a query.\n"
+            "- For Gmail read-by-id, request `format=full` plus `include_body`, `include_html`, or `include_attachments` when you need MIME parts or attachment metadata; use `format=raw` only when you need the RFC822 source, and the bridge will decode it server-side instead of surfacing the full encoded blob.\n"
             "- Drive supports `name contains 'README'`-style filename filters, which compile to native server-side Drive queries. Drive also accepts `mimeType = 'application/vnd.google-apps.document'`, `modifiedTime >= '2024-01-01T00:00:00Z'`, `createdTime < '2024-02-01T00:00:00Z'`, `modifiedTime <= '2024-02-01T00:00:00Z'`, `modifiedTime > '2024-01-01T00:00:00Z'`, `createdTime != '2024-01-15T00:00:00Z'`, and `trashed = false`; the bridge canonicalizes those Drive aliases to the Google query syntax the API expects.\n"
             "- Drive comparisons use the native Drive operators, and multiple Drive clauses should be joined with `and`, for example `name contains 'README' and mimeType = 'application/vnd.google-apps.document' and trashed = false`.\n"
             "- People supports read/search plus single-contact writes: use `query` plus `read_mask` for contact search, `person_fields` for connections list or create/update response shaping, `person` plus `person_fields` for create, `resource_name` plus `person`, `person.etag` or `person.metadata.sources[].etag`, and `update_person_fields` for update, and `resource_name` for delete.\n"
             "- People search example: `resource_kind=people`, `action_kind=search`, `query='Scott Kissinger'`, `read_mask='names,emailAddresses,phoneNumbers'`, `page_size=5`.\n"
             "- People write example: first read the contact to get `resource_name` and `etag`, then use `resource_kind=people`, `action_kind=update`, `account_scope=primary` (or explicit `email` / `google_subject`), `resource_name='people/...'`, `person.etag='...'`, `person.metadata.sources[0].etag='...'`, `person_fields='names,emailAddresses,phoneNumbers,metadata'`, `update_person_fields='phoneNumbers'`, and the updated `person={...}`.\n"
             "- People update note: always read the contact first and reuse the exact returned `resource_name`, `etag`, and source `etag`; do not guess or synthesize those values.\n"
+            "- For large Gmail sweeps, multi-account cleanup, or other slow fan-out work that will block for a long time, spawn a subrun or child and reclaim the result later instead of keeping the interactive turn open.\n"
             "- The bridge compiles queries into one or more concrete backend calls, so grouped `OR` clauses may fan out into multiple requests and `NOT` stays part of the compiled plan.\n"
             "- Keep query intent inside the query language rather than splitting it into ad hoc text.\n"
         )
@@ -217,7 +220,8 @@ def _build_capability_notices(tool_names: Iterable[str]) -> list[str]:
         sections.append(
             "Capability: Scheduling\n"
             "- The `schedule_task` tool is available in this run.\n"
-            "- Do not say scheduling is unavailable when `schedule_task` is listed as available.\n"
+            "- The `run_scheduled_task` tool may also be available for off-schedule launches of an existing task.\n"
+            "- Do not say scheduling is unavailable when `schedule_task` or `run_scheduled_task` is listed as available.\n"
             "- Scheduled work runs headlessly; use `execution_mode=headless_run` only for compatibility if needed.\n"
             "- Use `task_type=other_task` for the job label.\n"
             "- Put structured task intent in `execution_payload`.\n"

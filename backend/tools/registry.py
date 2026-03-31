@@ -295,6 +295,7 @@ _TOOL_EXAMPLES = {
     "get_scheduled_task": {"scheduled_task_id": "scheduled-task-id-from-list"},
     "disable_scheduled_task": [{"scheduled_task_id": "scheduled-task-id-from-list"}],
     "enable_scheduled_task": [{"scheduled_task_id": "scheduled-task-id-from-list"}],
+    "run_scheduled_task": {"scheduled_task_id": "scheduled-task-id-from-list"},
     "list_scheduled_tasks": {"enabled_only": True, "limit": 10, "include_execution_payload": True},
     "spawn_subrun": {
         "input_text": "Research the current weather outlook for Ocala tennis conditions and return a concise summary.",
@@ -543,7 +544,7 @@ _TOOL_ADDITIONAL_DOCS = {
     "- Set `pinned=true` for memories that should survive normal cleanup pressure, such as durable preferences or important procedures.\n"
     "- Set `expires_at` to an ISO 8601 datetime when the memory is temporary and should naturally age out of active lookups.\n"
     "- Use `source_kind` and `source_ref` to record provenance, such as `manual_remember`, `scheduled_task_created`, or `scheduled_task_executed`.\n"
-    "- Example semantic memory: `scope_type='sandbox'`, `scope_id='C:/Dev/AgentMaestro'`, `memory_kind='semantic'`, `dedupe_key='fact:backend-location'`, `content='Use apply_patch for manual edits.'`, `pinned=true`.\n"
+    "- Example semantic memory: `scope_type='sandbox'`, `scope_id='C:/Dev/AgentMaestro'`, `memory_kind='semantic'`, `dedupe_key='fact:backend-location'`, `content='Use file_patch for manual edits.'`, `pinned=true`.\n"
     "- Example procedural memory: `scope_type='agent'`, `scope_id='<agent-id>'`, `memory_kind='procedural'`, `dedupe_key='procedure:test-runner'`, `content='When Telegram testing locally, clear the webhook and switch to polling first.'`.\n"
     "- Example episodic memory: `scope_type='user'`, `scope_id='<user-id>'`, `memory_kind='episodic'`, `dedupe_mode='none'`, `dedupe_key='scheduled-task-exec-bucket:<task-id>:daily-weather-report'`, `content='On March 13, 2026, Scott validated Telegram approvals end-to-end.'`, `expires_at='2026-03-31T23:59:59Z'`.",
     "schedule_task": "\n\nSCHEDULING NOTES:\n"
@@ -555,15 +556,20 @@ _TOOL_ADDITIONAL_DOCS = {
     "- If the schedule depends on a relative date like tomorrow or next Friday and the current local date is not already known, call `get_current_datetime` first and anchor the schedule in that local time.\n"
     "- Use `title` and `execution_payload` to describe the recurring job clearly so the future headless run has enough context.\n"
     "- Use `get_scheduled_task` when you want to preview a single task's full payload before editing it.\n"
+    "- Use `run_scheduled_task` when you need to trigger an existing task off-schedule without changing its recurrence.\n"
     "- list_scheduled_tasks already returns scheduled_task_id, so use that identifier for future edit, disable, or enable operations.\n",
     "get_scheduled_task": "\n\nSCHEDULING NOTES:\n"
     "- `get_scheduled_task` returns the full stored task record for a single `scheduled_task_id`.\n"
     "- Use this before editing when you want to preview the current `execution_payload` and recurrence details safely.\n"
     "- Use `scheduled_task_id` from `list_scheduled_tasks` or `schedule_task` to target the task.\n",
+    "run_scheduled_task": "\n\nSCHEDULING NOTES:\n"
+    "- `run_scheduled_task` launches an existing scheduled task immediately without changing its recurrence.\n"
+    "- Use `scheduled_task_id` from `list_scheduled_tasks` or `schedule_task`.\n"
+    "- If the task needs approval, the launch pauses at the same approval gate used by scheduled execution.\n",
     "search_memory": "\n\nMEMORY NOTES:\n"
     "- `search_memory` performs simple text lookup over durable memory records.\n"
     "- Narrow by `scope_type`, `scope_id`, and `memory_kind` when the target scope is known.\n"
-    "- Example targeted lookup: `query='apply_patch edits'`, `scope_type='sandbox'`, `scope_id='C:/Dev/AgentMaestro'`.\n"
+    "- Example targeted lookup: `query='file_patch edits'`, `scope_type='sandbox'`, `scope_id='C:/Dev/AgentMaestro'`.\n"
     "- Example procedural lookup: `query='telegram polling'`, `scope_type='agent'`, `scope_id='<agent-id>'`, `memory_kind='procedural'`.\n"
     "- Example episodic lookup: `query='validated Telegram approvals'`, `scope_type='user'`, `scope_id='<user-id>'`, `memory_kind='episodic'`.",
     "spawn_subrun": "\n\nSUBRUN NOTES:\n"
@@ -749,6 +755,18 @@ _TOOL_RESPONSE_FIELDS = {
         "next_run_at": "The recomputed next UTC datetime after re-enabling.",
         "last_result_summary": "The last completion summary if available.",
         "last_error": "The last recorded scheduling error if available.",
+    },
+    "run_scheduled_task": {
+        "scheduled_task_id": "Scheduled-task identifier returned by list_scheduled_tasks or schedule_task.",
+        "title": "Stored human-friendly task title.",
+        "task_type": "The stored task type, which is always other_task.",
+        "execution_mode": "The scheduled-task execution mode, always headless_run.",
+        "run_id": "The headless run identifier created or reused for the launch.",
+        "active_run_id": "The currently active run identifier if one already existed.",
+        "launched": "True when a new headless run was launched.",
+        "queued": "True when the new headless run was queued for execution.",
+        "waiting_for_approval": "True when the launch stopped at the approval gate.",
+        "status": "Launch status such as already_running, awaiting_approval, or launched.",
     },
     "get_scheduled_task": {
         "scheduled_task_id": "Scheduled-task identifier returned by list_scheduled_tasks or schedule_task.",
@@ -2066,8 +2084,23 @@ TOOL_REGISTRY = [
                 "released": True,
             },
             {
+                "name": "run_scheduled_task",
+                "description": "Launch an existing scheduled task immediately without changing its recurrence. If the task needs approval, the launch pauses at the same approval gate used by scheduled execution.",
+                "risk": ToolRisk.SAFE,
+                "args_schema": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "scheduled_task_id": {"type": "string"},
+                    },
+                    "required": ["scheduled_task_id"],
+                },
+                "requires_approval": False,
+                "released": True,
+            },
+            {
                 "name": "list_scheduled_tasks",
-                "description": "List recurring tasks attached to the current agent. Set include_execution_payload=true when you need to preview the stored payload alongside the scheduling metadata.",
+                "description": "List all recurring tasks in the workspace. Set include_execution_payload=true when you need to preview the stored payload alongside the scheduling metadata.",
                 "risk": ToolRisk.SAFE,
                 "args_schema": {
                     "type": "object",
@@ -2114,7 +2147,7 @@ TOOL_REGISTRY = [
     },
     {
         "name": GOOGLE_BRIDGE_TOOL_GROUP_NAME,
-        "description": 'Google bridge for Gmail, Gmail settings filters, Calendar, Drive, Docs, Sheets, and People access plus Gmail draft/send workflows and Gmail trash/delete workflows and Calendar read/create/update/delete workflows are supported. Bare Gmail list reads default to unread messages. Use include_read=true when you want all Gmail messages, or provide a query/label filter for a narrower mailbox view. Gmail list/read query filters support exact sender, sender domain, subject, and top-level OR splitting across those clauses. Gmail settings filter management is available for list/create/update/delete, criteria.query is planned before filter creation, and dry_run can preview the candidate match set before any filter is written. Use account_scope=all when you want the bridge to fan out across every active connected account and merge the results. For Gmail trash/delete queries, use account_scope=all when you want the same query to apply across every connected account. Calendar list reads can omit calendar_id or use all to inspect every calendar on the connected account, while primary stays available when you explicitly want one calendar. Drive pickers and Google file attachments should normalize into the same pending attachment flow as local files. People supports read/search plus single-contact create/update/delete workflows. For People updates, read the contact first and reuse person.etag or person.metadata.sources[].etag; target a single account with account_scope=primary or an explicit email/google_subject. For People update workflows, always read the contact first and reuse the exact returned `resource_name`, `etag`, and source `etag`; do not guess or synthesize those values. For Gmail reads, use query filters such as from:info@airbnb.com for exact sender, from:airbnb.com for sender-domain, subject:("Airbnb") for subject search, plus label_ids or include_read for mailbox filtering. For Gmail trash/delete, never use read as a lookup step. OR is supported for Gmail list/read searches and bulk trash/delete cleanup only at the top level, where it is split into separate Gmail clauses before merging or deleting. Nested OR inside parentheses is rejected as malformed. For bulk cleanup, choose the Gmail query shape that matches your intent: subject:("Airbnb") for subject-based cleanup, from:info@airbnb.com for exact sender cleanup, and from:airbnb.com for sender-domain cleanup. If you need multiple cleanup targets in one call, join them with OR and the bridge will split them into separate Gmail clauses as long as each clause is complete. For Gmail and Calendar writes, if a timezone argument is omitted, the bridge assumes the local Tango timezone from `TIME_ZONE` / `settings.TIME_ZONE` rather than UTC. For Gmail writes, create a draft first and then send it when ready. Calendar create, update, and delete workflows are supported. The preferred delete pattern in each case is action_kind=delete with operation=trash (or omit operation and let it default) plus the matching Gmail query. Keep delete_mode at trash unless you explicitly want permanent deletion. Gmail OR fan-out is capped at 10 top-level clauses by default; set TOOLRUNNER_GMAIL_OR_CLAUSE_LIMIT to adjust it. If the agent accidentally writes `from:@domain.com` or adds stray spaces after query tokens, the bridge normalizes that to the canonical Gmail form. The payload contract stays JSON-in / JSON-out so future Google surfaces can reuse the same shape.',
+        "description": 'Canonical reference: GOOGLE_BRIDGE.md in the repo root. Google bridge for Gmail, Gmail settings filters, Calendar, Drive, Docs, Sheets, and People access plus Gmail draft/send workflows and Gmail trash/delete workflows and Calendar read/create/update/delete workflows are supported. Bare Gmail list reads default to unread messages. Use include_read=true when you want all Gmail messages, or provide a query/label filter for a narrower mailbox view. Gmail read-by-id can request the message body and MIME parts with format=full plus include_body/include_html/include_attachments, or format=raw when the RFC822 source is needed. Gmail list/read query filters support exact sender, sender domain, subject, and top-level OR splitting across those clauses. Gmail settings filter management is available for list/create/update/delete, criteria.query is planned before filter creation, and dry_run can preview the candidate match set before any filter is written. Use account_scope=all when you want the bridge to fan out across every active connected account and merge the results. For Gmail trash/delete queries, use account_scope=all when you want the same query to apply across every connected account. Calendar list reads can omit calendar_id or use all to inspect every calendar on the connected account, while primary stays available when you explicitly want one calendar. Drive pickers and Google file attachments should normalize into the same pending attachment flow as local files. People supports read/search plus single-contact create/update/delete workflows. For People updates, read the contact first and reuse person.etag or person.metadata.sources[].etag; target a single account with account_scope=primary or an explicit email/google_subject. For People update workflows, always read the contact first and reuse the exact returned `resource_name`, `etag`, and source `etag`; do not guess or synthesize those values. For Gmail reads, use query filters such as from:info@airbnb.com for exact sender, from:airbnb.com for sender-domain, subject:("Airbnb") for subject search, plus label_ids or include_read for mailbox filtering. For Gmail trash/delete, never use read as a lookup step. OR is supported for Gmail list/read searches and bulk trash/delete cleanup only at the top level, where it is split into separate Gmail clauses before merging or deleting. Nested OR inside parentheses is rejected as malformed. For bulk cleanup, choose the Gmail query shape that matches your intent: subject:("Airbnb") for subject-based cleanup, from:info@airbnb.com for exact sender cleanup, and from:airbnb.com for sender-domain cleanup. If you need multiple cleanup targets in one call, join them with OR and the bridge will split them into separate Gmail clauses as long as each clause is complete. For Gmail and Calendar writes, if a timezone argument is omitted, the bridge assumes the local Tango timezone from `TIME_ZONE` / `settings.TIME_ZONE` rather than UTC. For Gmail writes, create a draft first and then send it when ready. Calendar create, update, and delete workflows are supported. The preferred delete pattern in each case is action_kind=delete with operation=trash (or omit operation and let it default) plus the matching Gmail query. Keep delete_mode at trash unless you explicitly want permanent deletion. Gmail OR fan-out is capped at 10 top-level clauses by default; set TOOLRUNNER_GMAIL_OR_CLAUSE_LIMIT to adjust it. If the agent accidentally writes `from:@domain.com` or adds stray spaces after query tokens, the bridge normalizes that to the canonical Gmail form. The payload contract stays JSON-in / JSON-out so future Google surfaces can reuse the same shape.',
         "tools": [
             {
                 "name": GOOGLE_BRIDGE_TOOL_NAME,

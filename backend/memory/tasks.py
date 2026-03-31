@@ -4,7 +4,6 @@ from celery import shared_task
 from django.conf import settings
 from logging_utils import get_app_logger
 
-from memory.models import ScheduledTask
 from memory.retention import (
     DEFAULT_DISTILL_GROUP_LIMIT,
     DEFAULT_RETENTION_BATCH_SIZE,
@@ -15,6 +14,7 @@ from memory.scheduled_tasks import (
     cleanup_scheduled_task_active_runs,
     claim_due_scheduled_tasks,
     mark_scheduled_task_failure,
+    run_scheduled_task_now,
 )
 from runs.models import AgentRun
 from runs.services.headless import launch_scheduled_task_run
@@ -75,14 +75,12 @@ def run_due_scheduled_tasks(*, limit: int = DEFAULT_SCHEDULED_TASK_LIMIT) -> dic
 
 @shared_task(name="memory.tasks.run_scheduled_task_once")
 def run_scheduled_task_once(task_id: str) -> dict[str, str]:
-    scheduled_task = ScheduledTask.objects.select_related("agent", "workspace", "owner").get(id=task_id)
-    _scheduled_task, run, _did_launch = launch_scheduled_task_run(str(scheduled_task.id))
-    if run.status == AgentRun.Status.WAITING_FOR_APPROVAL:
-        return {"task_id": str(scheduled_task.id), "run_id": str(run.id), "status": "awaiting_approval"}
-    from runs.tasks import execute_headless_run_task
-
-    execute_headless_run_task.delay(str(run.id))
-    return {"task_id": str(scheduled_task.id), "run_id": str(run.id), "status": "launched"}
+    result = run_scheduled_task_now(str(task_id))
+    return {
+        "task_id": str(result["scheduled_task_id"]),
+        "run_id": str(result["run_id"]),
+        "status": str(result["status"]),
+    }
 
 
 @shared_task(name="memory.tasks.run_memory_retention_task")

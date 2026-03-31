@@ -577,6 +577,7 @@ def execute_headless_run(run_id: str) -> AgentRun:
             provider=provider,
             model_name=model_name,
             temperature=float(run.agent.temperature) if run.agent.temperature is not None else None,
+            reasoning=str(getattr(run.agent, "reasoning", "") or "").strip() or None,
             tools=tool_payloads,
             backup_models=run.agent.get_backup_models(),
             backup_retry_policy=run.agent.get_backup_retry_policy(),

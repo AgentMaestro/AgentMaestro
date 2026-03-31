@@ -231,7 +231,13 @@ class OpenAIResponsesWSClient:
         self.timeout = timeout
 
     async def create_response(
-        self, *, model: str, input_text: str, system_text: Optional[str] = None, tools: Optional[List[Dict[str, Any]]] = None
+        self,
+        *,
+        model: str,
+        input_text: str,
+        system_text: Optional[str] = None,
+        tools: Optional[List[Dict[str, Any]]] = None,
+        reasoning: Optional[str] = None,
     ) -> Dict[str, Any]:
         url = _build_ws_url(self.base_url)
         input_items: List[Dict[str, Any]] = []
@@ -258,6 +264,8 @@ class OpenAIResponsesWSClient:
         }
         if tools:
             payload["tools"] = tools
+        if reasoning:
+            payload["reasoning"] = {"effort": reasoning}
 
         headers = _auth_headers(self.api_key)
         try:
@@ -294,6 +302,7 @@ class OpenAIResponsesWebSocketSession:
         *,
         run_id: str | None = None,
         agent_id: str | None = None,
+        reasoning: str | None = None,
         idle_timeout_seconds: float = 60.0,
         timeout_seconds: float = 120.0,
     ):
@@ -303,6 +312,7 @@ class OpenAIResponsesWebSocketSession:
         self._model = model
         self._run_id = run_id or "unknown"
         self._agent_id = agent_id or "unknown"
+        self._reasoning = str(reasoning or "").strip() or None
         self._timeout_seconds = timeout_seconds
         self.previous_response_id: Optional[str] = None
         self._last_active = time.monotonic()
@@ -530,6 +540,8 @@ class OpenAIResponsesWebSocketSession:
         )
         if previous_response_id:
             payload["previous_response_id"] = previous_response_id
+        if self._reasoning and not previous_response_id:
+            payload["reasoning"] = {"effort": self._reasoning}
         metadata["request_id"] = request_id
         payload["metadata"] = metadata
         attempt = 0
@@ -764,7 +776,7 @@ class OpenAIResponsesWSSessionPool:
         self._lock = asyncio.Lock()
 
     async def get(
-        self, run_id: str, model: str, *, agent_id: str | None = None
+        self, run_id: str, model: str, *, agent_id: str | None = None, reasoning: str | None = None
     ) -> OpenAIResponsesWebSocketSession:
         async with self._lock:
             key = (run_id, model)
@@ -779,10 +791,13 @@ class OpenAIResponsesWSSessionPool:
                     model=model,
                     run_id=run_id,
                     agent_id=agent_id,
+                    reasoning=reasoning,
                     idle_timeout_seconds=self._idle_timeout_seconds,
                     timeout_seconds=self._timeout_seconds,
                 )
                 self._sessions[key] = session
+            elif reasoning and not getattr(session, "_reasoning", None):
+                session._reasoning = str(reasoning or "").strip() or None
         return session
 
     async def close(self, run_id: str, *, model: str | None = None) -> None:

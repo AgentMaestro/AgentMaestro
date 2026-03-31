@@ -13,6 +13,14 @@
         {{ form.default_model.errors }}
       </div>
       <div>
+        {{ form.reasoning.label_tag }}
+        {{ form.reasoning }}
+        {% if form.reasoning.help_text %}
+          <div class="helper">{{ form.reasoning.help_text }}</div>
+        {% endif %}
+        {{ form.reasoning.errors }}
+      </div>
+      <div>
         {{ form.temperature.label_tag }}
         {{ form.temperature }}
         {% if form.temperature.help_text %}

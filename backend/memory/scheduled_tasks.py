@@ -90,7 +90,7 @@ def create_scheduled_task(
             dedupe_mode="key",
         )
 
-    return ScheduledTask.objects.create(
+    scheduled_task = ScheduledTask.objects.create(
         id=scheduled_task_id,
         workspace=agent.workspace,
         agent=agent,
@@ -109,6 +109,58 @@ def create_scheduled_task(
         execution_payload=normalized_payload,
     )
 
+    # If the scheduled task's payload requests a remote mutation (for example
+    # google mailbox mutations like trash/delete), create an ApprovalRequest now
+    # so the regular approval flow can approve the mutation before the task's
+    # first run. This prevents the scheduler from creating a blocking request
+    # at run time and allows operators to choose approve-once / timed / future.
+    try:
+        payload = dict(normalized_payload or {})
+        action = str(payload.get('action') or '').strip().lower()
+        integration = str(payload.get('integration_kind') or '').strip().lower()
+        # Treat 'trash' and 'delete' and any explicit google integration as write ops
+        if action in ('trash', 'delete') or integration == 'google':
+            ApprovalRequest = apps.get_model('control', 'ApprovalRequest')
+            # Build a concise payload preview and constraints for the approval UI
+            preview = {
+                'action': action,
+                'domains': payload.get('domains', []),
+                'account_scope': payload.get('account_scope'),
+            }
+            constraints = {
+                'resource_kind': payload.get('resource_kind', 'gmail'),
+                'action_kind': 'delete' if action in ('trash', 'delete') else action,
+                'account_scope': payload.get('account_scope', 'primary'),
+                'domains': payload.get('domains', []),
+            }
+            summary = payload.get('objective') or f"Scheduled task '{scheduled_task.title}' requests {action} on {constraints.get('account_scope')} accounts"
+            # requested_by expects an Operator; owner is typically the operator/user who created the task
+            requested_by = None
+            try:
+                # If owner is an Operator instance, use it. Otherwise leave null and let UI assign.
+                from control.models import Operator
+
+                if isinstance(owner, Operator):
+                    requested_by = owner
+            except Exception:
+                requested_by = None
+
+            ApprovalRequest.objects.create(
+                run_id=None,
+                risk_level='external_write',
+                tool_name='google_bridge',
+                summary=summary,
+                payload_preview=preview,
+                constraints=constraints,
+                status=ApprovalRequest.STATUS_PENDING,
+                requested_by=requested_by,
+            )
+    except Exception:
+        # Do not fail scheduled task creation if approval bookkeeping fails;
+        # log and continue. The normal runtime approval path will still work.
+        logger.exception('Failed to create initial ApprovalRequest for scheduled task %s', scheduled_task_id)
+
+    return scheduled_task
 
 
 @transaction.atomic
@@ -207,12 +259,6 @@ def list_scheduled_tasks(*, agent=None, workspace=None, owner=None, enabled_only
         "active_run",
         "recurrence_rule",
     )
-    if agent is not None:
-        queryset = queryset.filter(agent=agent)
-    if workspace is not None:
-        queryset = queryset.filter(workspace=workspace)
-    if owner is not None:
-        queryset = queryset.filter(owner=owner)
     if enabled_only:
         queryset = queryset.filter(enabled=True)
     return list(queryset.order_by("next_run_at", "created_at")[: max(1, min(int(limit or 20), 50))])
@@ -370,6 +416,31 @@ def execute_scheduled_task(scheduled_task: ScheduledTask) -> str:
     else:
         execute_headless_run(str(run.id))
     return f"Scheduled task '{scheduled_task.title or scheduled_task.task_type}' launched as headless run {run.id}."
+
+
+def run_scheduled_task_now(scheduled_task_id: str) -> dict[str, object]:
+    from runs.models import AgentRun
+    from runs.tasks import execute_headless_run_task
+
+    scheduled_task, run, did_launch = launch_scheduled_task_run(str(scheduled_task_id))
+    waiting_for_approval = run.status == AgentRun.Status.WAITING_FOR_APPROVAL
+    result = {
+        "scheduled_task_id": str(scheduled_task.id),
+        "title": scheduled_task.title,
+        "task_type": scheduled_task.task_type,
+        "execution_mode": scheduled_task.execution_mode,
+        "run_id": str(run.id),
+        "active_run_id": str(scheduled_task.active_run_id or ""),
+        "launched": did_launch,
+        "queued": False,
+        "waiting_for_approval": waiting_for_approval,
+        "status": "already_running" if not did_launch else ("awaiting_approval" if waiting_for_approval else "launched"),
+    }
+    if not did_launch or waiting_for_approval:
+        return result
+    execute_headless_run_task.delay(str(run.id))
+    result["queued"] = True
+    return result
 
 
 

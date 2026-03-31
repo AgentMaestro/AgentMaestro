@@ -57,6 +57,7 @@ class LLMRunner:
         provider: Optional[str] = None,
         model_name: Optional[str] = None,
         temperature: Optional[float] = None,
+        reasoning: Optional[str] = None,
         max_output_tokens: Optional[int] = None,
         extra: Optional[Dict[str, Any]] = None,
         tools: Optional[List[Dict[str, Any]]] = None,
@@ -142,6 +143,7 @@ class LLMRunner:
                             model_name=model_name,
                             orchestration_run_id=orchestration_run_id,
                             max_tool_rounds=max_tool_rounds,
+                            reasoning=reasoning,
                         )
                     except Exception as exc:
                         if (
@@ -199,6 +201,7 @@ class LLMRunner:
                                     model=model_name,
                                     tools=resolved_tools,
                                     temperature=temperature,
+                                    reasoning=reasoning,
                                     max_output_tokens=max_output_tokens,
                                     extra=extra,
                                     outstanding_provider_call_ids=(
@@ -484,13 +487,14 @@ class LLMRunner:
         model_name: str,
         orchestration_run_id: Optional[str],
         max_tool_rounds: int,
+        reasoning: Optional[str],
     ) -> Dict[str, Any]:
         tool_call_count = 0
         tool_rounds = 0
         usage_totals = {"token_prompt": 0, "token_completion": 0, "token_total": 0}
 
         await client.cleanup_ws_sessions()
-        session = await client.get_ws_session(str(run.id), model_name)
+        session = await client.get_ws_session(str(run.id), model_name, reasoning=reasoning)
         session_tools = client.format_tool_definitions_for_responses(tools)
         allowed_tool_names = {
             str(tool.get("name") or "").strip()
@@ -552,7 +556,11 @@ class LLMRunner:
             except Exception as exc:
                 if self._client_previous_response_not_found(client, exc):
                     await session.close()
-                    session = await client.get_ws_session(str(run.id), model_name)
+                    session = await client.get_ws_session(
+                        str(run.id),
+                        model_name,
+                        reasoning=reasoning,
+                    )
                     input_items = self._build_ws_input_items(
                         history,
                         previous_response_id=getattr(session, "previous_response_id", None),

@@ -10,6 +10,7 @@ from tools.models import AgentToolGrant, Tool, ToolDefinition
 
 class AgentAdminForm(forms.ModelForm):
     default_model = forms.ChoiceField(label="Default Model")
+    reasoning = forms.ChoiceField(label="Reasoning")
 
     class Meta:
         model = Agent
@@ -19,6 +20,7 @@ class AgentAdminForm(forms.ModelForm):
         super().__init__(*args, **kwargs)
         choices = Agent.get_default_model_choices()
         self.fields["default_model"].choices = choices
+        self.fields["reasoning"].choices = Agent.get_reasoning_choices()
 
 
 @admin.register(Agent)
@@ -29,6 +31,7 @@ class AgentAdmin(admin.ModelAdmin):
         "slug",
         "workspace",
         "default_model",
+        "reasoning",
         "formatted_sandbox_paths",
         "soul",
         "owner",
@@ -49,6 +52,7 @@ class AgentAdmin(admin.ModelAdmin):
                     "description",
                     "soul",
                     "default_model",
+                    "reasoning",
                     "temperature",
                     "policy_name",
                     "tool_policy_json",

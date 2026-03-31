@@ -45,6 +45,12 @@ class AgentLLMForm(forms.Form):
         label="Default Model",
         help_text="Select the default model for this agent.",
     )
+    reasoning = forms.ChoiceField(
+        choices=[],
+        initial=Agent.DEFAULT_REASONING,
+        label="Reasoning",
+        help_text="Controls OpenAI reasoning.effort on the first request (low, medium, or high).",
+    )
     backup_models = forms.MultipleChoiceField(
         choices=[],
         required=False,
@@ -64,12 +70,13 @@ class AgentLLMForm(forms.Form):
         max_length=32,
         initial="react",
         label="Policy Name",
-        help_text="Policy name determines reasoning behavior (e.g. react, planner).",
+        help_text="Policy name determines orchestration behavior (e.g. react, planner).",
     )
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
         self._refresh_model_choices()
+        self._refresh_reasoning_choices()
         self._refresh_backup_model_choices()
 
     def _refresh_model_choices(self) -> None:
@@ -82,6 +89,16 @@ class AgentLLMForm(forms.Form):
         self.fields["default_model"].help_text = (
             "Select the default model for this agent. "
             f"Available: {preview or Agent.DEFAULT_MODEL}."
+        )
+
+    def _refresh_reasoning_choices(self) -> None:
+        choices = Agent.get_reasoning_choices()
+        self.fields["reasoning"].choices = choices
+        labels = [label for _, label in choices]
+        preview = ", ".join(labels)
+        self.fields["reasoning"].help_text = (
+            "Controls OpenAI reasoning.effort on the first request. "
+            f"Available: {preview or Agent.DEFAULT_REASONING}."
         )
 
     @staticmethod

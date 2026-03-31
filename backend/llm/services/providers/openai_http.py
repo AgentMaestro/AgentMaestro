@@ -63,6 +63,7 @@ class OpenAIHTTPService:
         model: str,
         tools: Optional[List[Dict[str, Any]]] = None,
         temperature: Optional[float] = None,
+        reasoning: Optional[str] = None,
         max_output_tokens: Optional[int] = None,
         previous_response_id: Optional[str] = None,
         outstanding_provider_call_id: Optional[str] = None,
@@ -76,6 +77,7 @@ class OpenAIHTTPService:
                 model,
                 tools=tools,
                 temperature=temperature,
+                reasoning=reasoning,
                 max_output_tokens=max_output_tokens,
                 extra=extra,
             )
@@ -84,6 +86,7 @@ class OpenAIHTTPService:
             model,
             tools=tools,
             temperature=temperature,
+            reasoning=reasoning,
             max_output_tokens=max_output_tokens,
             previous_response_id=previous_response_id,
             outstanding_provider_call_id=outstanding_provider_call_id,
@@ -98,6 +101,7 @@ class OpenAIHTTPService:
         *,
         tools: Optional[List[Dict[str, Any]]] = None,
         temperature: Optional[float] = None,
+        reasoning: Optional[str] = None,
         max_output_tokens: Optional[int] = None,
         previous_response_id: Optional[str] = None,
         outstanding_provider_call_id: Optional[str] = None,
@@ -161,6 +165,7 @@ class OpenAIHTTPService:
         *,
         tools: Optional[List[Dict[str, Any]]] = None,
         temperature: Optional[float] = None,
+        reasoning: Optional[str] = None,
         max_output_tokens: Optional[int] = None,
         previous_response_id: Optional[str] = None,
         outstanding_provider_call_id: Optional[str] = None,
@@ -183,6 +188,8 @@ class OpenAIHTTPService:
         previous_response_id = str(previous_response_id or "").strip() or None
         if previous_response_id:
             payload["previous_response_id"] = previous_response_id
+        if reasoning and not previous_response_id:
+            payload["reasoning"] = {"effort": reasoning}
         if responses_tools:
             payload["tools"] = responses_tools
             payload["tool_choice"] = "auto"

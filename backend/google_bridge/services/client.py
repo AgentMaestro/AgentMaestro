@@ -92,11 +92,28 @@ class GoogleBridgeClient:
             params["pageToken"] = page_token.strip()
         return self._request("GET", "https://gmail.googleapis.com/gmail/v1/users/me/messages", params=params)
 
-    def get_gmail_message(self, message_id: str) -> dict:
+    def get_gmail_message(
+        self,
+        message_id: str,
+        *,
+        format: str = "metadata",
+        metadata_headers: list[str] | None = None,
+    ) -> dict:
+        params: dict[str, object] = {"format": str(format or "metadata").strip() or "metadata"}
+        if params["format"] == "metadata":
+            headers = [str(header).strip() for header in (metadata_headers or ["Subject", "From", "Date"]) if str(header).strip()]
+            if headers:
+                params["metadataHeaders"] = headers
         return self._request(
             "GET",
             f"https://gmail.googleapis.com/gmail/v1/users/me/messages/{message_id}",
-            params={"format": "metadata", "metadataHeaders": ["Subject", "From", "Date"]},
+            params=params,
+        )
+
+    def get_gmail_attachment(self, message_id: str, attachment_id: str) -> dict:
+        return self._request(
+            "GET",
+            f"https://gmail.googleapis.com/gmail/v1/users/me/messages/{message_id}/attachments/{attachment_id}",
         )
 
     def create_gmail_draft(

@@ -251,7 +251,7 @@ class ToolCall(TimeStampedModel):
     approved_at = models.DateTimeField(null=True, blank=True)
     started_at = models.DateTimeField(null=True, blank=True)
     ended_at = models.DateTimeField(null=True, blank=True)
-    exit_code = models.IntegerField(null=True, blank=True)
+    exit_code = models.BigIntegerField(null=True, blank=True)
     stdout = models.TextField(blank=True, default="")
     stderr = models.TextField(blank=True, default="")
     result = models.JSONField(default=dict, blank=True)

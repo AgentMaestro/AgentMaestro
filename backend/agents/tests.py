@@ -35,6 +35,17 @@ class AgentModelTests(TestCase):
             soul="Core directives",
         )
         self.assertEqual(agent.slug, "alpha-agent")
+        self.assertEqual(agent.reasoning, Agent.DEFAULT_REASONING)
+
+    def test_reasoning_normalized_to_supported_value(self):
+        agent = Agent.objects.create(
+            workspace=self.workspace,
+            owner=self.user,
+            name="Reasoning Agent",
+            soul="Core directives",
+            reasoning="HIGH",
+        )
+        self.assertEqual(agent.reasoning, "high")
 
     def test_slug_updates_when_name_changes(self):
         agent = Agent.objects.create(
@@ -147,6 +158,7 @@ class AgentWizardViewTests(TestCase):
         self.client.post(f"{url}?step=1", data=basics)
         llm = {
             "default_model": "gpt-5.1",
+            "reasoning": "high",
             "temperature": "0.75",
             "policy_name": "react",
             "backup_models": [
@@ -164,6 +176,7 @@ class AgentWizardViewTests(TestCase):
         self.assertIsNotNone(agent)
         self.assertEqual(agent.owner, self.user)
         self.assertEqual(agent.workspace.name, "Wizard Workspace")
+        self.assertEqual(agent.reasoning, "high")
         self.assertEqual(agent.tool_policy_json["selected_tools"], ["wizard_tool"])
         self.assertEqual(
             agent.backup_models_json,
@@ -186,7 +199,12 @@ class AgentWizardViewTests(TestCase):
         self.client.post(f"{url}?step=1", data={"name": "No Tools Agent", "soul": "Defer"})
         self.client.post(
             f"{url}?step=2",
-            data={"default_model": "gpt-5.1", "temperature": "0.5", "policy_name": "react"},
+            data={
+                "default_model": "gpt-5.1",
+                "reasoning": "medium",
+                "temperature": "0.5",
+                "policy_name": "react",
+            },
         )
         workspace, tool = self._seed_workspace_with_tool()
         self.client.post(f"{url}?step=3", data={"workspace": str(workspace.id)})
@@ -232,6 +250,7 @@ class AgentDetailViewTests(TestCase):
         response = self.client.get(reverse("agents:agent_detail", kwargs={"slug": self.agent.slug}))
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Detail Agent")
+        self.assertContains(response, "gpt-5 (medium, 0.70)")
         self.assertContains(response, "detail_tool")
         self.assertContains(response, "Configure Telegram")
         self.assertTrue(response.context["tool_count"] >= 1)

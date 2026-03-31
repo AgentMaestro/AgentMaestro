@@ -22,6 +22,7 @@ _NATIVE_TOOL_NAMES = {
     "schedule_task",
     "get_scheduled_task",
     "list_scheduled_tasks",
+    "run_scheduled_task",
     "edit_scheduled_task",
     "disable_scheduled_task",
     "enable_scheduled_task",
@@ -76,6 +77,7 @@ def _run_native_tool(tool_name: str, args: Dict[str, Any], orchestration_run_id:
         enable_scheduled_task,
         get_scheduled_task,
         list_scheduled_tasks,
+        run_scheduled_task_now,
         serialize_scheduled_task,
         update_scheduled_task,
     )
@@ -252,6 +254,13 @@ def _run_native_tool(tool_name: str, args: Dict[str, Any], orchestration_run_id:
                 for task in scheduled_tasks
             ],
         }
+        return {"ok": True, "result": result, "meta": {"native": True}, "error": None}
+
+    if tool_name == "run_scheduled_task":
+        scheduled_task_id = str(args.get("scheduled_task_id") or "").strip()
+        if not scheduled_task_id:
+            raise RuntimeError("run_scheduled_task requires scheduled_task_id.")
+        result = run_scheduled_task_now(scheduled_task_id)
         return {"ok": True, "result": result, "meta": {"native": True}, "error": None}
 
     if tool_name == "spawn_subrun":

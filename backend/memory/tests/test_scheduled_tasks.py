@@ -18,6 +18,7 @@ from memory.scheduled_tasks import (
     create_scheduled_task,
     get_scheduled_task,
     list_scheduled_tasks,
+    run_scheduled_task_now,
     serialize_scheduled_task,
     update_scheduled_task,
 )
@@ -369,5 +370,29 @@ def test_cleanup_scheduled_task_active_runs_does_not_stale_waiting_for_approval_
     run.refresh_from_db()
     assert run.status == AgentRun.Status.WAITING_FOR_APPROVAL
     assert scheduled_task.active_run_id == run.id
+
+
+def test_run_scheduled_task_now_uses_existing_headless_launch_flow(scheduled_task_agent):
+    user, _workspace, agent = scheduled_task_agent
+    scheduled_task = create_scheduled_task(
+        agent=agent,
+        owner=user,
+        task_type=ScheduledTask.TaskType.OTHER_TASK,
+        local_time_value="08:00",
+        timezone_name="America/New_York",
+        execution_mode=ScheduledTask.ExecutionMode.HEADLESS_RUN,
+        execution_payload={"location": "Richmond, VA", "source_domain": "weather.com"},
+    )
+
+    result = run_scheduled_task_now(str(scheduled_task.id))
+
+    assert result["scheduled_task_id"] == str(scheduled_task.id)
+    assert result["status"] == "awaiting_approval"
+    assert result["launched"] is True
+    assert result["queued"] is False
+    assert result["waiting_for_approval"] is True
+    assert result["run_id"]
+    scheduled_task.refresh_from_db()
+    assert scheduled_task.active_run_id == result["run_id"]
 
 

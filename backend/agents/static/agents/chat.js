@@ -2070,8 +2070,8 @@
         if (grantSelect) {
             grantSelect.disabled = state !== "pending";
         }
-        approveBtn.textContent = state === "approved" ? "Approve âœ“" : "Approve";
-        denyBtn.textContent = state === "denied" ? "Deny âœ“" : "Deny";
+        approveBtn.textContent = state === "approved" ? "Approve \u2713" : "Approve";
+        denyBtn.textContent = state === "denied" ? "Deny \u2713" : "Deny";
         if (state === "approved") {
             approveBtn.classList.add("selected");
         } else if (state === "denied") {
@@ -2483,6 +2483,10 @@
                 setStatus("Connected");
                 log("[tool_result] run_id=", activeRunId, payload);
                 return;
+            case "prompt_queued":
+                appendSystemMessage(payload.text || "Prompt queued.", "run_control");
+                log("[prompt_queued] run_id=", activeRunId, payload);
+                return;
             case "tool_denied":
                 handleToolDenied(payload);
                 setStatus("Connected");
@@ -2846,3 +2850,28 @@
 
 
 
+
+// Dynamic load of stt helper for agent detail pages
+(function(){
+    try{
+        var script = document.createElement('script');
+        script.src = '/static/agents/stt.js';
+        script.defer = true;
+        document.body.appendChild(script);
+    }catch(e){ console.warn('stt loader failed', e) }
+})();
+
+
+// STT loader: dynamically add stt.js when on an agent detail page
+(function(){
+  try{
+    // Only attempt when running on an agent detail page (heuristic: body has data-agent-slug or URL contains /agents/)
+    var isAgentPage = document.body && (document.body.dataset && document.body.dataset.agentSlug || window.location.pathname.indexOf('/agents/')!==-1);
+    if(!isAgentPage) return;
+    var s = document.createElement('script');
+    s.src = '/static/agents/stt.js';
+    s.async = true;
+    s.onload = function(){ console.log('STT script loaded'); }
+    document.head.appendChild(s);
+  }catch(e){console.error('Failed to load STT script', e);}
+})();

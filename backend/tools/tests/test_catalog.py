@@ -105,6 +105,7 @@ class ToolSchemaCoverageTests(TestCase):
             "edit_scheduled_task",
             "disable_scheduled_task",
             "enable_scheduled_task",
+            "run_scheduled_task",
             "list_scheduled_tasks",
         }:
             self.assertIn(tool_name, registry_tools)
@@ -131,6 +132,7 @@ class ToolSchemaCoverageTests(TestCase):
             "execution_payload",
             schema_tools["get_scheduled_task"]["response_fields"],
         )
+        self.assertIn("run_id", schema_tools["run_scheduled_task"]["response_fields"])
         self.assertIn(
             "include_execution_payload",
             registry_tools["list_scheduled_tasks"]["args_schema"]["properties"],

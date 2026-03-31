@@ -48,6 +48,9 @@ def _compact_generic_output(payload: Any, *, max_chars: int) -> str:
         meta = payload.get("meta")
         if meta:
             summary["meta"] = _compact_value(meta)
+        if not summary:
+            # Preserve visibility for raw tool payloads instead of collapsing them to "{}".
+            summary = _compact_value(payload)
         text = _stringify_payload(summary)
     else:
         text = _stringify_payload(payload)

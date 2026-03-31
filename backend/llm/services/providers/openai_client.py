@@ -113,6 +113,7 @@ class OpenAIClient(BaseLLMClient):
         model: str,
         tools: Optional[List[Dict[str, Any]]] = None,
         temperature: Optional[float] = None,
+        reasoning: Optional[str] = None,
         max_output_tokens: Optional[int] = None,
         previous_response_id: Optional[str] = None,
         outstanding_provider_call_id: Optional[str] = None,
@@ -121,12 +122,13 @@ class OpenAIClient(BaseLLMClient):
     ) -> Dict[str, Any]:
         transport = self.resolve_transport()
         if transport == "ws":
-            return await self._complete_ws(messages, model, tools=tools)
+            return await self._complete_ws(messages, model, tools=tools, reasoning=reasoning)
         return await self.http_service.complete(
             messages,
             model=model,
             tools=tools,
             temperature=temperature,
+            reasoning=reasoning,
             max_output_tokens=max_output_tokens,
             previous_response_id=previous_response_id,
             outstanding_provider_call_id=outstanding_provider_call_id,
@@ -146,13 +148,18 @@ class OpenAIClient(BaseLLMClient):
         model: str,
         *,
         tools: Optional[List[Dict[str, Any]]] = None,
+        reasoning: Optional[str] = None,
     ) -> Dict[str, Any]:
         system_text, user_text = self._messages_to_input(messages)
         ws_client = OpenAIResponsesWSClient(
             self.api_key, base_url=self.base_url, timeout=self.ws_timeout
         )
         response = await ws_client.create_response(
-            model=model, input_text=user_text, system_text=system_text, tools=tools
+            model=model,
+            input_text=user_text,
+            system_text=system_text,
+            tools=tools,
+            reasoning=reasoning,
         )
         return {
             "text": response["text"],
@@ -174,8 +181,20 @@ class OpenAIClient(BaseLLMClient):
     async def stream_text(self, *args: Any, **kwargs: Any):
         raise NotImplementedError("OpenAI streaming not implemented yet")
 
-    async def get_ws_session(self, run_id: str, model: str, *, agent_id: str | None = None):
-        return await self.ws_session_pool.get(run_id, model, agent_id=agent_id)
+    async def get_ws_session(
+        self,
+        run_id: str,
+        model: str,
+        *,
+        agent_id: str | None = None,
+        reasoning: str | None = None,
+    ):
+        return await self.ws_session_pool.get(
+            run_id,
+            model,
+            agent_id=agent_id,
+            reasoning=reasoning,
+        )
 
     async def close_ws_session(self, run_id: str, *, model: str | None = None) -> None:
         await self.ws_session_pool.close(run_id, model=model)

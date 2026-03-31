@@ -52,6 +52,7 @@ async def test_ws_session_includes_tools_on_first_response_create(monkeypatch):
         model="gpt-5-mini",
         run_id="run-1",
         agent_id="agent-1",
+        reasoning="high",
     )
     session._ws = _FakeWebSocket(
         {
@@ -95,6 +96,7 @@ async def test_ws_session_includes_tools_on_first_response_create(monkeypatch):
     sent_payload = json.loads(session._ws.sent_payloads[0])
     assert sent_payload["type"] == "response.create"
     assert sent_payload["store"] is True
+    assert sent_payload["reasoning"] == {"effort": "high"}
     assert "tools" in sent_payload
     assert sent_payload["tools"][0]["name"] == "file_read"
 
@@ -107,6 +109,7 @@ async def test_ws_session_stores_continuations_with_previous_response_id(monkeyp
         model="gpt-5-mini",
         run_id="run-2",
         agent_id="agent-2",
+        reasoning="high",
     )
     session._ws = _FakeWebSocket(
         {
@@ -137,6 +140,7 @@ async def test_ws_session_stores_continuations_with_previous_response_id(monkeyp
     sent_payload = json.loads(session._ws.sent_payloads[0])
     assert sent_payload["store"] is True
     assert sent_payload["previous_response_id"] == "resp_prev_123"
+    assert "reasoning" not in sent_payload
 
 
 
@@ -234,6 +238,32 @@ async def test_openai_http_responses_payload_includes_previous_response_id():
     )
 
     assert service.client.responses.payload["previous_response_id"] == "resp_prev_123"
+    assert "reasoning" not in service.client.responses.payload
+
+
+@pytest.mark.asyncio
+async def test_openai_http_responses_payload_includes_reasoning_on_first_request():
+    class _FakeResponses:
+        def __init__(self):
+            self.payload = None
+
+        async def create(self, **kwargs):
+            self.payload = kwargs
+            return type("Resp", (), {"model_dump": lambda self: {"id": "resp_123", "output": []}})()
+
+    class _FakeClient:
+        def __init__(self):
+            self.responses = _FakeResponses()
+
+    service = OpenAIHTTPService(_FakeClient())
+
+    await service.complete(
+        [{"role": "user", "content": "hi"}],
+        model="gpt-5-mini",
+        reasoning="medium",
+    )
+
+    assert service.client.responses.payload["reasoning"] == {"effort": "medium"}
 
 
 @pytest.mark.asyncio

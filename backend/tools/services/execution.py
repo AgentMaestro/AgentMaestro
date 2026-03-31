@@ -33,6 +33,7 @@ _NATIVE_TOOL_NAMES = {
     "edit_scheduled_task",
     "disable_scheduled_task",
     "enable_scheduled_task",
+    "run_scheduled_task",
     "list_scheduled_tasks",
     "spawn_subrun",
     "send_telegram",

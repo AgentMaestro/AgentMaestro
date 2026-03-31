@@ -42,6 +42,10 @@ class Agent(TimeStampedModel):
     DEFAULT_MODEL_CHOICES = tuple((model, model) for model in DEFAULT_MODEL_ORDER)
     DEFAULT_MODEL = "gpt-5"
     VALID_DEFAULT_MODELS = set(DEFAULT_MODEL_ORDER)
+    REASONING_ORDER = ("low", "medium", "high")
+    REASONING_CHOICES = tuple((level, level.title()) for level in REASONING_ORDER)
+    DEFAULT_REASONING = "medium"
+    VALID_REASONING_LEVELS = set(REASONING_ORDER)
     DEFAULT_BACKUP_MODEL_API_BY_COMPANY = {
         "openai": "openai",
         "google": "gemini",
@@ -68,6 +72,11 @@ class Agent(TimeStampedModel):
     default_model = models.CharField(
         max_length=32,
         default=DEFAULT_MODEL,
+    )
+    reasoning = models.CharField(
+        max_length=16,
+        choices=REASONING_CHOICES,
+        default=DEFAULT_REASONING,
     )
     temperature = models.DecimalField(max_digits=4, decimal_places=2, default=0.70)
     soul = models.TextField(blank=True, default="")
@@ -166,6 +175,7 @@ class Agent(TimeStampedModel):
 
     def save(self, *args, **kwargs):
         self.default_model = self._normalize_default_model(self.default_model)
+        self.reasoning = self._normalize_reasoning(self.reasoning)
         self.sandbox_paths = self._normalize_sandbox_paths(self.sandbox_paths)
         self.backup_models_json = self._normalize_backup_models_json(self.backup_models_json)
         self.backup_retry_policy_json = self._normalize_backup_retry_policy_json(
@@ -355,6 +365,17 @@ class Agent(TimeStampedModel):
         if candidate and candidate in available:
             return candidate
         return cls.DEFAULT_MODEL
+
+    @classmethod
+    def _normalize_reasoning(cls, value: object | None) -> str:
+        candidate = (str(value or "")).strip().lower()
+        if candidate in cls.VALID_REASONING_LEVELS:
+            return candidate
+        return cls.DEFAULT_REASONING
+
+    @classmethod
+    def get_reasoning_choices(cls) -> list[tuple[str, str]]:
+        return list(cls.REASONING_CHOICES)
 
     @classmethod
     def get_default_model_choices(cls) -> list[tuple[str, str]]:

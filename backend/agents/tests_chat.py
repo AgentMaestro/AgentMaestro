@@ -39,7 +39,7 @@ class DummyClient:
     async def cleanup_ws_sessions(self):
         pass
 
-    async def get_ws_session(self, run_id, model, *, agent_id=None):
+    async def get_ws_session(self, run_id, model, *, agent_id=None, reasoning=None):
         return self.session
 
     async def close_ws_session(self, run_id, *, model=None):
@@ -64,7 +64,7 @@ class ResumeStubClient:
     async def cleanup_ws_sessions(self):
         self.cleanup_calls += 1
 
-    async def get_ws_session(self, run_id, model, *, agent_id=None):
+    async def get_ws_session(self, run_id, model, *, agent_id=None, reasoning=None):
         self.get_session_calls.append((run_id, model, agent_id))
         return self.session
 
@@ -785,6 +785,104 @@ async def test_dispatch_to_provider_http_clears_previous_response_after_final_an
     assert consumer.session.previous_response_id == "resp-final"
     assert consumer._response_chain_previous_id == "resp-final"
     assert consumer._tool_output_payload is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.django_db(transaction=True)
+async def test_accept_user_message_queues_prompt_while_waiting_for_tool(monkeypatch):
+    user = get_user_model().objects.create_user(username="queued-tool-user")
+    workspace = Workspace.objects.create(name="queued-tool-ws")
+    agent = Agent.objects.create(
+        workspace=workspace,
+        owner=user,
+        name="Queued Tool Agent",
+        soul="Hold prompts until the current tool turn finishes.",
+    )
+    run = AgentRun.objects.create(
+        workspace=workspace,
+        agent=agent,
+        started_by=user,
+        status=AgentRun.Status.WAITING_FOR_TOOL,
+        input_text="prompt",
+    )
+
+    consumer = AgentChatConsumer(
+        scope={"type": "websocket", "user": user, "url_route": {"kwargs": {"slug": agent.slug}}}
+    )
+    consumer.agent = agent
+    consumer.run = run
+    consumer.run_id = str(run.id)
+    consumer.history = []
+    consumer._tool_result_event = asyncio.Event()
+    consumer._tool_result_event.clear()
+    consumer._awaiting_tool_output = True
+    consumer._pending_provider_call_ids = {"call-123"}
+    consumer.send_json = AsyncMock()
+    consumer._dispatch_to_provider = AsyncMock()
+    monkeypatch.setattr("agents.consumers._hydrate_artifact_context_from_events", AsyncMock(return_value=None))
+    monkeypatch.setattr("agents.consumers._bootstrap_memory_for_first_turn", AsyncMock(return_value=None))
+    monkeypatch.setattr("agents.consumers._capture_explicit_user_memory", AsyncMock(return_value=None))
+
+    await consumer._accept_user_message("Please continue after that tool result.", persist=False, emit_message=False)
+
+    assert consumer.history == []
+    assert consumer._queued_user_messages == [
+        {
+            "text": "Please continue after that tool result.",
+            "source_transport": "",
+            "author_label": "",
+        }
+    ]
+    consumer._dispatch_to_provider.assert_not_awaited()
+    assert consumer.send_json.await_count == 1
+    queued_notice = consumer.send_json.await_args_list[0].args[0]
+    assert queued_notice["type"] == "prompt_queued"
+    assert queued_notice["kind"] == "run_control"
+    assert queued_notice["queued_count"] == 1
+    assert "Queued 1 prompt." in queued_notice["text"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.django_db(transaction=True)
+async def test_dispatch_to_provider_drains_queued_user_messages_after_final_answer(monkeypatch):
+    user = get_user_model().objects.create_user(username="queued-drain-user")
+    workspace = Workspace.objects.create(name="queued-drain-ws")
+    agent = Agent.objects.create(
+        workspace=workspace,
+        owner=user,
+        name="Queued Drain Agent",
+        soul="Requeue prompts only after the assistant finishes.",
+    )
+    run = AgentRun.objects.create(
+        workspace=workspace,
+        agent=agent,
+        started_by=user,
+        status=AgentRun.Status.RUNNING,
+        input_text="prompt",
+    )
+
+    consumer = AgentChatConsumer(
+        scope={"type": "websocket", "user": user, "url_route": {"kwargs": {"slug": agent.slug}}}
+    )
+    consumer.agent = agent
+    consumer.run = run
+    consumer.run_id = str(run.id)
+    consumer.model_name = "gpt-5.4-mini"
+    consumer.transport = "http"
+    consumer.use_ws = False
+    consumer.session = SimpleNamespace(previous_response_id="resp-1")
+    consumer.history = [{"role": "assistant", "content": "Current turn complete."}]
+    consumer._queued_user_messages = [{"text": "Follow-up prompt", "source_transport": "", "author_label": ""}]
+    consumer._dispatch_to_provider_http = AsyncMock(side_effect=["final_answer", "final_answer"])
+    consumer._dispatch_to_provider_ws = AsyncMock()
+    consumer._hydrate_artifact_context_from_events = AsyncMock(return_value=None)
+    consumer._ensure_system_context = lambda: None
+
+    await consumer._dispatch_to_provider()
+
+    assert consumer._dispatch_to_provider_http.await_count == 2
+    assert consumer._queued_user_messages == []
+    assert consumer.history[-1] == {"role": "user", "content": "Follow-up prompt"}
 
 
 @pytest.mark.asyncio

@@ -99,6 +99,7 @@ class RecurrenceRuleAdmin(admin.ModelAdmin):
 class ScheduledTaskAdmin(admin.ModelAdmin):
     list_display = (
         "title",
+        "id",
         "task_type",
         "execution_mode",
         "enabled",

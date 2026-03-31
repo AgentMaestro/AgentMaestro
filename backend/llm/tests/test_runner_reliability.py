@@ -18,8 +18,10 @@ class FakeClient:
     def __init__(self, responses: Sequence[Dict[str, Any]], *, transport: str = "http"):
         self._responses = list(responses)
         self.transport = transport
+        self.last_complete_kwargs: dict[str, Any] | None = None
 
     async def complete(self, *args: Any, **kwargs: Any) -> Dict[str, Any]:
+        self.last_complete_kwargs = dict(kwargs)
         if not self._responses:
             return {"text": "done", "tool_calls": [], "usage": {}}
         return self._responses.pop(0)
@@ -90,6 +92,33 @@ def _tool_call_response(identifier: str) -> dict[str, Any]:
         ],
         "usage": {},
     }
+
+
+@pytest.mark.parametrize("tools", [_simple_tool_list()])
+def test_runner_passes_reasoning_to_client(monkeypatch, tools):
+    profile = _make_profile("reasoning")
+    client = FakeClient(
+        [
+            {"text": "done", "tool_calls": [], "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}},
+        ]
+    )
+
+    async def success_tool(*args, **kwargs):
+        return {"ok": True, "result": {"index": True}}
+
+    runner = _setup_runner_with_provider(profile, monkeypatch, client, success_tool)
+    result = asyncio.run(
+        runner.run(
+            prompt="Reasoning test",
+            tools=tools,
+            reasoning="high",
+            max_tool_rounds=1,
+        )
+    )
+
+    assert result["status"] == "completed"
+    assert client.last_complete_kwargs is not None
+    assert client.last_complete_kwargs["reasoning"] == "high"
 
 
 @pytest.mark.parametrize("tools", [_simple_tool_list()])

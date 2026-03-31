@@ -37,6 +37,9 @@
         <strong>LLM Settings</strong>
         <div class="steps-summary">
           <div class="review_step">Model: {{ review.llm.default_model }}</div>
+          {% if review.llm.reasoning %}
+            <div class="review_step">Reasoning: {{ review.llm.reasoning }}</div>
+          {% endif %}
           <div class="review_step">
             Backup models:
             {% if review.llm.backup_models %}
