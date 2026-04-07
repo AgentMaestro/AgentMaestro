@@ -9,6 +9,7 @@ from google_bridge.services.schema import (
     GOOGLE_BRIDGE_TOOL_NAME,
     GOOGLE_BRIDGE_TOOL_RESPONSE_FIELDS,
 )
+from finance.tool_registry import FINANCE_TOOL_NAMES
 from tools.registry import TOOL_REGISTRY as CANONICAL_TOOL_REGISTRY
 
 
@@ -76,6 +77,7 @@ _FALLBACK_TOOL_NAMES = [
     "list_scheduled_tasks",
     "get_current_datetime",
     "spawn_subrun",
+    *FINANCE_TOOL_NAMES,
     "file_read",
     "file_write",
     "file_delete",
@@ -387,6 +389,22 @@ _TOOL_TEMPLATES: Dict[str, Dict[str, Any]] = {
         "failure_policy": "IGNORE_FAILURE",
     },
     "get_current_datetime": {},
+    "ticker_lookup": {"query": "TCNNF"},
+    "watchlist_add": {"symbol": "TCNNF", "watchlist_name": "AI Watchlist", "note": "Watch for earnings"},
+    "watchlist_remove": {"symbol": "TCNNF", "watchlist_name": "AI Watchlist"},
+    "watchlist_list": {"watchlist_name": "AI Watchlist"},
+    "portfolio_get": {"portfolio_id": "current"},
+    "broker_accounts": {},
+    "broker_balances": {"account_id": "12345678"},
+    "broker_positions": {"account_id": "12345678"},
+    "broker_activity": {"account_id": "12345678", "limit": 25},
+    "get_market_hours": {"markets": ["equity", "option"], "date": "2026-04-03"},
+    "stock_quote": {"symbol": "TCNNF"},
+    "stock_history": {"symbol": "TCNNF", "timeframe": "daily"},
+    "stock_news": {"symbol": "TCNNF", "limit": 5},
+    "stock_filings": {"symbol": "TCNNF", "filing_types": ["8-K", "10-Q"], "limit": 5},
+    "research_snapshot_get": {"ticker": "TCNNF"},
+    "research_snapshot_refresh": {"ticker": "TCNNF"},
     "test_runner": [
         {
             "kind": "pytest",
@@ -693,6 +711,9 @@ _TOOL_RESPONSE_FIELDS: Dict[str, Dict[str, str]] = {
         "queued": "True when the new headless run was queued for execution.",
         "waiting_for_approval": "True when the launch stopped at the approval gate.",
         "status": "Launch status such as already_running, awaiting_approval, or launched.",
+        "ok": "True when the launch request succeeded. False when it was blocked or failed.",
+        "stderr": "Blocking or failure details when ok is false.",
+        "error": "Same failure text as stderr, for callers that prefer error-shaped payloads.",
     },
     GOOGLE_BRIDGE_TOOL_NAME: GOOGLE_BRIDGE_TOOL_RESPONSE_FIELDS,
     "send_telegram": {
@@ -751,6 +772,16 @@ _TOOL_RESPONSE_FIELDS: Dict[str, Dict[str, str]] = {
     "get_current_datetime": {
         "datetime": "ISO 8601 local datetime string in the Tango timezone.",
         "timezone": "The IANA timezone used to format the returned local datetime.",
+    },
+    "get_market_hours": {
+        "status": "Overall fetch status such as ok or unavailable.",
+        "source": "Whether the result came from live Schwab data or cached market-hours state.",
+        "date": "The YYYY-MM-DD date used for the lookup.",
+        "markets": "The requested market list, typically equity, option, bond, future, or forex.",
+        "cache_key": "Stable cache key when the result is served from cached daily market-hours state.",
+        "expires_at": "Cache expiry timestamp for the market-hours state when available.",
+        "payload": "Raw Schwab market-hours response with sessionHours per market and product.",
+        "message": "Diagnostic note when the market-hours lookup could not be loaded.",
     },
     "shell_exec": {
         "command": "The executed command array.",
@@ -1205,7 +1236,8 @@ _TOOL_ADDITIONAL_DOCS: Dict[str, str] = {
     "run_scheduled_task": "\n\nSCHEDULING NOTES:\n"
     "- `run_scheduled_task` launches an existing scheduled task immediately without changing its recurrence.\n"
     "- Use `scheduled_task_id` from `list_scheduled_tasks` or `schedule_task`.\n"
-    "- If the task needs approval, the launch pauses at the same approval gate used by scheduled execution.\n",
+    "- If the task needs approval, the launch pauses at the same approval gate used by scheduled execution.\n"
+    "- Launch failures and approval-blocked launches return stderr details.\n",
     "edit_scheduled_task": "\n\nSCHEDULING NOTES:\n"
     "- `edit_scheduled_task` updates an existing scheduled task without creating a new one.\n"
     "- Use `scheduled_task_id` from `list_scheduled_tasks` or `schedule_task` to target the task.\n"

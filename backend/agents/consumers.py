@@ -101,7 +101,9 @@ def _has_workspace_access(user_id: int, agent: Agent) -> bool:
     if agent.owner_id == user_id:
         return True
     return WorkspaceMembership.objects.filter(
-        workspace=agent.workspace, user_id=user_id, is_active=True
+        workspace__in=agent.accessible_workspaces_queryset(),
+        user_id=user_id,
+        is_active=True,
     ).exists()
 
 
@@ -652,6 +654,7 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
         self._artifact_context_ids: set[str] = set()
         self._consumed_artifact_context_ids: set[str] = set()
         self._system_context_marker = "_agentmaestro_system_context"
+        self._finance_context: str = ""
         self._model_candidates: list[dict[str, object]] = []
         self._active_model_candidate_index: int = 0
         self._backup_retry_policy: dict[str, object] = {}
@@ -1229,6 +1232,12 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
 
     async def receive_json(self, content, **kwargs):
         message_type = content.get("type")
+        if message_type == "finance.bootstrap":
+            finance_context = str(content.get("context") or content.get("finance_context") or "").strip()
+            if finance_context:
+                self._finance_context = finance_context
+                self._ensure_system_context()
+            return
         if message_type == "chat.message":
             raw_text = (content.get("text") or "").strip()
             if not raw_text:
@@ -2355,6 +2364,7 @@ class AgentChatConsumer(AsyncJsonWebsocketConsumer):
             authenticated_user=getattr(self, "scope", {}).get("user")
             or getattr(self.run, "started_by", None),
             agents_md_bootstrap_complete=self._agents_md_bootstrap_complete,
+            finance_context=self._finance_context or None,
         )
         self.system_context = context
         if not context:

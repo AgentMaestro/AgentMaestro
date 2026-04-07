@@ -18,8 +18,12 @@ class Command(BaseCommand):
         parser.add_argument(
             "--workspace",
             "-w",
-            default="Dev Workspace",
-            help="Workspace UUID or name. Defaults to 'Dev Workspace'.",
+            action="append",
+            dest="workspaces",
+            help=(
+                "Workspace UUID or name. Repeat to target multiple workspaces. "
+                "Defaults to Dev Workspace and Finance Workspace."
+            ),
         )
         parser.add_argument(
             "--agent",
@@ -34,68 +38,85 @@ class Command(BaseCommand):
         )
 
     def handle(self, *args, **options):
-        workspace = self._resolve_workspace(options["workspace"])
+        workspace_keys = options.get("workspaces") or ["Dev Workspace", "Finance Workspace"]
         include_unreleased = bool(options.get("include_unreleased"))
-        agents = self._resolve_agents(workspace, options.get("agents") or [])
-
-        if not agents.exists():
-            raise CommandError(f"No agents found in workspace '{workspace.name}'.")
 
         call_command("seed_tools")
-        workspace_args = ["--workspace", str(workspace.id), "--enable-all"]
-        if include_unreleased:
-            workspace_args.append("--include-unreleased")
-        call_command("seed_workspace_tools", *workspace_args)
+        workspace_summaries: list[str] = []
+        total_granted_count = 0
+        total_enabled_grant_count = 0
+        total_updated_agents = 0
 
-        definitions = list(
-            ToolDefinition.objects.filter(workspace=workspace, enabled=True, tool__isnull=False)
-            .select_related("tool")
-            .order_by("tool__name")
-        )
-        if not definitions:
-            raise CommandError(f"No enabled ToolDefinitions found for workspace '{workspace.name}'.")
+        for workspace_key in workspace_keys:
+            workspace = self._resolve_workspace(workspace_key)
+            workspace_args = ["--workspace", str(workspace.id), "--enable-all"]
+            if include_unreleased:
+                workspace_args.append("--include-unreleased")
+            call_command("seed_workspace_tools", *workspace_args)
 
-        granted_count = 0
-        enabled_grant_count = 0
-        updated_agents = 0
+            definitions = list(
+                ToolDefinition.objects.filter(workspace=workspace, enabled=True, tool__isnull=False)
+                .select_related("tool")
+                .order_by("tool__name")
+            )
+            if not definitions:
+                raise CommandError(f"No enabled ToolDefinitions found for workspace '{workspace.name}'.")
 
-        for agent in agents.order_by("name"):
-            selected = self._current_selected_tools(agent)
-            selected_set = set(selected)
-            policy_changed = False
-
-            for definition in definitions:
-                tool = definition.tool
-                if tool is None:
-                    continue
-                grant, created = AgentToolGrant.objects.get_or_create(
-                    agent=agent,
-                    tool=tool,
-                    defaults={"enabled": True},
+            agents = self._resolve_agents(workspace, options.get("agents") or [])
+            granted_count = 0
+            enabled_grant_count = 0
+            updated_agents = 0
+            if not agents.exists():
+                workspace_summaries.append(
+                    f"enabled {len(definitions)} workspace definitions for '{workspace.name}', processed 0 agent(s)"
                 )
-                if created:
-                    granted_count += 1
-                if not grant.enabled:
-                    grant.enabled = True
-                    grant.save(update_fields=["enabled", "updated_at"])
-                    enabled_grant_count += 1
-                if tool.name not in selected_set:
-                    selected.append(tool.name)
-                    selected_set.add(tool.name)
-                    policy_changed = True
+                continue
 
-            if policy_changed:
-                raw_policy = agent.tool_policy_json if isinstance(agent.tool_policy_json, dict) else {}
-                raw_policy = {**raw_policy, "selected_tools": selected}
-                agent.tool_policy_json = raw_policy
-                agent.save(update_fields=["tool_policy_json", "updated_at"])
-                updated_agents += 1
+            for agent in agents.order_by("name"):
+                selected = self._current_selected_tools(agent)
+                selected_set = set(selected)
+                policy_changed = False
+
+                for definition in definitions:
+                    tool = definition.tool
+                    if tool is None:
+                        continue
+                    grant, created = AgentToolGrant.objects.get_or_create(
+                        agent=agent,
+                        tool=tool,
+                        defaults={"enabled": True},
+                    )
+                    if created:
+                        granted_count += 1
+                    if not grant.enabled:
+                        grant.enabled = True
+                        grant.save(update_fields=["enabled", "updated_at"])
+                        enabled_grant_count += 1
+                    if tool.name not in selected_set:
+                        selected.append(tool.name)
+                        selected_set.add(tool.name)
+                        policy_changed = True
+
+                if policy_changed:
+                    raw_policy = agent.tool_policy_json if isinstance(agent.tool_policy_json, dict) else {}
+                    raw_policy = {**raw_policy, "selected_tools": selected}
+                    agent.tool_policy_json = raw_policy
+                    agent.save(update_fields=["tool_policy_json", "updated_at"])
+                    updated_agents += 1
+
+            total_granted_count += granted_count
+            total_enabled_grant_count += enabled_grant_count
+            total_updated_agents += updated_agents
+            workspace_summaries.append(
+                f"enabled {len(definitions)} workspace definitions for '{workspace.name}', "
+                f"processed {agents.count()} agent(s), created {granted_count} grants, "
+                f"re-enabled {enabled_grant_count} grants, updated selected_tools for {updated_agents} agent(s)"
+            )
 
         self.stdout.write(
             self.style.SUCCESS(
-                f"Seeded global tools, enabled {len(definitions)} workspace definitions for '{workspace.name}', "
-                f"processed {agents.count()} agent(s), created {granted_count} grants, re-enabled {enabled_grant_count} grants, "
-                f"updated selected_tools for {updated_agents} agent(s)."
+                f"Seeded global tools and workspace definitions for {len(workspace_keys)} workspace(s): "
+                + "; ".join(workspace_summaries)
             )
         )
 
@@ -113,7 +134,7 @@ class Command(BaseCommand):
         return workspace
 
     def _resolve_agents(self, workspace: Workspace, agent_keys: list[str]):
-        agents = Agent.objects.filter(workspace=workspace)
+        agents = Agent.objects.filter(Q(workspace=workspace) | Q(workspaces=workspace)).distinct()
         if not agent_keys:
             return agents
         filter_q = Q()

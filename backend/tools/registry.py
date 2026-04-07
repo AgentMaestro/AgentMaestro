@@ -7,6 +7,7 @@ from google_bridge.services.schema import (
     GOOGLE_BRIDGE_TOOL_NAME,
     build_google_bridge_args_schema,
 )
+from finance.tool_registry import build_finance_tool_group
 
 from .models import ToolRisk
 
@@ -565,7 +566,8 @@ _TOOL_ADDITIONAL_DOCS = {
     "run_scheduled_task": "\n\nSCHEDULING NOTES:\n"
     "- `run_scheduled_task` launches an existing scheduled task immediately without changing its recurrence.\n"
     "- Use `scheduled_task_id` from `list_scheduled_tasks` or `schedule_task`.\n"
-    "- If the task needs approval, the launch pauses at the same approval gate used by scheduled execution.\n",
+    "- If the task needs approval, the launch pauses at the same approval gate used by scheduled execution.\n"
+    "- Launch failures and approval-blocked launches return stderr details.\n",
     "search_memory": "\n\nMEMORY NOTES:\n"
     "- `search_memory` performs simple text lookup over durable memory records.\n"
     "- Narrow by `scope_type`, `scope_id`, and `memory_kind` when the target scope is known.\n"
@@ -767,6 +769,9 @@ _TOOL_RESPONSE_FIELDS = {
         "queued": "True when the new headless run was queued for execution.",
         "waiting_for_approval": "True when the launch stopped at the approval gate.",
         "status": "Launch status such as already_running, awaiting_approval, or launched.",
+        "ok": "True when the launch request succeeded. False when it was blocked or failed.",
+        "stderr": "Blocking or failure details when ok is false.",
+        "error": "Same failure text as stderr, for callers that prefer error-shaped payloads.",
     },
     "get_scheduled_task": {
         "scheduled_task_id": "Scheduled-task identifier returned by list_scheduled_tasks or schedule_task.",
@@ -2592,6 +2597,7 @@ TOOL_REGISTRY = [
             },
         ],
     },
+    build_finance_tool_group(),
 ]
 
 

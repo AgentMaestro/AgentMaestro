@@ -74,12 +74,14 @@ def run_due_scheduled_tasks(*, limit: int = DEFAULT_SCHEDULED_TASK_LIMIT) -> dic
 
 
 @shared_task(name="memory.tasks.run_scheduled_task_once")
-def run_scheduled_task_once(task_id: str) -> dict[str, str]:
+def run_scheduled_task_once(task_id: str) -> dict[str, object]:
     result = run_scheduled_task_now(str(task_id))
     return {
         "task_id": str(result["scheduled_task_id"]),
         "run_id": str(result["run_id"]),
         "status": str(result["status"]),
+        "ok": bool(result.get("ok", True)),
+        "stderr": str(result.get("stderr") or result.get("error") or ""),
     }
 
 

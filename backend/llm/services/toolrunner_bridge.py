@@ -8,6 +8,7 @@ from typing import Any, Dict, Optional
 import httpx
 from asgiref.sync import sync_to_async
 from django.conf import settings
+from django.db.models import Case, IntegerField, Value, When
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 
@@ -29,6 +30,22 @@ _NATIVE_TOOL_NAMES = {
     "spawn_subrun",
     "send_telegram",
     "google_bridge",
+    "ticker_lookup",
+    "watchlist_add",
+    "watchlist_remove",
+    "watchlist_list",
+    "portfolio_get",
+    "broker_accounts",
+    "broker_balances",
+    "broker_positions",
+    "broker_activity",
+    "get_market_hours",
+    "stock_quote",
+    "stock_history",
+    "stock_news",
+    "stock_filings",
+    "research_snapshot_get",
+    "research_snapshot_refresh",
 }
 
 
@@ -70,6 +87,7 @@ def _coerce_expires_at(value: object):
 
 def _run_native_tool(tool_name: str, args: Dict[str, Any], orchestration_run_id: Optional[str]) -> Dict[str, Any]:
     from google_bridge.services.bridge import build_google_task_objective, execute_google_task
+    from finance.services import execute_finance_tool
     from comms.services.agent_chat_bridge import send_paired_telegram_message
     from memory.scheduled_tasks import (
         create_scheduled_task,
@@ -90,11 +108,7 @@ def _run_native_tool(tool_name: str, args: Dict[str, Any], orchestration_run_id:
     if not orchestration_run_id:
         raise RuntimeError(f"Native tool '{tool_name}' requires orchestration_run_id.")
     run = AgentRun.objects.select_related("agent", "workspace", "started_by").get(id=orchestration_run_id)
-    tool_definition = (
-        ToolDefinition.objects.select_related("tool")
-        .filter(workspace_id=run.workspace_id, name=tool_name, enabled=True)
-        .first()
-    )
+    tool_definition = _resolve_tool_definition_for_agent(run.agent, tool_name)
     try:
         validate_required_tool_arguments(tool_name, args or {}, definition=tool_definition)
     except ToolArgumentValidationError as exc:
@@ -103,6 +117,34 @@ def _run_native_tool(tool_name: str, args: Dict[str, Any], orchestration_run_id:
             "result": exc.to_result(),
             "meta": {"native": True, "validation_failed": True, "required_parameters": exc.required_parameters},
             "error": str(exc),
+        }
+
+    if tool_name in {
+        "ticker_lookup",
+        "watchlist_add",
+        "watchlist_remove",
+        "watchlist_list",
+        "portfolio_get",
+        "broker_accounts",
+        "broker_balances",
+        "broker_positions",
+        "broker_activity",
+        "get_market_hours",
+        "stock_quote",
+        "stock_history",
+        "stock_news",
+        "stock_filings",
+        "research_snapshot_get",
+        "research_snapshot_refresh",
+    }:
+        result = execute_finance_tool(tool_name, run, args)
+        ok = bool(result.get("ok", True))
+        stderr = str(result.get("error") or result.get("stderr") or "").strip()
+        return {
+            "ok": ok,
+            "result": result,
+            "meta": {"native": True},
+            "error": None if ok else stderr,
         }
 
     if tool_name == "remember":
@@ -261,7 +303,14 @@ def _run_native_tool(tool_name: str, args: Dict[str, Any], orchestration_run_id:
         if not scheduled_task_id:
             raise RuntimeError("run_scheduled_task requires scheduled_task_id.")
         result = run_scheduled_task_now(scheduled_task_id)
-        return {"ok": True, "result": result, "meta": {"native": True}, "error": None}
+        ok = bool(result.get("ok", True))
+        stderr = str(result.get("stderr") or result.get("error") or "").strip()
+        return {
+            "ok": ok,
+            "result": result,
+            "meta": {"native": True},
+            "error": None if ok else stderr,
+        }
 
     if tool_name == "spawn_subrun":
         result = run_subrun_flow(
@@ -393,11 +442,7 @@ async def run_tool(
         from runs.models import AgentRun
 
         run = await sync_to_async(AgentRun.objects.select_related("agent", "workspace", "started_by").get)(id=orchestration_run_id)
-        tool_definition = await sync_to_async(
-            lambda: ToolDefinition.objects.select_related("tool")
-            .filter(workspace_id=run.workspace_id, name=tool_name, enabled=True)
-            .first()
-        )()
+        tool_definition = await sync_to_async(_resolve_tool_definition_for_agent)(run.agent, tool_name)
         try:
             validate_required_tool_arguments(tool_name, args or {}, definition=tool_definition)
         except ToolArgumentValidationError as exc:
@@ -478,3 +523,30 @@ async def run_tool(
         },
         "error": error,
     }
+
+
+def _resolve_tool_definition_for_agent(agent, tool_name: str):
+    workspace_ids = []
+    if agent is not None:
+        resolver = getattr(agent, "get_accessible_workspace_ids", None)
+        if callable(resolver):
+            workspace_ids = list(resolver() or [])
+        elif getattr(agent, "workspace_id", None):
+            workspace_ids = [agent.workspace_id]
+    if not workspace_ids:
+        return None
+    workspace_order = Case(
+        *[
+            When(workspace_id=workspace_id, then=Value(index))
+            for index, workspace_id in enumerate(workspace_ids)
+        ],
+        default=Value(len(workspace_ids)),
+        output_field=IntegerField(),
+    )
+    return (
+        ToolDefinition.objects.select_related("tool")
+        .annotate(_workspace_order=workspace_order)
+        .filter(workspace_id__in=workspace_ids, name=tool_name, enabled=True)
+        .order_by("_workspace_order", "name")
+        .first()
+    )

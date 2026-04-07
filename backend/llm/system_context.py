@@ -271,6 +271,7 @@ def build_system_context(
     tool_names: Iterable[str],
     authenticated_user: Any | None = None,
     agents_md_bootstrap_complete: bool = False,
+    finance_context: str | None = None,
 ) -> str:
     overlay = ROLE_OVERLAYS["assisting"].strip()
 
@@ -308,6 +309,8 @@ Runtime:
     sections.append(runtime)
     sections.append(_build_agent_sandbox_notice(agent))
     sections.extend(_build_capability_notices(tool_names))
+    if finance_context:
+        sections.append(finance_context)
     sections.append(_build_model_notice(agent, model_name))
     authenticated_user_section = _build_authenticated_user_notice(authenticated_user)
     if authenticated_user_section:

@@ -16,6 +16,8 @@ urlpatterns = [
 
     path("google/", include(("google_bridge.urls", "google_bridge"), namespace="google_bridge")),
 
+    path("finance/", include(("finance.urls", "finance"), namespace="finance")),
+
     # UI app
     path("ui/", include(("ui.urls", "ui"), namespace="ui")),
 

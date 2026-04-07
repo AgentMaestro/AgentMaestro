@@ -7,8 +7,8 @@ from django.utils import timezone
 
 from agents.models import Agent
 from core.models import Workspace, WorkspaceMembership
-from memory.models import MemoryRecord, RecurrenceRule, ScheduledTask
-from memory.scheduled_approvals import INTERNAL_HEADLESS_APPROVAL_TOOL_NAME
+from memory.models import MemoryRecord, RecurrenceRule, ScheduledTask, ScheduledTaskApproval
+from memory.scheduled_approvals import INTERNAL_HEADLESS_APPROVAL_TOOL_NAME, ensure_headless_task_approval
 from memory.scheduled_tasks import (
     SCHEDULED_TASK_CREATED_SOURCE_KIND,
     disable_scheduled_task,
@@ -388,11 +388,39 @@ def test_run_scheduled_task_now_uses_existing_headless_launch_flow(scheduled_tas
 
     assert result["scheduled_task_id"] == str(scheduled_task.id)
     assert result["status"] == "awaiting_approval"
+    assert result["ok"] is False
     assert result["launched"] is True
     assert result["queued"] is False
     assert result["waiting_for_approval"] is True
+    assert result["stderr"]
     assert result["run_id"]
     scheduled_task.refresh_from_db()
     assert scheduled_task.active_run_id == result["run_id"]
+
+
+def test_ensure_headless_task_approval_creates_and_refreshes(scheduled_task_agent):
+    user, _workspace, agent = scheduled_task_agent
+    scheduled_task = create_scheduled_task(
+        agent=agent,
+        owner=user,
+        task_type=ScheduledTask.TaskType.OTHER_TASK,
+        local_time_value="08:00",
+        timezone_name="America/New_York",
+        execution_mode=ScheduledTask.ExecutionMode.HEADLESS_RUN,
+        execution_payload={"location": "Richmond, VA", "source_domain": "weather.com"},
+    )
+
+    approval, created = ensure_headless_task_approval(scheduled_task=scheduled_task, approved_by=user)
+    assert created is True
+    assert approval.approved_by == user
+    assert approval.scheduled_task_id == scheduled_task.id
+    assert approval.is_active is True
+    assert ScheduledTaskApproval.objects.filter(scheduled_task=scheduled_task).count() == 1
+
+    refreshed, created_again = ensure_headless_task_approval(scheduled_task=scheduled_task, approved_by=user)
+    assert created_again is False
+    assert refreshed.id == approval.id
+    refreshed.refresh_from_db()
+    assert refreshed.use_count == 2
 
 

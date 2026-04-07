@@ -9,9 +9,12 @@ from typing import Any
 from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
+from logging_utils import get_app_logger
 
 from memory.models import ScheduledTask, ScheduledTaskApproval
 from tools.policy import get_effective_tools
+
+logger = get_app_logger(__name__)
 
 INTERNAL_HEADLESS_APPROVAL_TOOL_NAME = "scheduled_headless_run_gate"
 HEADLESS_APPROVAL_FINGERPRINT_VERSION = 1
@@ -37,18 +40,11 @@ class ScheduledTaskApprovalContext:
 def build_scheduled_task_approval_context(scheduled_task: ScheduledTask) -> ScheduledTaskApprovalContext:
     normalized_execution_payload = _normalize_json_payload(dict(scheduled_task.execution_payload or {}))
     tool_signature = _build_tool_signature(scheduled_task)
-    fingerprint_payload = {
-        "version": HEADLESS_APPROVAL_FINGERPRINT_VERSION,
-        "scheduled_task_id": str(scheduled_task.id),
-        "agent_id": str(scheduled_task.agent_id),
-        "execution_mode": scheduled_task.execution_mode,
-        "task_type": scheduled_task.task_type,
-        "delivery_target": scheduled_task.delivery_target,
-        "timezone": scheduled_task.timezone,
-        "local_time": scheduled_task.local_time.isoformat(timespec="minutes"),
-        "execution_payload": normalized_execution_payload,
-        "tool_signature": tool_signature,
-    }
+    fingerprint_payload = _build_fingerprint_payload(
+        scheduled_task=scheduled_task,
+        normalized_execution_payload=normalized_execution_payload,
+        tool_signature=tool_signature,
+    )
     fingerprint = sha256(
         json.dumps(fingerprint_payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
     ).hexdigest()
@@ -65,7 +61,15 @@ def build_scheduled_task_approval_context(scheduled_task: ScheduledTask) -> Sche
         (
             approval
             for approval in approvals
-            if approval.fingerprint == fingerprint and approval.revoked_at is None and approval.expires_at and approval.expires_at > now
+            if approval.revoked_at is None
+            and approval.expires_at
+            and approval.expires_at > now
+            and _approval_matches_current_task(
+                approval=approval,
+                scheduled_task=scheduled_task,
+                normalized_execution_payload=normalized_execution_payload,
+                tool_signature=tool_signature,
+            )
         ),
         None,
     )
@@ -134,6 +138,68 @@ def create_headless_approval_request(*, run, scheduled_task: ScheduledTask, cont
 
 
 @transaction.atomic
+def ensure_headless_task_approval(*, scheduled_task: ScheduledTask, approved_by=None) -> tuple[ScheduledTaskApproval, bool]:
+    context = build_scheduled_task_approval_context(scheduled_task)
+    approval = context.approval
+    now = timezone.now()
+    expires_at = now + timedelta(days=_approval_ttl_days())
+    if approval is not None:
+        approval.approved_by = approved_by or approval.approved_by
+        approval.approved_at = now
+        approval.expires_at = expires_at
+        approval.last_used_at = now
+        approval.use_count = int(approval.use_count or 0) + 1
+        approval.save(
+            update_fields=[
+                "approved_by",
+                "approved_at",
+                "expires_at",
+                "last_used_at",
+                "use_count",
+                "updated_at",
+            ]
+        )
+        logger.info(
+            "ensure_headless_task_approval refreshed scheduled_task=%s approval=%s approved_by=%s fingerprint=%s reason=%s",
+            scheduled_task.id,
+            approval.id,
+            getattr(approved_by, "username", None) or getattr(approval.approved_by, "username", None),
+            approval.fingerprint,
+            context.reason,
+        )
+        return approval, False
+
+    approval = ScheduledTaskApproval.objects.create(
+        scheduled_task=scheduled_task,
+        workspace=scheduled_task.workspace,
+        agent=scheduled_task.agent,
+        source_run=None,
+        source_tool_call=None,
+        fingerprint=context.fingerprint,
+        fingerprint_version=context.fingerprint_version,
+        execution_mode=scheduled_task.execution_mode,
+        task_type=scheduled_task.task_type,
+        delivery_target=scheduled_task.delivery_target,
+        normalized_execution_payload=context.normalized_execution_payload,
+        tool_signature=context.tool_signature,
+        approved_by=approved_by,
+        approved_at=now,
+        expires_at=expires_at,
+        last_used_at=now,
+        use_count=1,
+    )
+    logger.info(
+        "ensure_headless_task_approval created scheduled_task=%s approval=%s approved_by=%s fingerprint=%s reason=%s",
+        scheduled_task.id,
+        approval.id,
+        getattr(approved_by, "username", None),
+        approval.fingerprint,
+        context.reason,
+    )
+    return approval, True
+
+
+@transaction.atomic
 def activate_headless_approval_from_tool_call(tool_call) -> tuple[ScheduledTaskApproval | None, ScheduledTaskApprovalContext, str | None]:
     scheduled_task = (
         ScheduledTask.objects.select_related("agent", "workspace", "owner")
@@ -198,6 +264,90 @@ def _build_tool_signature(scheduled_task: ScheduledTask) -> list[dict[str, Any]]
         for entry in entries
     ]
     return sorted(signature, key=lambda item: item["tool_name"])
+
+
+def _build_fingerprint_payload(
+    *,
+    scheduled_task: ScheduledTask,
+    normalized_execution_payload: dict[str, Any],
+    tool_signature: list[dict[str, Any]],
+) -> dict[str, Any]:
+    return {
+        "version": HEADLESS_APPROVAL_FINGERPRINT_VERSION,
+        "scheduled_task_id": str(scheduled_task.id),
+        "agent_id": str(scheduled_task.agent_id),
+        "execution_mode": scheduled_task.execution_mode,
+        "task_type": scheduled_task.task_type,
+        "delivery_target": scheduled_task.delivery_target,
+        "timezone": scheduled_task.timezone,
+        "local_time": scheduled_task.local_time.isoformat(timespec="minutes"),
+        "execution_payload": normalized_execution_payload,
+        "tool_signature": tool_signature,
+    }
+
+
+def _approval_matches_current_task(
+    *,
+    approval: ScheduledTaskApproval,
+    scheduled_task: ScheduledTask,
+    normalized_execution_payload: dict[str, Any],
+    tool_signature: list[dict[str, Any]],
+) -> bool:
+    current_payload = _build_fingerprint_payload(
+        scheduled_task=scheduled_task,
+        normalized_execution_payload=normalized_execution_payload,
+        tool_signature=tool_signature,
+    )
+    current_fingerprint = _fingerprint_for_payload(current_payload)
+    if approval.fingerprint == current_fingerprint:
+        return True
+
+    approved_signature = _normalize_tool_signature(list(approval.tool_signature or []))
+    current_signature = _normalize_tool_signature(tool_signature)
+    if not approved_signature:
+        return approval.fingerprint == current_fingerprint
+    if not _is_tool_signature_superset(current_signature, approved_signature):
+        return False
+
+    compatible_payload = _build_fingerprint_payload(
+        scheduled_task=scheduled_task,
+        normalized_execution_payload=normalized_execution_payload,
+        tool_signature=list(approval.tool_signature or []),
+    )
+    compatible_fingerprint = _fingerprint_for_payload(compatible_payload)
+    return approval.fingerprint == compatible_fingerprint
+
+
+def _fingerprint_for_payload(payload: dict[str, Any]) -> str:
+    return sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    ).hexdigest()
+
+
+def _normalize_tool_signature(signature: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    normalized: dict[str, dict[str, Any]] = {}
+    for entry in signature:
+        tool_name = str(entry.get("tool_name") or "").strip()
+        if not tool_name:
+            continue
+        normalized[tool_name] = {
+            "tool_name": tool_name,
+            "risk": str(entry.get("risk") or "").strip(),
+            "requires_approval": bool(entry.get("requires_approval")),
+        }
+    return normalized
+
+
+def _is_tool_signature_superset(current: dict[str, dict[str, Any]], approved: dict[str, dict[str, Any]]) -> bool:
+    for tool_name, approved_entry in approved.items():
+        current_entry = current.get(tool_name)
+        if current_entry is None:
+            return False
+        if current_entry.get("risk") != approved_entry.get("risk"):
+            return False
+        if bool(current_entry.get("requires_approval")) != bool(approved_entry.get("requires_approval")):
+            return False
+    return True
 
 
 def _normalize_json_payload(value: Any) -> Any:

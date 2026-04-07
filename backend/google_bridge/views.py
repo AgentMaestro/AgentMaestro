@@ -31,7 +31,11 @@ def _get_agent_with_access(user, slug: str) -> Agent:
     agent = get_object_or_404(Agent.objects.select_related("workspace"), slug=slug)
     if agent.owner_id == user.id:
         return agent
-    if WorkspaceMembership.objects.filter(workspace=agent.workspace, user=user, is_active=True).exists():
+    if WorkspaceMembership.objects.filter(
+        workspace__in=agent.accessible_workspaces_queryset(),
+        user=user,
+        is_active=True,
+    ).exists():
         return agent
     raise Http404
 

@@ -1,5 +1,3 @@
-import logging
-
 from django.db import migrations
 from logging_utils import get_app_logger
 

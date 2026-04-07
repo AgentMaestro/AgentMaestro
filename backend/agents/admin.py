@@ -38,6 +38,7 @@ class AgentAdmin(admin.ModelAdmin):
     )
     search_fields = ("id", "name", "slug")
     list_filter = ("workspace", "owner")
+    filter_horizontal = ("workspaces",)
     form = AgentAdminForm
     readonly_fields = ("backup_models_guide",)
     fieldsets = (
@@ -48,6 +49,7 @@ class AgentAdmin(admin.ModelAdmin):
                     "name",
                     "slug",
                     "workspace",
+                    "workspaces",
                     "owner",
                     "description",
                     "soul",

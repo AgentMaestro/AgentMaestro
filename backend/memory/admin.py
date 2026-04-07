@@ -2,9 +2,11 @@ from django.contrib import admin
 from django.db.models import Count
 from django.utils.html import format_html, format_html_join
 from django.utils.safestring import mark_safe
+from django.contrib import messages
 
 from core.admin_utils import format_datetime_eastern
 from memory.models import MemoryHealthSnapshot, MemoryRecord, RecurrenceRule, ScheduledTask, ScheduledTaskApproval
+from memory.scheduled_approvals import ensure_headless_task_approval
 
 
 @admin.register(MemoryRecord)
@@ -97,6 +99,7 @@ class RecurrenceRuleAdmin(admin.ModelAdmin):
 
 @admin.register(ScheduledTask)
 class ScheduledTaskAdmin(admin.ModelAdmin):
+    actions = ("approve_task",)
     list_display = (
         "title",
         "id",
@@ -232,6 +235,40 @@ class ScheduledTaskAdmin(admin.ModelAdmin):
         else:
             lines.append("steps: -")
         return format_html_join(mark_safe("<br>"), "{}", ((line,) for line in lines))
+
+    @admin.action(description="Approve Task")
+    def approve_task(self, request, queryset):
+        created_count = 0
+        refreshed_count = 0
+        failed_ids: list[str] = []
+        for scheduled_task in queryset.select_related("agent", "workspace", "owner", "recurrence_rule"):
+            try:
+                approval, created = ensure_headless_task_approval(
+                    scheduled_task=scheduled_task,
+                    approved_by=request.user,
+                )
+                if created:
+                    created_count += 1
+                else:
+                    refreshed_count += 1
+                self.message_user(
+                    request,
+                    f"Scheduled task {scheduled_task.id} approved with fingerprint {approval.fingerprint[:12]}.",
+                    level=messages.SUCCESS,
+                )
+            except Exception as exc:  # noqa: BLE001
+                failed_ids.append(str(scheduled_task.id))
+                self.message_user(
+                    request,
+                    f"Scheduled task {scheduled_task.id} approval failed: {exc}",
+                    level=messages.ERROR,
+                )
+        if created_count or refreshed_count:
+            self.message_user(
+                request,
+                f"Approve Task completed: created={created_count}, refreshed={refreshed_count}, failed={len(failed_ids)}.",
+                level=messages.INFO,
+            )
 
 
 @admin.register(ScheduledTaskApproval)

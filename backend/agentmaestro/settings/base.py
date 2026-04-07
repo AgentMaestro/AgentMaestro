@@ -113,6 +113,7 @@ INSTALLED_APPS = [
     'control',
     'comms',
     'google_bridge',
+    'finance.apps.FinanceConfig',
 ]
 
 MIDDLEWARE = [
@@ -237,6 +238,7 @@ CELERY_TASK_QUEUES = (
     Queue("tools"),
     Queue("runs"),
     Queue("comms"),
+    Queue("finance"),
 )
 CELERY_TASK_ROUTES = {
     "tools.execute_tool_call_async": {"queue": "tools"},
@@ -250,6 +252,7 @@ CELERY_TASK_ROUTES = {
     "memory.tasks.run_due_scheduled_tasks": {"queue": "runs"},
     "memory.tasks.run_scheduled_task_once": {"queue": "runs"},
     "memory.tasks.run_memory_retention_task": {"queue": "runs"},
+    "finance.tasks.*": {"queue": "finance"},
 }
 
 ARCHIVE_RETENTION_DAYS = int(os.getenv("ARCHIVE_RETENTION_DAYS", "30"))
@@ -272,6 +275,14 @@ MAX_CONCURRENT_TOOL_CALLS_PER_RUN = int(_env_value("TOOLRUNNER_MAX_CONCURRENT_TO
 # Gmail OR clauses are capped to keep fan-out bounded. The bridge rejects nested OR
 # inside parentheses instead of guessing the user's intent.
 GMAIL_OR_CLAUSE_LIMIT = int(_env_value("TOOLRUNNER_GMAIL_OR_CLAUSE_LIMIT") or "10")
+# Finance workers are isolated so market-data prefetch and refresh policies can be
+# tuned without affecting the rest of the platform.
+FINANCE_CELERY_WORKERS = int(_env_value("FINANCE_CELERY_WORKERS") or "2")
+FINANCE_API_CALLS_PER_MINUTE = int(_env_value("FINANCE_API_CALLS_PER_MINUTE") or "60")
+FINANCE_QUOTE_TTL_SECONDS = int(_env_value("FINANCE_QUOTE_TTL_SECONDS") or "120")
+FINANCE_RESEARCH_SNAPSHOT_TTL_SECONDS = int(_env_value("FINANCE_RESEARCH_SNAPSHOT_TTL_SECONDS") or "300")
+FINANCE_BROKERAGE_REFRESH_TTL_SECONDS = int(_env_value("FINANCE_BROKERAGE_REFRESH_TTL_SECONDS") or "300")
+FINANCE_BROKERAGE_TRANSACTION_LOOKBACK_DAYS = int(_env_value("FINANCE_BROKERAGE_TRANSACTION_LOOKBACK_DAYS") or "30")
 
 TELEGRAM_ENABLE_POLLING = (_env_value("TELEGRAM_ENABLE_POLLING") or "0").lower() in {
     "1",
@@ -305,6 +316,23 @@ GOOGLE_BRIDGE_TIMEOUT_SECONDS = _env_float_value("GOOGLE_BRIDGE_TIMEOUT_SECONDS"
 GOOGLE_BRIDGE_RETRY_ATTEMPTS = int(_env_value("GOOGLE_BRIDGE_RETRY_ATTEMPTS") or "2")
 GOOGLE_BRIDGE_RETRY_BACKOFF_SECONDS = _env_float_value("GOOGLE_BRIDGE_RETRY_BACKOFF_SECONDS", 1.0)
 GOOGLE_BRIDGE_RETRY_MAX_BACKOFF_SECONDS = _env_float_value("GOOGLE_BRIDGE_RETRY_MAX_BACKOFF_SECONDS", 8.0)
+MASSIVE_API_BASE_URL = _env_value("MASSIVE_API_BASE_URL", "https://api.massive.com").rstrip("/")
+MASSIVE_API_KEY = _env_value("MASSIVE_API_KEY")
+SCHWAB_MARKET_DATA_URL = _env_value("SCHWAB_MARKET_DATA_URL", "https://api.schwabapi.com/marketdata/v1").rstrip("/")
+SCHWAB_MARKET_DATA_KEY = _env_value("SCHWAB_MARKET_DATA_KEY")
+SCHWAB_MARKET_DATA_SECRET = _env_value("SCHWAB_MARKET_DATA_SECRET")
+SCHWAB_TRADER_URL = _env_value("SCHWAB_TRADER_URL", "https://api.schwabapi.com/trader/v1").rstrip("/")
+SCHWAB_TRADER_KEY = _env_value("SCHWAB_TRADER_KEY")
+SCHWAB_TRADER_SECRET = _env_value("SCHWAB_TRADER_SECRET")
+SCHWAB_CALLBACK_URL = _env_value("SCHWAB_CALLBACK_URL")
+SCHWAB_MARKET_DATA_CALLBACK_URL = _env_value("SCHWAB_MARKET_DATA_CALLBACK_URL")
+SCHWAB_OAUTH_AUTHORIZE_URL = _env_value("SCHWAB_OAUTH_AUTHORIZE_URL", "https://api.schwabapi.com/v1/oauth/authorize").rstrip("/")
+SCHWAB_OAUTH_TOKEN_URL = _env_value("SCHWAB_OAUTH_TOKEN_URL", "https://api.schwabapi.com/v1/oauth/token").rstrip("/")
+SCHWAB_OAUTH_SCOPE = _env_value("SCHWAB_OAUTH_SCOPE", "readonly")
+FINANCE_AGENT_SLUG = _env_value("FINANCE_AGENT_SLUG")
+FINANCE_MARKET_DATA_PROVIDER = (_env_value("FINANCE_MARKET_DATA_PROVIDER") or "schwab").strip().lower() or "schwab"
+FINANCE_MARKET_DATA_BACKUP_PROVIDER = (_env_value("FINANCE_MARKET_DATA_BACKUP_PROVIDER") or "massive").strip().lower() or "massive"
+FINANCE_BROKERAGE_PROVIDER = (_env_value("FINANCE_BROKERAGE_PROVIDER") or "schwab").strip().lower() or "schwab"
 GOOGLE_OAUTH_SCOPES = _env_json_list(
     "GOOGLE_OAUTH_SCOPES",
     [
@@ -379,6 +407,22 @@ if MEMORY_RETENTION_ENABLED:
         "schedule": timedelta(hours=MEMORY_RETENTION_INTERVAL_HOURS),
         "options": {"expires": max(MEMORY_RETENTION_INTERVAL_HOURS * 3600, 300)},
     }
+
+CELERY_BEAT_SCHEDULE["finance.refresh_expired_quotes"] = {
+    "task": "finance.tasks.refresh_expired_quotes_sweep",
+    "schedule": timedelta(seconds=max(15, FINANCE_QUOTE_TTL_SECONDS)),
+    "options": {"expires": max(FINANCE_QUOTE_TTL_SECONDS * 2, 60)},
+}
+CELERY_BEAT_SCHEDULE["finance.refresh_brokerage_snapshot"] = {
+    "task": "finance.tasks.refresh_brokerage_snapshot_sweep",
+    "schedule": timedelta(seconds=max(60, FINANCE_BROKERAGE_REFRESH_TTL_SECONDS)),
+    "options": {"expires": max(FINANCE_BROKERAGE_REFRESH_TTL_SECONDS * 2, 120)},
+}
+CELERY_BEAT_SCHEDULE["finance.refresh_finance_snapshot"] = {
+    "task": "finance.tasks.refresh_finance_snapshot_sweep",
+    "schedule": timedelta(seconds=max(300, FINANCE_RESEARCH_SNAPSHOT_TTL_SECONDS)),
+    "options": {"expires": max(FINANCE_RESEARCH_SNAPSHOT_TTL_SECONDS * 2, 600)},
+}
 
 # ToolRunner settings (new preferred names)
 TOOLRUNNER_SANDBOX_ROOT = _env_value("TOOLRUNNER_SANDBOX_ROOT", "/tmp/agentmaestro/sandbox")

@@ -420,27 +420,89 @@ def execute_scheduled_task(scheduled_task: ScheduledTask) -> str:
 
 def run_scheduled_task_now(scheduled_task_id: str) -> dict[str, object]:
     from runs.models import AgentRun
+    from runs.services.headless import launch_scheduled_task_run
     from runs.tasks import execute_headless_run_task
 
-    scheduled_task, run, did_launch = launch_scheduled_task_run(str(scheduled_task_id))
-    waiting_for_approval = run.status == AgentRun.Status.WAITING_FOR_APPROVAL
-    result = {
-        "scheduled_task_id": str(scheduled_task.id),
-        "title": scheduled_task.title,
-        "task_type": scheduled_task.task_type,
-        "execution_mode": scheduled_task.execution_mode,
-        "run_id": str(run.id),
-        "active_run_id": str(scheduled_task.active_run_id or ""),
-        "launched": did_launch,
-        "queued": False,
-        "waiting_for_approval": waiting_for_approval,
-        "status": "already_running" if not did_launch else ("awaiting_approval" if waiting_for_approval else "launched"),
-    }
-    if not did_launch or waiting_for_approval:
+    try:
+        scheduled_task, run, did_launch = launch_scheduled_task_run(str(scheduled_task_id))
+        waiting_for_approval = run.status == AgentRun.Status.WAITING_FOR_APPROVAL
+        result = {
+            "ok": True,
+            "scheduled_task_id": str(scheduled_task.id),
+            "title": scheduled_task.title,
+            "task_type": scheduled_task.task_type,
+            "execution_mode": scheduled_task.execution_mode,
+            "run_id": str(run.id),
+            "active_run_id": str(scheduled_task.active_run_id or ""),
+            "launched": did_launch,
+            "queued": False,
+            "waiting_for_approval": waiting_for_approval,
+            "stderr": "",
+            "error": "",
+            "status": "already_running" if not did_launch else ("awaiting_approval" if waiting_for_approval else "launched"),
+        }
+        logger.info(
+            "run_scheduled_task_now task=%s run=%s status=%s launched=%s waiting_for_approval=%s active_run=%s approval_mode=%s approval_source_ref=%s",
+            scheduled_task.id,
+            run.id,
+            result["status"],
+            did_launch,
+            waiting_for_approval,
+            scheduled_task.active_run_id or "",
+            run.approval_mode,
+            run.approval_source_ref,
+        )
+        if not did_launch:
+            result["ok"] = False
+            result["stderr"] = f"Scheduled task '{scheduled_task.title or scheduled_task.task_type}' already has an active headless run."
+            result["error"] = result["stderr"]
+            logger.warning(
+                "run_scheduled_task_now already_running task=%s run=%s active_run=%s status=%s",
+                scheduled_task.id,
+                run.id,
+                scheduled_task.active_run_id or "",
+                run.status,
+            )
+            return result
+        if waiting_for_approval:
+            result["ok"] = False
+            result["stderr"] = f"Scheduled task '{scheduled_task.title or scheduled_task.task_type}' is waiting for approval."
+            result["error"] = result["stderr"]
+            logger.info(
+                "run_scheduled_task_now waiting_for_approval task=%s run=%s approval_mode=%s approval_source_ref=%s",
+                scheduled_task.id,
+                run.id,
+                run.approval_mode,
+                run.approval_source_ref,
+            )
+            return result
+        execute_headless_run_task.delay(str(run.id))
+        result["queued"] = True
+        logger.info(
+            "run_scheduled_task_now queued task=%s run=%s queued=%s",
+            scheduled_task.id,
+            run.id,
+            result["queued"],
+        )
         return result
-    execute_headless_run_task.delay(str(run.id))
-    result["queued"] = True
-    return result
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("run_scheduled_task_now failed scheduled_task_id=%s", scheduled_task_id)
+        error_text = str(exc).strip() or "Failed to launch scheduled task."
+        return {
+            "ok": False,
+            "scheduled_task_id": str(scheduled_task_id),
+            "title": "",
+            "task_type": "",
+            "execution_mode": "",
+            "run_id": "",
+            "active_run_id": "",
+            "launched": False,
+            "queued": False,
+            "waiting_for_approval": False,
+            "stderr": error_text,
+            "error": error_text,
+            "status": "failed",
+        }
 
 
 

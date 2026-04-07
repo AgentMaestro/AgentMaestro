@@ -1,0 +1,856 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{{ page_title|default:"Finance Research" }}</title>
+    <link rel="icon" type="image/x-icon" href="{% static 'img/favicon.ico' %}">
+    <style>
+      :root {
+        --bg: #030712;
+        --panel: rgba(15, 23, 42, 0.95);
+        --panel-soft: rgba(15, 23, 42, 0.78);
+        --border: rgba(148, 163, 184, 0.18);
+        --text: #f8fafc;
+        --muted: rgba(248, 250, 252, 0.68);
+        --accent: #38bdf8;
+        --accent-soft: rgba(56, 189, 248, 0.12);
+        --success: #34d399;
+      }
+
+      * { box-sizing: border-box; }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        background:
+          radial-gradient(circle at top left, rgba(56, 189, 248, 0.18), transparent 34%),
+          radial-gradient(circle at top right, rgba(16, 185, 129, 0.10), transparent 28%),
+          linear-gradient(180deg, #020617 0%, #030712 46%, #020617 100%);
+        color: var(--text);
+        font-family: "Segoe UI", system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+      }
+
+      a { color: inherit; }
+
+      .page {
+        max-width: 1640px;
+        margin: 0 auto;
+        padding: 24px;
+      }
+
+      .shell {
+        border: 1px solid var(--border);
+        border-radius: 26px;
+        background: linear-gradient(180deg, rgba(15, 23, 42, 0.96), rgba(2, 6, 23, 0.98));
+        box-shadow: 0 30px 90px rgba(2, 6, 23, 0.58);
+        overflow: hidden;
+      }
+
+      .hero {
+        display: flex;
+        justify-content: space-between;
+        gap: 18px;
+        padding: 24px;
+        border-bottom: 1px solid var(--border);
+      }
+
+      .eyebrow {
+        margin: 0 0 8px;
+        text-transform: uppercase;
+        letter-spacing: 0.16em;
+        font-size: 0.72rem;
+        font-weight: 800;
+        color: rgba(125, 211, 252, 0.92);
+      }
+
+      .hero h1 {
+        margin: 0;
+        font-size: clamp(1.7rem, 2vw, 2.3rem);
+        line-height: 1.1;
+      }
+
+      .hero-subtitle {
+        margin: 10px 0 0;
+        color: var(--muted);
+        line-height: 1.5;
+        max-width: 72ch;
+      }
+
+      .hero-actions {
+        display: flex;
+        gap: 10px;
+        flex-wrap: wrap;
+        justify-content: flex-end;
+        align-items: flex-start;
+      }
+
+      .hero-link {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 42px;
+        padding: 0.55rem 0.95rem;
+        border-radius: 12px;
+        border: 1px solid rgba(125, 211, 252, 0.28);
+        background: rgba(14, 165, 233, 0.12);
+        text-decoration: none;
+        font-weight: 700;
+        color: #e0f2fe;
+      }
+
+      .hero-link.alt {
+        border-color: rgba(148, 163, 184, 0.22);
+        background: rgba(148, 163, 184, 0.08);
+        color: #e2e8f0;
+      }
+
+      .hero-status {
+        display: inline-flex;
+        align-items: center;
+        min-height: 42px;
+        padding: 0.55rem 0.95rem;
+        border-radius: 12px;
+        border: 1px solid rgba(52, 211, 153, 0.22);
+        background: rgba(16, 185, 129, 0.10);
+        color: #bbf7d0;
+        font-size: 0.78rem;
+        font-weight: 800;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        white-space: nowrap;
+      }
+
+      .hero-controls {
+        display: flex;
+        gap: 10px;
+        align-items: center;
+        flex-wrap: wrap;
+        justify-content: flex-end;
+      }
+
+      .workspace {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) 360px;
+        min-height: calc(100vh - 164px);
+        align-items: start;
+      }
+
+      .main {
+        padding: 22px 24px 24px;
+        border-right: 1px solid var(--border);
+      }
+
+      .rail {
+        padding: 22px 18px 18px;
+        background: linear-gradient(180deg, rgba(15, 23, 42, 0.88), rgba(2, 6, 23, 0.94));
+        position: sticky;
+        top: 24px;
+        align-self: start;
+        max-height: calc(100vh - 48px);
+        overflow: hidden;
+        display: flex;
+        flex-direction: column;
+      }
+
+      .section {
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        border-radius: 20px;
+        background: rgba(255, 255, 255, 0.03);
+        padding: 18px;
+        margin-bottom: 16px;
+      }
+
+      .section h2,
+      .rail h2 {
+        margin: 0;
+        font-size: 1.05rem;
+      }
+
+      .section p,
+      .rail p {
+        margin: 8px 0 0;
+        color: var(--muted);
+        line-height: 1.5;
+      }
+
+      .chip-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-top: 14px;
+      }
+
+      .chip {
+        display: inline-flex;
+        align-items: center;
+        min-height: 32px;
+        padding: 0.2rem 0.8rem;
+        border-radius: 999px;
+        border: 1px solid rgba(148, 163, 184, 0.18);
+        background: rgba(148, 163, 184, 0.08);
+        font-size: 0.84rem;
+        font-weight: 700;
+        color: #e2e8f0;
+      }
+
+      .card-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+        gap: 12px;
+        margin-top: 14px;
+      }
+
+      .card {
+        border-radius: 16px;
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        background: rgba(255, 255, 255, 0.03);
+        padding: 14px 16px;
+        min-height: 96px;
+      }
+
+      .card-label {
+        display: block;
+        margin-bottom: 8px;
+        text-transform: uppercase;
+        letter-spacing: 0.12em;
+        font-size: 0.7rem;
+        font-weight: 800;
+        color: rgba(248, 250, 252, 0.56);
+      }
+
+      .card-value {
+        color: var(--text);
+        line-height: 1.45;
+      }
+
+      .table-shell {
+        margin-top: 14px;
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        border-radius: 18px;
+        background: rgba(255, 255, 255, 0.025);
+        overflow: hidden;
+      }
+
+      .table-wrap {
+        overflow-x: auto;
+      }
+
+      .finance-table {
+        width: 100%;
+        border-collapse: collapse;
+        min-width: 0;
+        table-layout: fixed;
+      }
+
+      .finance-table thead th {
+        position: sticky;
+        top: 0;
+        z-index: 1;
+        padding: 8px 10px;
+        text-align: center;
+        font-size: 0.72rem;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        color: rgba(248, 250, 252, 0.64);
+        background: rgba(15, 23, 42, 0.96);
+        border-bottom: 1px solid rgba(148, 163, 184, 0.16);
+        white-space: nowrap;
+      }
+
+      .finance-table thead th:first-child,
+      .finance-table tbody td:first-child {
+        text-align: left;
+      }
+
+      .finance-table thead th:nth-child(7),
+      .finance-table thead th:nth-child(8),
+      .finance-table thead th:nth-child(9) {
+        text-align: center;
+      }
+
+      .finance-table tbody td {
+        padding: 8px 10px;
+        border-bottom: 1px solid rgba(148, 163, 184, 0.12);
+        text-align: right;
+        white-space: nowrap;
+        font-variant-numeric: tabular-nums;
+      }
+
+      .finance-table tfoot td {
+        padding: 8px 10px;
+        border-top: 1px solid rgba(148, 163, 184, 0.18);
+        background: rgba(15, 23, 42, 0.92);
+        text-align: right;
+        white-space: nowrap;
+        font-variant-numeric: tabular-nums;
+      }
+
+      .finance-table tbody tr:hover {
+        background: rgba(56, 189, 248, 0.06);
+      }
+
+      .finance-table tbody tr {
+        cursor: pointer;
+      }
+
+      .finance-table tbody tr.is-selected {
+        background: rgba(56, 189, 248, 0.12);
+        box-shadow: inset 0 0 0 1px rgba(56, 189, 248, 0.28);
+      }
+
+      .finance-table .ticker-cell {
+        text-align: left;
+        font-weight: 800;
+        color: #e0f2fe;
+      }
+
+      .finance-table .last-price-cell {
+        text-align: right;
+      }
+
+      .finance-table .last-price-stack {
+        display: inline-flex;
+        align-items: flex-start;
+        justify-content: flex-end;
+        gap: 2px;
+        line-height: 1;
+      }
+
+      .finance-table .last-price-value {
+        line-height: 1;
+      }
+
+      .finance-table .quote-cache-badge {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-width: 1.85em;
+        padding: 0 0.22em;
+        border-radius: 999px;
+        border: 1px solid rgba(148, 163, 184, 0.34);
+        background: rgba(15, 23, 42, 0.92);
+        color: rgba(226, 232, 240, 0.82);
+        font-size: 0.55rem;
+        font-weight: 800;
+        line-height: 1;
+        vertical-align: super;
+        transform: translateY(-0.18em);
+        box-shadow: 0 2px 6px rgba(2, 6, 23, 0.24);
+      }
+
+      .finance-table th:nth-child(1),
+      .finance-table td:nth-child(1) {
+        width: 13%;
+      }
+
+      .finance-table th:nth-child(2),
+      .finance-table td:nth-child(2) {
+        width: 9%;
+      }
+
+      .finance-table th:nth-child(3),
+      .finance-table td:nth-child(3),
+      .finance-table th:nth-child(4),
+      .finance-table td:nth-child(4),
+      .finance-table th:nth-child(5),
+      .finance-table td:nth-child(5),
+      .finance-table th:nth-child(6),
+      .finance-table td:nth-child(6),
+      .finance-table th:nth-child(7),
+      .finance-table td:nth-child(7),
+      .finance-table th:nth-child(8),
+      .finance-table td:nth-child(8),
+      .finance-table th:nth-child(9),
+      .finance-table td:nth-child(9) {
+        width: auto;
+      }
+
+      .finance-table .muted-cell {
+        color: rgba(248, 250, 252, 0.62);
+      }
+
+      .finance-table .gain-positive {
+        color: #86efac;
+      }
+
+      .finance-table .gain-negative {
+        color: #fca5a5;
+      }
+
+      .finance-table .gain-neutral {
+        color: rgba(248, 250, 252, 0.86);
+      }
+
+      .trade-workspace {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) minmax(320px, 1fr);
+        gap: 14px;
+        margin-top: 14px;
+      }
+
+      .trade-panel {
+        border-radius: 18px;
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        background: rgba(255, 255, 255, 0.03);
+        padding: 16px;
+        min-width: 0;
+      }
+
+      .trade-panel h3 {
+        margin: 0;
+        font-size: 1rem;
+      }
+
+      .trade-panel p {
+        margin: 8px 0 0;
+        color: var(--muted);
+        line-height: 1.5;
+      }
+
+      .trade-chart-meta {
+        margin-top: 10px;
+        font-size: 0.84rem;
+        color: rgba(226, 232, 240, 0.84);
+      }
+
+      .trade-chart-shell {
+        margin-top: 14px;
+        position: relative;
+        border-radius: 16px;
+        border: 1px solid rgba(148, 163, 184, 0.16);
+        background: rgba(2, 6, 23, 0.4);
+        overflow: hidden;
+      }
+
+      .trade-chart-svg {
+        display: block;
+      }
+
+      .trade-marker-tooltip {
+        position: absolute;
+        z-index: 3;
+        pointer-events: none;
+        display: none;
+        padding: 6px 8px;
+        border-radius: 8px;
+        border: 1px solid rgba(148, 163, 184, 0.24);
+        background: rgba(15, 23, 42, 0.96);
+        color: rgba(226, 232, 240, 0.96);
+        font-size: 12px;
+        line-height: 1.25;
+        white-space: nowrap;
+        box-shadow: 0 12px 24px rgba(0, 0, 0, 0.28);
+        transform: none;
+      }
+
+      .trade-chart-empty {
+        padding: 24px 18px;
+        color: rgba(248, 250, 252, 0.68);
+      }
+
+      .trade-plan-stub {
+        margin-top: 14px;
+        min-height: 300px;
+        border-radius: 16px;
+        border: 1px dashed rgba(148, 163, 184, 0.24);
+        background: rgba(2, 6, 23, 0.22);
+        padding: 18px;
+        color: rgba(248, 250, 252, 0.72);
+      }
+
+      .chat-shell {
+        display: flex;
+        flex-direction: column;
+        gap: 14px;
+        min-height: 0;
+        height: 100%;
+        width: 100%;
+        flex: 1 1 auto;
+      }
+
+      .chat-window {
+        flex: 1 1 auto;
+        display: flex;
+        flex-direction: column;
+        min-height: 0;
+        border-radius: 20px;
+        border: 1px solid rgba(125, 211, 252, 0.16);
+        background:
+          linear-gradient(180deg, rgba(8, 47, 73, 0.22), rgba(15, 23, 42, 0.92)),
+          var(--panel);
+        overflow: hidden;
+      }
+
+      .chat-header {
+        padding: 16px 16px 14px;
+        border-bottom: 1px solid rgba(148, 163, 184, 0.16);
+      }
+
+      .chat-status {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        margin-top: 10px;
+        padding: 0.35rem 0.7rem;
+        border-radius: 999px;
+        border: 1px solid rgba(52, 211, 153, 0.22);
+        background: rgba(16, 185, 129, 0.10);
+        color: #bbf7d0;
+        font-size: 0.78rem;
+        font-weight: 800;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+
+      .chat-body {
+        flex: 1 1 auto;
+        min-height: 0;
+        padding: 14px 16px;
+        display: grid;
+        gap: 10px;
+        align-content: start;
+        overflow-y: auto;
+        overscroll-behavior: contain;
+        scrollbar-gutter: stable;
+      }
+
+      .chat-message {
+        border-radius: 16px;
+        border: 1px solid rgba(148, 163, 184, 0.16);
+        background: rgba(255, 255, 255, 0.03);
+        padding: 12px 14px;
+      }
+
+      .chat-message.system {
+        border-color: rgba(96, 165, 250, 0.22);
+        background: rgba(59, 130, 246, 0.08);
+      }
+
+      .chat-message.user {
+        border-color: rgba(52, 211, 153, 0.22);
+        background: rgba(16, 185, 129, 0.08);
+      }
+
+      .chat-message strong {
+        display: block;
+        margin-bottom: 6px;
+        font-size: 0.82rem;
+        text-transform: uppercase;
+        letter-spacing: 0.1em;
+        color: rgba(148, 163, 184, 0.88);
+      }
+
+      .chat-message p {
+        margin: 0;
+        color: rgba(248, 250, 252, 0.9);
+        line-height: 1.45;
+      }
+
+      .chat-composer {
+        padding: 14px 16px 16px;
+        border-top: 1px solid rgba(148, 163, 184, 0.16);
+        background: rgba(2, 6, 23, 0.34);
+        flex: 0 0 auto;
+      }
+
+      .chat-composer textarea {
+        width: 100%;
+        min-height: 92px;
+        resize: vertical;
+        border-radius: 14px;
+        border: 1px solid rgba(148, 163, 184, 0.22);
+        background: rgba(15, 23, 42, 0.96);
+        color: var(--text);
+        padding: 12px 14px;
+        font: inherit;
+        outline: none;
+      }
+
+      .chat-composer textarea::placeholder {
+        color: rgba(248, 250, 252, 0.42);
+      }
+
+      .chat-composer-actions {
+        display: flex;
+        justify-content: space-between;
+        gap: 10px;
+        align-items: center;
+        margin-top: 10px;
+      }
+
+      .chat-note {
+        color: var(--muted);
+        font-size: 0.88rem;
+        line-height: 1.45;
+      }
+
+      .chat-button {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 40px;
+        padding: 0 14px;
+        border-radius: 12px;
+        border: 1px solid rgba(125, 211, 252, 0.28);
+        background: rgba(14, 165, 233, 0.14);
+        color: #e0f2fe;
+        font: inherit;
+        font-weight: 800;
+      }
+
+      .chat-button:disabled {
+        opacity: 0.52;
+        cursor: not-allowed;
+      }
+
+      @media (max-width: 1080px) {
+        .workspace {
+          grid-template-columns: 1fr;
+          min-height: auto;
+        }
+
+        .main {
+          border-right: 0;
+          border-bottom: 1px solid var(--border);
+        }
+
+        .rail {
+          position: static;
+          top: auto;
+          max-height: none;
+          overflow: visible;
+          display: block;
+          flex-direction: row;
+        }
+
+        .chat-shell {
+          height: auto;
+          min-height: 0;
+        }
+
+        .chat-window {
+          height: auto;
+          min-height: 560px;
+        }
+
+        .trade-workspace {
+          grid-template-columns: 1fr;
+        }
+      }
+
+      @media (max-width: 720px) {
+        .page {
+          padding: 14px;
+        }
+
+        .hero {
+          flex-direction: column;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="page">
+      <main class="shell">
+        <header class="hero">
+              <div>
+                <p class="eyebrow">Finance research cockpit</p>
+                <h1>Portfolio and research workspace</h1>
+                <p class="hero-subtitle">
+              Portfolio review, ticker analysis, options work, and a finance-scoped chat rail.
+                </p>
+              </div>
+              <div class="hero-actions">
+                <div class="hero-status" data-finance-status>
+                  {% if finance_agent_slug %}
+                    Ready to connect
+                  {% else %}
+                    Finance agent not configured
+                  {% endif %}
+                </div>
+                <div class="hero-controls">
+                  <label class="chat-note" style="display: inline-flex; align-items: center; gap: 0.45rem; font-weight: 700; color: var(--text);">
+                    <input type="checkbox" data-finance-auto-fetch-toggle {% if finance_auto_fetch_default %}checked{% endif %} />
+                    Auto-fetch
+                  </label>
+                  <a class="hero-link alt" href="/finance/schwab/market/connect/">Connect market data</a>
+                  <button class="chat-button" type="button" data-finance-refresh-now>Refresh now</button>
+                </div>
+              </div>
+            </header>
+
+        <div class="workspace">
+          <section class="main" aria-label="Finance research content">
+            <div class="section">
+              <h2>Scope</h2>
+              <p>
+                This first slice establishes the shared finance shell. The next slices will wire in live portfolio data, ticker research, stock tools, and options tools.
+              </p>
+              <div class="chip-row">
+                <span class="chip">Stocks</span>
+                <span class="chip">Options</span>
+                <span class="chip">Portfolio</span>
+                <span class="chip">Watchlists</span>
+                <span class="chip">Research notes</span>
+              </div>
+            </div>
+
+            <div class="section">
+              <h2>Bootstrap snapshot</h2>
+              <p>
+                The finance page bootstrap seeds the initial system context from the active workspace, portfolio, positions, and the latest quote context for each holding.
+              </p>
+                <div class="card-grid">
+                  <div class="card">
+                    <span class="card-label">Workspace</span>
+                    <div class="card-value" data-finance-workspace-name>{{ finance_workspace_name }}</div>
+                </div>
+                <div class="card">
+                  <span class="card-label">Positions</span>
+                  <div class="card-value" data-finance-position-count>{{ finance_bootstrap.portfolio.position_count }} core holdings</div>
+                </div>
+                  <div class="card">
+                    <span class="card-label">Quotes</span>
+                    <div class="card-value" data-finance-quote-count>{{ finance_bootstrap.quotes|length }} cached or live quotes</div>
+                  </div>
+                  <div class="card">
+                    <span class="card-label">Transactions</span>
+                    <div class="card-value" data-finance-transaction-count>{{ finance_bootstrap.transactions|length }} loaded transactions</div>
+                  </div>
+                  <div class="card">
+                    <span class="card-label">Quote status</span>
+                    <div class="card-value" data-finance-quote-status>{{ finance_bootstrap.quote_status }}</div>
+                  </div>
+                </div>
+              <div class="card" style="margin-top: 12px;">
+                <span class="card-label">System context seed</span>
+                <div class="card-value" style="white-space: pre-wrap;">{{ finance_system_context }}</div>
+              </div>
+            </div>
+
+            <div class="section">
+              <h2>Loaded positions</h2>
+              <p>
+                Positions are loaded from the brokerage bootstrap and kept authoritative until a confirmed trade or broker sync updates them.
+              </p>
+              {% if finance_bootstrap.positions %}
+                <div class="card-grid" data-finance-positions-grid>
+                  {% for position in finance_bootstrap.positions %}
+                    <div class="card">
+                      <span class="card-label">{{ position.symbol }}</span>
+                      <div class="card-value">
+                        {{ position.side }} · {{ position.quantity }} shares<br />
+                        Entry: {{ position.average_cost }}<br />
+                        Basis: {{ position.cost_basis }}
+                      </div>
+                    </div>
+                  {% endfor %}
+                </div>
+              {% else %}
+                <div class="card-grid" data-finance-positions-grid>
+                  <div class="card">
+                    <span class="card-label">Positions</span>
+                    <div class="card-value">No positions loaded yet.</div>
+                  </div>
+                </div>
+              {% endif %}
+            </div>
+
+            <div class="section">
+              <h2>30-Day Snapshot</h2>
+              <p>
+                Click a loaded position to view a 30-day price snapshot. The chart shows weekday candles with current and average reference lines.
+              </p>
+              <div class="trade-workspace" data-finance-trade-workspace>
+                <div class="trade-panel" data-finance-trade-history-panel>
+                  <h3>30-Day Snapshot</h3>
+                  <p data-finance-trade-meta>Select a position to view the 30-day snapshot.</p>
+                  <div class="trade-chart-shell" data-finance-trade-chart></div>
+                </div>
+                <div class="trade-panel" data-finance-trade-plan-panel>
+                  <h3>Trade Plan</h3>
+                  <p>Stubbed for now. This space will hold the working trade plan, exits, and target levels.</p>
+                  <div class="trade-plan-stub">
+                    Trade plan synopsis will be added here in the next slice.
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="section">
+              <h2>Starter technical analysis</h2>
+              <p>Daily and weekly timeframes with the initial indicator set for cleaner trade planning.</p>
+              <div class="card-grid">
+                {% for indicator in starter_indicators %}
+                  <div class="card">
+                    <span class="card-label">Indicator</span>
+                    <div class="card-value">{{ indicator }}</div>
+                  </div>
+                {% endfor %}
+                {% for timeframe in starter_timeframes %}
+                  <div class="card">
+                    <span class="card-label">Timeframe</span>
+                    <div class="card-value">{{ timeframe }}</div>
+                  </div>
+                {% endfor %}
+              </div>
+            </div>
+
+            <div class="section">
+              <h2>Options pricing</h2>
+              <p>The first options slice will support both closed-form and discrete pricing models.</p>
+              <div class="card-grid">
+                {% for model in pricing_models %}
+                  <div class="card">
+                    <span class="card-label">Model</span>
+                    <div class="card-value">{{ model }}</div>
+                  </div>
+                {% endfor %}
+              </div>
+            </div>
+          </section>
+
+          <aside class="rail" aria-label="Finance chat rail">
+            <div class="chat-shell">
+              <div
+                class="chat-window"
+                data-finance-chat
+                data-finance-agent-slug="{{ finance_agent_slug|default:'' }}"
+                data-finance-ws-url="{% if finance_agent_slug %}/ws/agents/{{ finance_agent_slug }}/chat/{% endif %}"
+                data-finance-refresh-url="{{ finance_refresh_url }}"
+                data-finance-state-url="/finance/state/"
+                data-finance-quote-ttl-seconds="{{ finance_quote_ttl_seconds|default:120 }}"
+                data-finance-brokerage-ttl-seconds="{{ finance_brokerage_ttl_seconds|default:600 }}"
+                data-finance-research-ttl-seconds="{{ finance_research_ttl_seconds|default:86400 }}"
+                data-finance-auto-fetch-default="{% if finance_auto_fetch_default %}true{% else %}false{% endif %}"
+              >
+                <div class="chat-body" data-finance-messages></div>
+                <form class="chat-composer" data-finance-form>
+                  <textarea
+                    placeholder="Ask about a ticker, portfolio holding, filing, or options trade plan..."
+                    data-finance-input
+                  ></textarea>
+                  <div class="chat-composer-actions">
+                    <div class="chat-note" data-finance-note>
+                      {% if finance_agent_slug %}
+                        The finance agent will connect when you send the first prompt.
+                      {% else %}
+                        Set `FINANCE_AGENT_SLUG` to enable the finance chat.
+                      {% endif %}
+                    </div>
+                    <button class="chat-button" type="submit" {% if not finance_agent_slug %}disabled{% endif %}>Send</button>
+                  </div>
+                </form>
+              </div>
+            </div>
+          </aside>
+        </div>
+      </main>
+    </div>
+    {{ finance_system_context|json_script:"finance-system-context" }}
+    {{ finance_bootstrap|json_script:"finance-bootstrap" }}
+    <script src="{% static 'finance/chat.js' %}?v=20260406-last-price-badge-v19" defer></script>
+  </body>
+</html>

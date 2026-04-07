@@ -16,7 +16,7 @@ from runs.services.headless import (
     execute_headless_run,
     launch_scheduled_task_run,
 )
-from tools.models import ToolCall
+from tools.models import AgentToolGrant, Tool, ToolCall, ToolDefinition, ToolGroup, ToolRisk
 from tools.services.approvals import approve_tool_call, deny_tool_call
 from tools.services.execution import execute_tool_call
 
@@ -122,6 +122,45 @@ def test_future_identical_execution_inherits_existing_approval(monkeypatch, head
     _scheduled_task, first_run, _launched = launch_scheduled_task_run(str(scheduled_task.id))
     gate_call = ToolCall.objects.get(run=first_run, tool_name=INTERNAL_HEADLESS_APPROVAL_TOOL_NAME)
     _approve_gate_and_execute(gate_call, user, monkeypatch)
+
+    AgentRun.objects.filter(id=first_run.id).update(status=AgentRun.Status.COMPLETED, ended_at=timezone.now())
+    ScheduledTask.objects.filter(id=scheduled_task.id).update(active_run=None, last_run_id=first_run.id)
+
+    _scheduled_task, second_run, launched_again = launch_scheduled_task_run(str(scheduled_task.id))
+
+    assert launched_again is True
+    second_run.refresh_from_db()
+    approval = ScheduledTaskApproval.objects.get(scheduled_task=scheduled_task)
+    assert second_run.status == AgentRun.Status.PENDING
+    assert second_run.approval_mode == AgentRun.ApprovalMode.INHERITED
+    assert second_run.approval_source_ref == str(approval.id)
+    assert second_run.tool_calls.count() == 0
+    approval.refresh_from_db()
+    assert approval.use_count == 2
+
+
+def test_future_execution_inherits_when_agent_gains_additional_tools(monkeypatch, headless_task_agent):
+    user, workspace, agent = headless_task_agent
+    scheduled_task = _create_headless_task(user, agent)
+    _scheduled_task, first_run, _launched = launch_scheduled_task_run(str(scheduled_task.id))
+    gate_call = ToolCall.objects.get(run=first_run, tool_name=INTERNAL_HEADLESS_APPROVAL_TOOL_NAME)
+    _approve_gate_and_execute(gate_call, user, monkeypatch)
+
+    extra_group = ToolGroup.objects.create(name="headless-extra-tools")
+    extra_tool = Tool.objects.create(
+        name="headless_extra_tool",
+        tool_group=extra_group,
+        risk=ToolRisk.SAFE,
+        requires_approval=False,
+        released=True,
+    )
+    ToolDefinition.objects.create(
+        workspace=workspace,
+        tool=extra_tool,
+        name=extra_tool.name,
+        enabled=True,
+    )
+    AgentToolGrant.objects.create(agent=agent, tool=extra_tool, enabled=True)
 
     AgentRun.objects.filter(id=first_run.id).update(status=AgentRun.Status.COMPLETED, ended_at=timezone.now())
     ScheduledTask.objects.filter(id=scheduled_task.id).update(active_run=None, last_run_id=first_run.id)

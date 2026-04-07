@@ -55,6 +55,37 @@ def _coerce_expires_at(value: object):
 
 def execute_native_tool_call(tool_call: ToolCall) -> dict[str, object]:
     args = dict(tool_call.args or {})
+    if tool_call.tool_name in {
+        "ticker_lookup",
+        "watchlist_add",
+        "watchlist_remove",
+        "watchlist_list",
+        "portfolio_get",
+        "broker_accounts",
+        "broker_balances",
+        "broker_positions",
+        "broker_activity",
+        "get_market_hours",
+        "stock_quote",
+        "stock_history",
+        "stock_news",
+        "stock_filings",
+        "research_snapshot_get",
+        "research_snapshot_refresh",
+    }:
+        from finance.services import execute_finance_tool
+
+        result = execute_finance_tool(tool_call.tool_name, tool_call.run, args)
+        stderr = str(result.get("error") or result.get("stderr") or "").strip()
+        return {
+            "request_id": str(tool_call.id),
+            "status": "COMPLETED" if result.get("ok", True) else "FAILED",
+            "exit_code": 0 if result.get("ok", True) else 1,
+            "stdout": "",
+            "stderr": stderr,
+            "duration_ms": 0,
+            "result": result,
+        }
     if tool_call.tool_name == "remember":
         scope_type = str(args.get("scope_type") or "").strip()
         scope_id = str(args.get("scope_id") or "").strip()
@@ -241,12 +272,14 @@ def execute_native_tool_call(tool_call: ToolCall) -> dict[str, object]:
         if not scheduled_task_id:
             raise RuntimeError("run_scheduled_task requires scheduled_task_id.")
         result = run_scheduled_task_now(scheduled_task_id)
+        ok = bool(result.get("ok", True))
+        stderr = str(result.get("stderr") or result.get("error") or "").strip()
         return {
             "request_id": str(tool_call.id),
-            "status": "COMPLETED",
-            "exit_code": 0,
+            "status": "COMPLETED" if ok else "FAILED",
+            "exit_code": 0 if ok else 1,
             "stdout": "",
-            "stderr": "",
+            "stderr": stderr,
             "duration_ms": 0,
             "result": result,
         }

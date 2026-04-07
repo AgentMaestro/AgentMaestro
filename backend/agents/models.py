@@ -61,6 +61,11 @@ class Agent(TimeStampedModel):
         on_delete=models.CASCADE,
         related_name="workspace_agents",
     )
+    workspaces = models.ManyToManyField(
+        Workspace,
+        blank=True,
+        related_name="accessible_agents",
+    )
     owner = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.PROTECT,
@@ -130,6 +135,40 @@ class Agent(TimeStampedModel):
     def __str__(self):
         return f"{self.workspace}:{self.name}"
 
+    def get_accessible_workspace_ids(self) -> list[uuid.UUID]:
+        workspace_ids: list[uuid.UUID] = []
+        seen: set[uuid.UUID] = set()
+        if self.workspace_id:
+            workspace_ids.append(self.workspace_id)
+            seen.add(self.workspace_id)
+        if self.pk:
+            for workspace_id in self.workspaces.values_list("id", flat=True):
+                if workspace_id in seen:
+                    continue
+                seen.add(workspace_id)
+                workspace_ids.append(workspace_id)
+        return workspace_ids
+
+    def accessible_workspaces_queryset(self):
+        if self.pk is None:
+            if self.workspace_id:
+                return Workspace.objects.filter(pk=self.workspace_id)
+            return Workspace.objects.none()
+        filters = models.Q(accessible_agents=self)
+        if self.workspace_id:
+            filters |= models.Q(pk=self.workspace_id)
+        return Workspace.objects.filter(filters).distinct()
+
+    def has_workspace_access(self, workspace: Workspace | None) -> bool:
+        workspace_id = getattr(workspace, "id", None)
+        if not workspace_id:
+            return False
+        if self.workspace_id == workspace_id:
+            return True
+        if not self.pk:
+            return False
+        return self.workspaces.filter(pk=workspace_id).exists()
+
     def get_sandbox_roots(self) -> tuple[Path, ...]:
         raw_paths = self._normalize_sandbox_paths(self.sandbox_paths)
         roots: list[Path] = []
@@ -186,6 +225,8 @@ class Agent(TimeStampedModel):
         if self._should_generate_slug():
             self.slug = self._build_unique_slug()
         super().save(*args, **kwargs)
+        if self.workspace_id:
+            self.workspaces.add(self.workspace_id)
         self._original_name = self.name
 
     def _ensure_unique_name(self) -> None:

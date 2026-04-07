@@ -342,6 +342,17 @@ def launch_scheduled_task_run(scheduled_task_id: str) -> tuple[ScheduledTask, Ag
 
     approval_context = build_scheduled_task_approval_context(scheduled_task)
     run.approval_fingerprint = approval_context.fingerprint
+    logger.info(
+        "%s scheduled_launch task=%s run=%s approval_reason=%s fingerprint=%s tool_signature_count=%d previous_approval=%s active_run=%s",
+        HEADLESS_RUN_LOG_PREFIX,
+        scheduled_task.id,
+        run.id,
+        approval_context.reason,
+        approval_context.fingerprint,
+        len(approval_context.tool_signature),
+        str(approval_context.previous_approval.id) if approval_context.previous_approval else "",
+        scheduled_task.active_run_id or "",
+    )
     if approval_context.approval is not None:
         record_inherited_headless_approval_use(approval=approval_context.approval, run=run)
         run.approval_mode = AgentRun.ApprovalMode.INHERITED
@@ -385,6 +396,15 @@ def launch_scheduled_task_run(scheduled_task_id: str) -> tuple[ScheduledTask, Ag
         correlation_id=run.correlation_id,
     )
     append_run_note(run, f"Scheduled task {scheduled_task.id} is waiting for approval before headless execution.")
+    logger.info(
+        "%s scheduled_launch waiting_for_approval task=%s run=%s approval_id=%s reason=%s previous_approval=%s",
+        HEADLESS_RUN_LOG_PREFIX,
+        scheduled_task.id,
+        run.id,
+        str(approval_gate.id),
+        approval_context.reason,
+        str(approval_context.previous_approval.id) if approval_context.previous_approval else "",
+    )
     return scheduled_task, run, True
 
 

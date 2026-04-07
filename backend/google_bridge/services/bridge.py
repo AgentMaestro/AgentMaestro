@@ -4,7 +4,6 @@ from base64 import urlsafe_b64decode
 from email import policy
 from email.parser import BytesParser
 import json
-import logging
 import re
 from html import unescape
 from collections.abc import Iterable
@@ -13,6 +12,7 @@ from email.utils import parsedate_to_datetime
 from zoneinfo import ZoneInfo
 from django.conf import settings
 from django.utils import timezone
+from logging_utils import get_app_logger
 
 from core.services.timezones import get_local_timezone_name
 from google_bridge.models import GoogleAccount
@@ -25,7 +25,7 @@ class GoogleBridgeTaskError(RuntimeError):
     pass
 
 
-logger = logging.getLogger(__name__)
+logger = get_app_logger(__name__)
 
 
 _PROMPT_FIELD_ORDER = (

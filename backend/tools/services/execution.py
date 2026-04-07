@@ -10,6 +10,7 @@ import httpx
 from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
 from django.conf import settings
+from django.db.models import Case, IntegerField, Value, When
 from django.utils import timezone
 
 from agents.models import Agent
@@ -39,6 +40,22 @@ _NATIVE_TOOL_NAMES = {
     "send_telegram",
     "google_bridge",
     "scheduled_headless_run_gate",
+    "ticker_lookup",
+    "watchlist_add",
+    "watchlist_remove",
+    "watchlist_list",
+    "portfolio_get",
+    "broker_accounts",
+    "broker_balances",
+    "broker_positions",
+    "broker_activity",
+    "get_market_hours",
+    "stock_quote",
+    "stock_history",
+    "stock_news",
+    "stock_filings",
+    "research_snapshot_get",
+    "research_snapshot_refresh",
 }
 
 
@@ -486,11 +503,7 @@ def execute_tool_call(tool_call_id: str) -> ToolCall:
     internal_gate_tool = tool_call.tool_name == "scheduled_headless_run_gate"
     definition = None
     if not internal_gate_tool:
-        definition = (
-            ToolDefinition.objects
-            .filter(workspace_id=tool_call.run.workspace_id, name=tool_call.tool_name, enabled=True)
-            .first()
-        )
+        definition = _resolve_tool_definition_for_agent(tool_call.run.agent, tool_call.tool_name)
     logger.info("execute_tool_call tool_definition lookup tool_call=%s definition=%s", tool_call.id, definition.id if definition else None)
     if not internal_gate_tool and not definition:
         raise RuntimeError(f"tool {tool_call.tool_name} not enabled for workspace")
@@ -680,3 +693,30 @@ def execute_tool_call(tool_call_id: str) -> ToolCall:
         _emit_tool_call_completed(tool_call, duration_ms)
 
     return tool_call
+
+
+def _resolve_tool_definition_for_agent(agent, tool_name: str):
+    workspace_ids = []
+    if agent is not None:
+        resolver = getattr(agent, "get_accessible_workspace_ids", None)
+        if callable(resolver):
+            workspace_ids = list(resolver() or [])
+        elif getattr(agent, "workspace_id", None):
+            workspace_ids = [agent.workspace_id]
+    if not workspace_ids:
+        return None
+    workspace_order = Case(
+        *[
+            When(workspace_id=workspace_id, then=Value(index))
+            for index, workspace_id in enumerate(workspace_ids)
+        ],
+        default=Value(len(workspace_ids)),
+        output_field=IntegerField(),
+    )
+    return (
+        ToolDefinition.objects.select_related("tool")
+        .annotate(_workspace_order=workspace_order)
+        .filter(workspace_id__in=workspace_ids, name=tool_name, enabled=True)
+        .order_by("_workspace_order", "name")
+        .first()
+    )

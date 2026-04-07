@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from typing import Iterable
 
+from django.db.models import Case, IntegerField, Value, When
 
 from .models import AgentToolGrant, Tool, ToolDefinition, ToolRisk
 
@@ -65,15 +66,33 @@ def get_effective_tools(agent, user):
     if not agent:
         return []
 
+    workspace_ids = list(getattr(agent, "get_accessible_workspace_ids", lambda: [])() or [])
+    if not workspace_ids and getattr(agent, "workspace_id", None):
+        workspace_ids = [agent.workspace_id]
+    if not workspace_ids:
+        return []
+
+    workspace_order = Case(
+        *[
+            When(workspace_id=workspace_id, then=Value(index))
+            for index, workspace_id in enumerate(workspace_ids)
+        ],
+        default=Value(len(workspace_ids)),
+        output_field=IntegerField(),
+    )
+
     definitions = (
-        ToolDefinition.objects.select_related("tool")
-        .filter(workspace=agent.workspace, enabled=True, tool__isnull=False)
+        ToolDefinition.objects.select_related("tool", "workspace")
+        .annotate(_workspace_order=workspace_order)
+        .filter(workspace_id__in=workspace_ids, enabled=True, tool__isnull=False)
+        .order_by("_workspace_order", "tool__name")
     )
     grants = {
         grant.tool_id: grant
         for grant in AgentToolGrant.objects.filter(agent=agent, enabled=True)
     }
     effective_tools = []
+    seen_tool_ids: set = set()
     for definition in definitions:
         tool = definition.tool
         if not tool:
@@ -81,6 +100,8 @@ def get_effective_tools(agent, user):
         if not tool.released and not (user and user.is_superuser):
             continue
         if grants.get(tool.id) is None:
+            continue
+        if tool.id in seen_tool_ids:
             continue
         risk = _max_risk(tool.risk, definition.default_risk_level)
         requires_approval = tool.requires_approval or definition.default_requires_approval
@@ -96,6 +117,7 @@ def get_effective_tools(agent, user):
                 description=description,
             )
         )
+        seen_tool_ids.add(tool.id)
     return effective_tools
 
 
