@@ -15,6 +15,27 @@
   const noteEl = shell.querySelector("[data-finance-note]");
   const autoFetchToggle = shell.querySelector("[data-finance-auto-fetch-toggle]");
   const refreshButton = shell.querySelector("[data-finance-refresh-now]");
+  const searchInputEl = shell.ownerDocument.querySelector("[data-finance-ticker-search]");
+  const searchResultsEl = shell.ownerDocument.querySelector("[data-finance-ticker-results]");
+  const searchUrl = (shell.dataset.financeSearchUrl || "").trim();
+  const researchUrl = (shell.dataset.financeResearchUrl || "").trim();
+  const tabButtons = Array.from(shell.ownerDocument.querySelectorAll("[data-finance-tab-button]"));
+  const tabPanels = Array.from(shell.ownerDocument.querySelectorAll("[data-finance-tab-panel]"));
+  const researchTitleEl = shell.ownerDocument.querySelector("[data-finance-research-title]");
+  const researchSubtitleEl = shell.ownerDocument.querySelector("[data-finance-research-subtitle]");
+  const researchSourceEl = shell.ownerDocument.querySelector("[data-finance-research-source]");
+  const researchSymbolEl = shell.ownerDocument.querySelector("[data-finance-research-symbol]");
+  const researchCompanyEl = shell.ownerDocument.querySelector("[data-finance-research-company]");
+  const researchExchangeEl = shell.ownerDocument.querySelector("[data-finance-research-exchange]");
+  const researchPriceEl = shell.ownerDocument.querySelector("[data-finance-research-price]");
+  const researchQuoteAsOfEl = shell.ownerDocument.querySelector("[data-finance-research-quote-as-of]");
+  const researchSnapshotEl = shell.ownerDocument.querySelector("[data-finance-research-snapshot]");
+  const researchFundamentalsEl = shell.ownerDocument.querySelector("[data-finance-research-fundamentals]");
+  const researchSourcesEl = shell.ownerDocument.querySelector("[data-finance-research-sources]");
+  const researchChartTitleEl = shell.ownerDocument.querySelector("[data-finance-research-chart-title]");
+  const researchChartAsOfEl = shell.ownerDocument.querySelector("[data-finance-research-chart-as-of]");
+  const researchChartPlaceholderEl = shell.ownerDocument.querySelector("[data-finance-research-chart-placeholder]");
+  const researchChartTimeframeButtons = Array.from(shell.ownerDocument.querySelectorAll("[data-finance-research-chart-timeframe]"));
   const workspaceNameEl = shell.ownerDocument.querySelector("[data-finance-workspace-name]");
   const positionCountEl = shell.ownerDocument.querySelector("[data-finance-position-count]");
   const quoteCountEl = shell.ownerDocument.querySelector("[data-finance-quote-count]");
@@ -46,8 +67,18 @@
   let positionsTableBodyEl = null;
   let positionsTableFootEl = null;
   let currentBootstrap = null;
+  let currentResearchContext = null;
   let selectedPositionSymbol = "";
   let tradeMarkerTooltipEl = null;
+  let activeTabName = "portfolio";
+  let tickerSearchTimer = null;
+  let tickerSearchRequestId = 0;
+  let tickerResearchRequestId = 0;
+  let lastTickerSearchMatches = [];
+  let tickerResearchTimer = null;
+  let tickerResearchAttempts = 0;
+  let lastTickerResearchSymbol = "";
+  let researchChartTimeframe = "daily";
 
   function readJsonScript(script) {
     if (!script || !script.textContent) {
@@ -151,6 +182,121 @@
     return `${numeric.toFixed(digits)}%`;
   }
 
+  const quoteBadgeTimeZone = "America/New_York";
+  const quoteBadgeOpenMinute = 4 * 60;
+  const quoteBadgeCloseMinute = 19 * 60;
+  const quoteBadgePartsFormatter = new Intl.DateTimeFormat("en-US", {
+    timeZone: quoteBadgeTimeZone,
+    weekday: "short",
+    year: "numeric",
+    month: "numeric",
+    day: "numeric",
+    hour: "numeric",
+    minute: "numeric",
+    second: "numeric",
+    hourCycle: "h23",
+    timeZoneName: "shortOffset",
+  });
+
+  function parseQuoteBadgeOffsetMinutes(label) {
+    const text = String(label || "").trim();
+    const match = text.match(/GMT([+-])(\d{1,2})(?::?(\d{2}))?/i);
+    if (!match) {
+      return 0;
+    }
+    const sign = match[1] === "-" ? -1 : 1;
+    const hours = Number(match[2] || 0);
+    const minutes = Number(match[3] || 0);
+    return sign * (hours * 60 + minutes);
+  }
+
+  function getQuoteBadgeParts(date) {
+    const parts = {};
+    for (const part of quoteBadgePartsFormatter.formatToParts(date)) {
+      if (part.type !== "literal") {
+        parts[part.type] = part.value;
+      }
+    }
+    return {
+      year: Number(parts.year || 0),
+      month: Number(parts.month || 0),
+      day: Number(parts.day || 0),
+      weekday: String(parts.weekday || ""),
+      hour: Number(parts.hour || 0),
+      minute: Number(parts.minute || 0),
+      second: Number(parts.second || 0),
+      offsetMinutes: parseQuoteBadgeOffsetMinutes(parts.timeZoneName),
+    };
+  }
+
+  function buildQuoteBadgeEasternInstant(year, month, day, hour, minute, second) {
+    const offsetProbe = new Date(Date.UTC(year, month - 1, day, 12, 0, 0));
+    const offsetMinutes = getQuoteBadgeParts(offsetProbe).offsetMinutes;
+    return new Date(Date.UTC(year, month - 1, day, hour, minute, second) - (offsetMinutes * 60000));
+  }
+
+  function getQuoteBadgeNextMarketOpen(year, month, day) {
+    let probe = new Date(Date.UTC(year, month - 1, day, 12, 0, 0));
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      probe.setUTCDate(probe.getUTCDate() + 1);
+      const parts = getQuoteBadgeParts(probe);
+      if (parts.weekday === "Sat" || parts.weekday === "Sun") {
+        continue;
+      }
+      return buildQuoteBadgeEasternInstant(parts.year, parts.month, parts.day, 4, 0, 0);
+    }
+    return probe;
+  }
+
+  function getQuoteBadgeMarketAwareAgeMinutes(value, now = new Date()) {
+    const start = new Date(value);
+    const end = new Date(now);
+    if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || end <= start) {
+      return 0;
+    }
+    let cursor = new Date(start);
+    let totalMs = 0;
+    for (let safety = 0; safety < 1000 && cursor < end; safety += 1) {
+      const parts = getQuoteBadgeParts(cursor);
+      if (parts.weekday === "Sat" || parts.weekday === "Sun") {
+        cursor = getQuoteBadgeNextMarketOpen(parts.year, parts.month, parts.day);
+        continue;
+      }
+      const open = buildQuoteBadgeEasternInstant(parts.year, parts.month, parts.day, 4, 0, 0);
+      const close = buildQuoteBadgeEasternInstant(parts.year, parts.month, parts.day, 19, 0, 0);
+      if (cursor < open) {
+        cursor = open;
+        if (cursor >= end) {
+          break;
+        }
+      }
+      if (cursor < close) {
+        const segmentEnd = end < close ? end : close;
+        totalMs += segmentEnd.getTime() - cursor.getTime();
+        cursor = segmentEnd;
+        if (cursor >= end) {
+          break;
+        }
+      }
+      cursor = getQuoteBadgeNextMarketOpen(parts.year, parts.month, parts.day);
+    }
+    return totalMs / 60000;
+  }
+
+  function getQuoteBadgeAgeClass(value) {
+    const ageMinutes = getQuoteBadgeMarketAwareAgeMinutes(value);
+    if (ageMinutes < 5) {
+      return "age-fresh";
+    }
+    if (ageMinutes < 10) {
+      return "age-warm";
+    }
+    if (ageMinutes < 30) {
+      return "age-orange";
+    }
+    return "age-old";
+  }
+
   function formatQuoteCacheBadge(value) {
     const date = new Date(value);
     if (Number.isNaN(date.getTime())) {
@@ -167,6 +313,36 @@
     if (Number.isNaN(date.getTime())) {
       return "";
     }
+    const ageMinutes = getQuoteBadgeMarketAwareAgeMinutes(value);
+    const ageLabel = Number.isFinite(ageMinutes)
+      ? `${Math.max(0, Math.round(ageMinutes))} minute${Math.round(ageMinutes) === 1 ? "" : "s"} market age`
+      : "";
+    return date.toLocaleString("en-US", {
+      month: "short",
+      day: "numeric",
+      year: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+      timeZoneName: "short",
+    }) + (ageLabel ? ` (${ageLabel})` : "");
+  }
+
+  function applyQuoteBadgeStyle(badge, value) {
+    if (!badge) {
+      return;
+    }
+    badge.classList.remove("age-fresh", "age-warm", "age-orange", "age-old");
+    const ageClass = getQuoteBadgeAgeClass(value);
+    if (ageClass) {
+      badge.classList.add(ageClass);
+    }
+  }
+
+  function formatResearchTimestamp(value) {
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) {
+      return "—";
+    }
     return date.toLocaleString("en-US", {
       month: "short",
       day: "numeric",
@@ -175,6 +351,519 @@
       minute: "2-digit",
       timeZoneName: "short",
     });
+  }
+
+  function formatHistoryRefreshBadge(value) {
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) {
+      return "";
+    }
+    const monthDay = date.toLocaleDateString("en-US", {
+      month: "short",
+      day: "numeric",
+    });
+    const hour = date.getHours() % 12 || 12;
+    const minute = String(date.getMinutes()).padStart(2, "0");
+    const suffix = date.getHours() >= 12 ? "p" : "a";
+    return `${monthDay} ${hour}:${minute}${suffix}`;
+  }
+
+  function renderResearchPriceDisplay(price, asOf) {
+    if (!researchPriceEl) {
+      return;
+    }
+    researchPriceEl.innerHTML = "";
+    const wrapper = document.createElement("span");
+    wrapper.className = "research-price-stack";
+    const value = document.createElement("span");
+    value.className = "research-price-value";
+    value.textContent = Number.isFinite(price) ? formatNumber(price, 4) : "—";
+    wrapper.appendChild(value);
+    const badgeText = formatQuoteCacheBadge(asOf);
+    if (badgeText) {
+      const badge = document.createElement("sup");
+      badge.className = "research-price-badge";
+      badge.textContent = badgeText;
+      applyQuoteBadgeStyle(badge, asOf);
+      const tooltip = formatQuoteCacheTooltip(asOf);
+      if (tooltip) {
+        badge.title = `Price cache updated ${tooltip}`;
+      }
+      wrapper.appendChild(badge);
+    }
+    researchPriceEl.appendChild(wrapper);
+  }
+
+  function extractResearchPrice(context) {
+    const quoteCache = context && typeof context === "object" ? context.quote_cache || {} : {};
+    const payload = quoteCache && typeof quoteCache === "object" ? quoteCache.payload || {} : {};
+    const quote = payload.quote || {};
+    const snapshot = payload.snapshot || {};
+    const candidates = [
+      quote.last,
+      quote.last_price,
+      quote.price,
+      quote.close,
+      payload.last_price,
+      payload.last,
+      payload.price,
+      payload.close,
+      snapshot?.min?.c,
+      snapshot?.day?.c,
+      snapshot?.prevDay?.c,
+    ];
+    for (const candidate of candidates) {
+      const numeric = Number(candidate);
+      if (Number.isFinite(numeric) && numeric > 0) {
+        return numeric;
+      }
+    }
+    return null;
+  }
+
+  function extractResearchHistoryCount(context) {
+    const history = context && typeof context === "object" ? context.history_cache || {} : {};
+    const payload = history && typeof history === "object" ? history.payload || {} : {};
+    const bars = Array.isArray(payload.bars) ? payload.bars : Array.isArray(payload.candles) ? payload.candles : [];
+    return bars.length;
+  }
+
+  function clearTickerSearchResults() {
+    lastTickerSearchMatches = [];
+    if (!searchResultsEl) {
+      return;
+    }
+    searchResultsEl.innerHTML = "";
+    searchResultsEl.hidden = true;
+  }
+
+  function renderTickerSearchResults(matches) {
+    lastTickerSearchMatches = Array.isArray(matches) ? matches.slice(0, 10) : [];
+    if (!searchResultsEl) {
+      return;
+    }
+    searchResultsEl.innerHTML = "";
+    if (!lastTickerSearchMatches.length) {
+      searchResultsEl.hidden = true;
+      return;
+    }
+    lastTickerSearchMatches.forEach((match, index) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "ticker-search-result";
+      button.dataset.symbol = String(match.symbol || "").trim().toUpperCase();
+      button.dataset.index = String(index);
+
+      const label = document.createElement("div");
+      const title = document.createElement("strong");
+      title.textContent = `${String(match.symbol || "").trim().toUpperCase()}${match.name ? ` · ${String(match.name)}` : ""}`;
+      const subtitle = document.createElement("span");
+      const parts = [match.exchange, match.asset_type].filter(Boolean);
+      subtitle.textContent = parts.join(" · ") || "Cached universe match";
+      label.append(title, subtitle);
+
+      const meta = document.createElement("div");
+      meta.className = "result-meta";
+      meta.textContent = match.source_name ? String(match.source_name) : "";
+
+      button.append(label, meta);
+      button.addEventListener("click", () => {
+        void selectTickerFromSearch(match);
+      });
+      searchResultsEl.appendChild(button);
+    });
+    searchResultsEl.hidden = false;
+  }
+
+  function clearTickerResearchPoll() {
+    if (tickerResearchTimer !== null) {
+      window.clearTimeout(tickerResearchTimer);
+      tickerResearchTimer = null;
+    }
+    tickerResearchAttempts = 0;
+  }
+
+  function isResearchContextReady(context) {
+    if (!context || typeof context !== "object") {
+      return false;
+    }
+    const quoteCache = context.quote_cache && typeof context.quote_cache === "object" ? context.quote_cache : null;
+    const historyCache = context.history_cache && typeof context.history_cache === "object" ? context.history_cache : null;
+    const quoteReady = !!(quoteCache && String(quoteCache.as_of || "").trim());
+    const historyPayload = historyCache && typeof historyCache.payload === "object" ? historyCache.payload : {};
+    const barCount = Array.isArray(historyPayload.bars) ? historyPayload.bars.length : Array.isArray(historyPayload.candles) ? historyPayload.candles.length : 0;
+    return quoteReady && barCount > 0;
+  }
+
+  function scheduleTickerResearchPoll(symbol) {
+    const selectedSymbol = String(symbol || "").trim().toUpperCase();
+    if (!selectedSymbol) {
+      return;
+    }
+    if (tickerResearchTimer !== null) {
+      window.clearTimeout(tickerResearchTimer);
+      tickerResearchTimer = null;
+    }
+    if (tickerResearchAttempts >= 6) {
+      return;
+    }
+    tickerResearchTimer = window.setTimeout(() => {
+      tickerResearchTimer = null;
+      tickerResearchAttempts += 1;
+      void loadTickerResearch(selectedSymbol, { queueRefresh: false, scheduleRetry: true, attempt: tickerResearchAttempts });
+    }, 2000);
+  }
+
+  function setActiveFinanceTab(tabName) {
+    activeTabName = tabName === "research" ? "research" : "portfolio";
+    tabButtons.forEach((button) => {
+      const isActive = String(button.dataset.financeTabButton || "") === activeTabName;
+      button.classList.toggle("is-active", isActive);
+      button.setAttribute("aria-selected", isActive ? "true" : "false");
+    });
+    tabPanels.forEach((panel) => {
+      const isActive = String(panel.dataset.financeTabPanel || "") === activeTabName;
+      panel.hidden = !isActive;
+    });
+  }
+
+  function renderResearchContext(context) {
+    if (!context || typeof context !== "object") {
+      return;
+    }
+    currentResearchContext = context;
+    const ticker = context.ticker && typeof context.ticker === "object" ? context.ticker : null;
+    const quoteCache = context.quote_cache && typeof context.quote_cache === "object" ? context.quote_cache : null;
+    const historyCache = context.history_cache && typeof context.history_cache === "object" ? context.history_cache : null;
+    const snapshot = context.research_snapshot && typeof context.research_snapshot === "object" ? context.research_snapshot : null;
+    const symbol = String(context.symbol || ticker?.symbol || "").trim().toUpperCase();
+    const company = String(ticker?.name || ticker?.company_name || ticker?.description || "Search for a ticker").trim();
+    const exchange = String(ticker?.exchange || "").trim();
+    const assetType = String(ticker?.asset_type || "").trim();
+    const price = extractResearchPrice(context);
+    const quoteAsOf = String(quoteCache?.as_of || "").trim();
+    const snapshotSummary = String(snapshot?.summary_text || "").trim();
+    const historyCount = extractResearchHistoryCount(context);
+    const historyAsOf = String(historyCache?.as_of || "").trim();
+
+    if (researchTitleEl) {
+      researchTitleEl.textContent = symbol ? `${symbol}: Research` : "Search a ticker to begin";
+    }
+    if (researchSubtitleEl) {
+      researchSubtitleEl.textContent = symbol
+        ? `Cached universe data is loaded first for ${symbol}. Research detail will expand as cached market data and future refreshes arrive.`
+        : "Cached universe results load immediately. Research data will fill in from cached market data first, then queued data refreshes.";
+    }
+    if (researchSourceEl) {
+      researchSourceEl.textContent = String(context.status || "Cached data ready").replace(/_/g, " ");
+    }
+    if (researchSymbolEl) {
+      researchSymbolEl.textContent = symbol || "—";
+    }
+    if (researchCompanyEl) {
+      researchCompanyEl.textContent = company || "Search for a ticker";
+    }
+    if (researchExchangeEl) {
+      const exchangeParts = [exchange, assetType].filter(Boolean);
+      researchExchangeEl.textContent = exchangeParts.length ? exchangeParts.join(" · ") : "—";
+    }
+    if (researchPriceEl) {
+      renderResearchPriceDisplay(price, quoteAsOf);
+    }
+    if (researchQuoteAsOfEl) {
+      researchQuoteAsOfEl.textContent = quoteAsOf ? formatResearchTimestamp(quoteAsOf) : "—";
+    }
+    if (researchSnapshotEl) {
+      researchSnapshotEl.textContent = snapshotSummary || (historyCount ? `${historyCount} cached history bars` : "None cached yet");
+    }
+
+    if (researchFundamentalsEl) {
+      researchFundamentalsEl.innerHTML = "";
+      const items = [];
+      if (ticker) {
+        items.push(`Universe match: ${symbol}${company ? ` · ${company}` : ""}`);
+        if (exchange || assetType) {
+          items.push(`Listed on ${[exchange, assetType].filter(Boolean).join(" · ")}`);
+        }
+      }
+      if (quoteCache && quoteCache.payload) {
+        items.push(`Quote cache as of ${quoteAsOf ? formatResearchTimestamp(quoteAsOf) : "unknown"}`);
+      }
+      if (historyCount) {
+        items.push(`${historyCount} cached price bars available`);
+      }
+      if (!items.length) {
+        items.push("No cached research data yet.");
+      }
+      for (const text of items) {
+        const item = document.createElement("div");
+        item.className = "research-source-item";
+        item.textContent = text;
+        researchFundamentalsEl.appendChild(item);
+      }
+    }
+
+    if (researchSourcesEl) {
+      researchSourcesEl.innerHTML = "";
+      const items = [];
+      if (snapshotSummary) {
+        items.push({ title: "Cached research snapshot", text: snapshotSummary });
+      }
+      if (quoteCache && quoteCache.cache_key) {
+        items.push({ title: "Quote cache", text: `${quoteCache.cache_key}${quoteAsOf ? ` · ${formatResearchTimestamp(quoteAsOf)}` : ""}` });
+      }
+      if (historyCache && historyCache.cache_key) {
+        items.push({ title: "Price history cache", text: `${historyCache.cache_key}${historyCache.timeframe ? ` · ${historyCache.timeframe}` : ""}` });
+      }
+      if (!items.length) {
+        items.push({
+          title: "Cached universe first",
+          text: "Search results come from the local ticker universe table before any deeper research refresh.",
+        });
+      }
+      for (const itemData of items) {
+        const item = document.createElement("div");
+        item.className = "research-source-item";
+        const heading = document.createElement("strong");
+        heading.textContent = itemData.title;
+        const body = document.createElement("div");
+        body.textContent = itemData.text;
+        item.append(heading, body);
+        researchSourcesEl.appendChild(item);
+      }
+    }
+    if (researchChartTitleEl) {
+      researchChartTitleEl.textContent = symbol ? `${symbol} daily OHLCV chart placeholder` : "Daily OHLCV chart placeholder";
+    }
+    if (researchChartAsOfEl) {
+      researchChartAsOfEl.textContent = historyAsOf ? `Updated ${formatResearchTimestamp(historyAsOf)}` : "Awaiting selection";
+    }
+    if (researchChartPlaceholderEl) {
+      researchChartPlaceholderEl.textContent = symbol
+        ? `Select a ticker to load the daily OHLCV chart placeholder here. The current selection has ${historyCount ? `${historyCount} cached bars` : "no cached bars yet"}${historyAsOf ? `, last updated ${formatResearchTimestamp(historyAsOf)}` : ""}.`
+        : "Select a ticker to load the daily OHLCV chart placeholder here. The research hydration step will populate this area first, before fundamentals, news, and filings grow around it.";
+    }
+    renderResearchChart(context);
+  }
+
+  function syncResearchChartControls() {
+    for (const button of researchChartTimeframeButtons) {
+      const timeframe = String(button.dataset.financeResearchChartTimeframe || "daily").trim();
+      const isActive = timeframe === researchChartTimeframe;
+      button.classList.toggle("is-active", isActive);
+      button.setAttribute("aria-pressed", isActive ? "true" : "false");
+    }
+  }
+
+  function setResearchChartTimeframe(timeframe) {
+    researchChartTimeframe = timeframe === "weekly" ? "weekly" : "daily";
+    syncResearchChartControls();
+    if (currentResearchContext) {
+      renderResearchChart(currentResearchContext);
+    }
+  }
+
+  function parseResearchHistoryCandles(context) {
+    const historyCache = context && typeof context === "object" ? context.history_cache || {} : {};
+    const payload = historyCache && typeof historyCache === "object" ? historyCache.payload || {} : {};
+    const bars = Array.isArray(payload.bars)
+      ? payload.bars
+      : Array.isArray(payload.candles)
+        ? payload.candles
+        : Array.isArray(payload.results)
+          ? payload.results
+          : [];
+    const normalized = bars
+      .map((bar) => {
+        if (!bar || typeof bar !== "object") {
+          return null;
+        }
+        const timestampValue = bar.timestamp ?? bar.time ?? bar.datetime ?? bar.date ?? bar.t ?? bar.startDate ?? bar.start ?? 0;
+        const timestamp = Number(timestampValue) || new Date(timestampValue).getTime();
+        const open = Number(bar.open ?? bar.o);
+        const high = Number(bar.high ?? bar.h);
+        const low = Number(bar.low ?? bar.l);
+        const close = Number(bar.close ?? bar.c);
+        const volume = Number(bar.volume ?? bar.v ?? 0);
+        if (!Number.isFinite(timestamp) || !Number.isFinite(open) || !Number.isFinite(high) || !Number.isFinite(low) || !Number.isFinite(close)) {
+          return null;
+        }
+        return {
+          timestamp,
+          open,
+          high,
+          low,
+          close,
+          volume: Number.isFinite(volume) ? volume : 0,
+        };
+      })
+      .filter(Boolean)
+      .sort((left, right) => left.timestamp - right.timestamp);
+    return dedupeCandlesByUtcDate(normalized);
+  }
+
+  function getResearchWeekStart(timestamp) {
+    const date = new Date(timestamp);
+    const day = date.getDay();
+    const delta = day === 0 ? 6 : day - 1;
+    date.setHours(0, 0, 0, 0);
+    date.setDate(date.getDate() - delta);
+    return date.getTime();
+  }
+
+  function aggregateResearchWeeklyCandles(dailyCandles) {
+    const buckets = new Map();
+    for (const candle of dailyCandles) {
+      const weekStart = getResearchWeekStart(candle.timestamp);
+      const bucket = buckets.get(weekStart) || {
+        timestamp: weekStart,
+        open: candle.open,
+        high: candle.high,
+        low: candle.low,
+        close: candle.close,
+        volume: candle.volume,
+      };
+      bucket.high = Math.max(bucket.high, candle.high);
+      bucket.low = Math.min(bucket.low, candle.low);
+      bucket.close = candle.close;
+      bucket.volume += candle.volume;
+      buckets.set(weekStart, bucket);
+    }
+    return Array.from(buckets.values()).sort((left, right) => left.timestamp - right.timestamp);
+  }
+
+  function getResearchChartCandles(context) {
+    const dailyCandles = parseResearchHistoryCandles(context);
+    if (!dailyCandles.length) {
+      return [];
+    }
+    if (researchChartTimeframe === "weekly") {
+      return aggregateResearchWeeklyCandles(dailyCandles);
+    }
+    return dailyCandles;
+  }
+
+  function formatResearchChartTooltip(candle) {
+    if (!candle) {
+      return "";
+    }
+    const lines = [
+      formatTradeDate(new Date(candle.timestamp)),
+      `O: ${formatNumber(candle.open, 2)}`,
+      `H: ${formatNumber(candle.high, 2)}`,
+      `L: ${formatNumber(candle.low, 2)}`,
+      `C: ${formatNumber(candle.close, 2)}`,
+    ];
+    if (Number.isFinite(candle.volume) && candle.volume > 0) {
+      lines.push(`V: ${formatNumber(candle.volume, 0)}`);
+    }
+    return lines.join("\n");
+  }
+
+  function renderResearchChart(context) {
+    if (!researchChartPlaceholderEl || !researchChartTitleEl || !researchChartAsOfEl) {
+      return;
+    }
+    syncResearchChartControls();
+    const ticker = context && typeof context === "object" ? context.ticker || {} : {};
+    const symbol = String(context?.symbol || ticker?.symbol || "").trim().toUpperCase();
+    const historyCandles = getResearchChartCandles(context);
+    const historyCache = context && typeof context === "object" ? context.history_cache || {} : {};
+    const historyAsOf = String(historyCache?.as_of || "").trim();
+    const chartLabel = researchChartTimeframe === "weekly" ? "Weekly" : "Daily";
+    researchChartTitleEl.textContent = symbol ? `${symbol}: ${chartLabel} OHLCV` : `${chartLabel} OHLCV`;
+    researchChartAsOfEl.textContent = historyAsOf ? `Updated ${formatResearchTimestamp(historyAsOf)}` : "Awaiting selection";
+    if (!symbol || !historyCandles.length) {
+      researchChartPlaceholderEl.textContent = symbol
+        ? `Select a ticker to load the ${chartLabel.toLowerCase()} OHLCV chart here. The chart will populate once the queued history refresh finishes.`
+        : `Select a ticker to load the ${chartLabel.toLowerCase()} OHLCV chart here. The research hydration step will populate this area first, before fundamentals, news, and filings grow around it.`;
+      return;
+    }
+
+    const width = Math.max(320, researchChartPlaceholderEl.clientWidth || 520);
+    const height = 320;
+    const margin = { top: 18, right: 18, bottom: 58, left: 56 };
+    const innerWidth = Math.max(1, width - margin.left - margin.right);
+    const innerHeight = Math.max(1, height - margin.top - margin.bottom);
+    const count = historyCandles.length;
+    const minTime = historyCandles[0].timestamp;
+    const maxTime = historyCandles[historyCandles.length - 1].timestamp;
+    const xScale = (time) => {
+      if (maxTime === minTime) {
+        return margin.left + innerWidth / 2;
+      }
+      return margin.left + (((time - minTime) / (maxTime - minTime)) * innerWidth);
+    };
+    const bodyWidth = Math.max(5, Math.min(18, (count > 1 ? innerWidth / (count - 1) : innerWidth) * 0.54));
+    const prices = [];
+    for (const candle of historyCandles) {
+      prices.push(candle.high, candle.low);
+    }
+    let minPrice = Math.min(...prices);
+    let maxPrice = Math.max(...prices);
+    if (minPrice === maxPrice) {
+      const padding = minPrice === 0 ? 1 : Math.abs(minPrice) * 0.1;
+      minPrice -= padding;
+      maxPrice += padding;
+    } else {
+      const padding = (maxPrice - minPrice) * 0.1;
+      minPrice -= padding;
+      maxPrice += padding;
+    }
+    const yScale = (price) => {
+      if (maxPrice === minPrice) {
+        return margin.top + innerHeight / 2;
+      }
+      return margin.top + innerHeight - (((price - minPrice) / (maxPrice - minPrice)) * innerHeight);
+    };
+    const priceAxis = buildPriceAxisTicks(minPrice, maxPrice);
+    minPrice = priceAxis.axisMin;
+    maxPrice = priceAxis.axisMax;
+    const priceTicks = priceAxis.ticks;
+    const monthTickDates = getMonthBoundaryTicks(minTime, maxTime).map((timestamp) => new Date(timestamp));
+    const tickDates = monthTickDates.length ? monthTickDates : [new Date(minTime)];
+    const lines = [
+      `<line x1="${margin.left}" y1="${margin.top + innerHeight}" x2="${margin.left + innerWidth}" y2="${margin.top + innerHeight}" stroke="rgba(148,163,184,0.24)" stroke-width="1" />`,
+      `<line x1="${margin.left}" y1="${margin.top}" x2="${margin.left}" y2="${margin.top + innerHeight}" stroke="rgba(148,163,184,0.24)" stroke-width="1" />`,
+      ...priceTicks.map((tickPrice) => {
+        const y = yScale(tickPrice);
+        return `
+          <line x1="${margin.left}" y1="${y.toFixed(2)}" x2="${margin.left + innerWidth}" y2="${y.toFixed(2)}" stroke="rgba(148,163,184,0.10)" stroke-width="1" />
+          <text x="${margin.left - 8}" y="${(y + 4).toFixed(2)}" fill="rgba(226,232,240,0.74)" font-size="11" text-anchor="end">${formatPriceAxisLabel(tickPrice, priceAxis.step)}</text>`;
+      }),
+      ...tickDates.map((tickDate) => {
+        const x = xScale(tickDate.getTime());
+        return `
+          <line x1="${x.toFixed(2)}" y1="${margin.top + innerHeight}" x2="${x.toFixed(2)}" y2="${margin.top + innerHeight + 4}" stroke="rgba(148,163,184,0.24)" stroke-width="1" />
+          <text x="${x.toFixed(2)}" y="${height - 10}" fill="rgba(226,232,240,0.74)" font-size="11" text-anchor="middle">${formatMonthAxisDate(tickDate)}</text>`;
+      }),
+    ].join("");
+    const candlesMarkup = historyCandles
+      .map((candle) => {
+        const x = xScale(candle.timestamp);
+        const wickTop = yScale(candle.high);
+        const wickBottom = yScale(candle.low);
+        const openY = yScale(candle.open);
+        const closeY = yScale(candle.close);
+        const bullish = candle.close >= candle.open;
+        const fill = bullish ? "#4ade80" : "#f87171";
+        const bodyTop = Math.min(openY, closeY);
+        const bodyBottom = Math.max(openY, closeY);
+        const bodyHeight = Math.max(1.5, bodyBottom - bodyTop);
+        const bodyX = x - (bodyWidth / 2);
+        return `
+          <g>
+            <title>${escapeSvgText(formatResearchChartTooltip(candle))}</title>
+            <line x1="${x.toFixed(2)}" y1="${wickTop.toFixed(2)}" x2="${x.toFixed(2)}" y2="${wickBottom.toFixed(2)}" stroke="${fill}" stroke-width="1.6" />
+            <rect x="${bodyX.toFixed(2)}" y="${bodyTop.toFixed(2)}" width="${bodyWidth.toFixed(2)}" height="${bodyHeight.toFixed(2)}" fill="${fill}" fill-opacity="0.88" stroke="rgba(2,6,23,0.85)" stroke-width="1" rx="1" ry="1" />
+          </g>`;
+      })
+      .join("");
+    researchChartPlaceholderEl.innerHTML = `
+      <svg class="trade-chart-svg" viewBox="0 0 ${width} ${height}" width="100%" height="${height}" preserveAspectRatio="none" role="img" aria-label="${symbol} ${chartLabel.toLowerCase()} OHLCV chart">
+        ${lines}
+        ${candlesMarkup}
+      </svg>`;
   }
 
   function escapeSvgText(value) {
@@ -459,6 +1148,9 @@
       : {};
     const directMatch = historyMap[selectedSymbol] || historyMap[selectedSymbol.toLowerCase()] || historyMap[selectedSymbol.toUpperCase()];
     if (directMatch && typeof directMatch === "object") {
+      if (directMatch.payload && typeof directMatch.payload === "object") {
+        return directMatch.payload;
+      }
       return directMatch;
     }
     const historyRows = Array.isArray(bootstrap.price_history_rows) ? bootstrap.price_history_rows : [];
@@ -474,6 +1166,34 @@
       }
     }
     return null;
+  }
+
+  function extractPriceHistoryUpdatedAt(bootstrap, symbol) {
+    const selectedSymbol = String(symbol || "").trim().toUpperCase();
+    if (!bootstrap || typeof bootstrap !== "object" || !selectedSymbol) {
+      return "";
+    }
+    const historyMap = bootstrap.price_history_map && typeof bootstrap.price_history_map === "object" && !Array.isArray(bootstrap.price_history_map)
+      ? bootstrap.price_history_map
+      : {};
+    const directMatch = historyMap[selectedSymbol] || historyMap[selectedSymbol.toLowerCase()] || historyMap[selectedSymbol.toUpperCase()];
+    if (directMatch && typeof directMatch === "object") {
+      const directAsOf = String(directMatch.as_of || directMatch.payload?.as_of || "").trim();
+      if (directAsOf) {
+        return directAsOf;
+      }
+    }
+    const historyRows = Array.isArray(bootstrap.price_history_rows) ? bootstrap.price_history_rows : [];
+    for (const row of historyRows) {
+      if (extractPositionSymbol(row) !== selectedSymbol || !row || typeof row !== "object") {
+        continue;
+      }
+      const rowAsOf = String(row.as_of || row.payload?.as_of || "").trim();
+      if (rowAsOf) {
+        return rowAsOf;
+      }
+    }
+    return "";
   }
 
   function extractMatchingTradeRows(bootstrap, symbol) {
@@ -593,6 +1313,7 @@
           const badge = document.createElement("sup");
           badge.className = "quote-cache-badge";
           badge.textContent = badgeText;
+          applyQuoteBadgeStyle(badge, column.lastPriceAsOf);
           const tooltip = formatQuoteCacheTooltip(column.lastPriceAsOf);
           if (tooltip) {
             badge.title = `Quote cache updated ${tooltip}`;
@@ -833,6 +1554,94 @@
     return `${weekday} ${date.getMonth() + 1}/${date.getDate()}`;
   }
 
+  function formatMonthAxisDate(value) {
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) {
+      return String(value || "");
+    }
+    return date.toLocaleDateString("en-US", {
+      month: "short",
+      day: "numeric",
+    });
+  }
+
+  function getMonthStartTickIndices(candles) {
+    if (!Array.isArray(candles) || !candles.length) {
+      return [];
+    }
+    const indices = [];
+    let lastMonthKey = "";
+    candles.forEach((candle, index) => {
+      const date = new Date(candle.timestamp);
+      if (Number.isNaN(date.getTime())) {
+        return;
+      }
+      const monthKey = `${date.getUTCFullYear()}-${date.getUTCMonth()}`;
+      if (monthKey !== lastMonthKey) {
+        lastMonthKey = monthKey;
+        indices.push(index);
+      }
+    });
+    return indices;
+  }
+
+  function getMonthBoundaryTicks(startTime, endTime) {
+    const start = new Date(startTime);
+    const end = new Date(endTime);
+    if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
+      return [];
+    }
+    const cursor = new Date(Date.UTC(start.getUTCFullYear(), start.getUTCMonth(), 1));
+    const ticks = [];
+    while (cursor.getTime() <= end.getTime()) {
+      ticks.push(cursor.getTime());
+      cursor.setUTCMonth(cursor.getUTCMonth() + 1);
+    }
+    return ticks;
+  }
+
+  function getNicePriceAxisStep(minPrice, maxPrice) {
+    const range = Math.abs(Number(maxPrice) - Number(minPrice));
+    if (!Number.isFinite(range) || range <= 0) {
+      return 1;
+    }
+    const ladder = [0.1, 0.25, 0.5, 1, 5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000];
+    for (const step of ladder) {
+      if (range / step <= 5) {
+        return step;
+      }
+    }
+    return ladder[ladder.length - 1];
+  }
+
+  function buildPriceAxisTicks(minPrice, maxPrice) {
+    const step = getNicePriceAxisStep(minPrice, maxPrice);
+    let axisMin = Math.floor(minPrice / step) * step;
+    let axisMax = Math.ceil(maxPrice / step) * step;
+    if (!Number.isFinite(axisMin) || !Number.isFinite(axisMax) || axisMin === axisMax) {
+      axisMin = minPrice;
+      axisMax = maxPrice;
+    }
+    const ticks = [];
+    let value = axisMin;
+    for (let safety = 0; safety < 200 && value <= axisMax + (step / 1000); safety += 1, value += step) {
+      ticks.push(Number(value.toFixed(step < 1 ? 2 : 0)));
+    }
+    return { step, axisMin, axisMax, ticks };
+  }
+
+  function formatPriceAxisLabel(value, step) {
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric)) {
+      return "";
+    }
+    const decimals = step < 1 ? 2 : 0;
+    return `$${numeric.toLocaleString("en-US", {
+      minimumFractionDigits: decimals,
+      maximumFractionDigits: decimals,
+    })}`;
+  }
+
   function formatSnapshotTooltipQuantity(row) {
     const numeric = Number(row?.quantity);
     if (!Number.isFinite(numeric) || numeric === 0) {
@@ -863,6 +1672,24 @@
       return "";
     }
     return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, "0")}-${String(date.getUTCDate()).padStart(2, "0")}`;
+  }
+
+  function dedupeCandlesByUtcDate(candles) {
+    if (!Array.isArray(candles) || !candles.length) {
+      return [];
+    }
+    const map = new Map();
+    for (const candle of candles) {
+      if (!candle || typeof candle !== "object") {
+        continue;
+      }
+      const key = getSnapshotDateKey(candle.timestamp);
+      if (!key) {
+        continue;
+      }
+      map.set(key, candle);
+    }
+    return Array.from(map.values()).sort((left, right) => Number(left.timestamp) - Number(right.timestamp));
   }
 
   function formatSnapshotTooltipText(candle, tradeRows) {
@@ -956,6 +1783,7 @@
     }
 
     const history = extractPriceHistorySeries(bootstrap, activeSymbol);
+    const historyAsOf = extractPriceHistoryUpdatedAt(bootstrap, activeSymbol);
     const rawCandles = history && Array.isArray(history.candles)
       ? history.candles
       : history && Array.isArray(history.bars)
@@ -988,7 +1816,8 @@
           && time <= windowEnd.getTime();
       })
       .sort((left, right) => left.timestamp - right.timestamp);
-    if (!candles.length) {
+    const dedupedCandles = dedupeCandlesByUtcDate(candles);
+    if (!dedupedCandles.length) {
       tradeHistoryMetaEl.textContent = `${activeSymbol}: 30-Day Snapshot, price history unavailable`;
       tradeHistoryChartEl.innerHTML = '<div class="trade-chart-empty">No usable daily candles were found for the last 30 days.</div>';
       return;
@@ -1001,7 +1830,7 @@
     const margin = { top: 18, right: 22, bottom: 58, left: 56 };
     const innerWidth = Math.max(1, width - margin.left - margin.right);
     const innerHeight = Math.max(1, height - margin.top - margin.bottom);
-    const count = candles.length;
+    const count = dedupedCandles.length;
     const xScale = (index) => {
       if (count === 1) {
         return margin.left + innerWidth / 2;
@@ -1013,9 +1842,9 @@
         return margin.left + innerWidth / 2;
       }
       let nearestIndex = 0;
-      let nearestDelta = Math.abs(time - candles[0].timestamp);
-      for (let index = 1; index < candles.length; index += 1) {
-        const delta = Math.abs(time - candles[index].timestamp);
+      let nearestDelta = Math.abs(time - dedupedCandles[0].timestamp);
+      for (let index = 1; index < dedupedCandles.length; index += 1) {
+        const delta = Math.abs(time - dedupedCandles[index].timestamp);
         if (delta < nearestDelta) {
           nearestIndex = index;
           nearestDelta = delta;
@@ -1025,7 +1854,7 @@
     };
     const bodyWidth = Math.max(5, Math.min(18, (count > 1 ? innerWidth / (count - 1) : innerWidth) * 0.54));
     const prices = [];
-    for (const candle of candles) {
+    for (const candle of dedupedCandles) {
       prices.push(candle.high, candle.low);
     }
     if (Number.isFinite(averageEntryPrice) && averageEntryPrice > 0) {
@@ -1048,15 +1877,12 @@
       }
       return margin.top + innerHeight - (((price - minPrice) / (maxPrice - minPrice)) * innerHeight);
     };
-    const mondayTickIndices = candles
-      .map((candle, index) => ({ candle, index }))
-      .filter(({ candle }) => {
-        const date = new Date(candle.timestamp);
-        return !Number.isNaN(date.getTime()) && date.getDay() === 1;
-      })
-      .map(({ index }) => index);
-    const uniqueTickIndices = mondayTickIndices.length ? mondayTickIndices : [0];
-    const priceTicks = Array.from({ length: 4 }, (_, index) => minPrice + ((maxPrice - minPrice) * (index / 3)));
+    const priceAxis = buildPriceAxisTicks(minPrice, maxPrice);
+    minPrice = priceAxis.axisMin;
+    maxPrice = priceAxis.axisMax;
+    const monthTickIndices = getMonthStartTickIndices(dedupedCandles);
+    const uniqueTickIndices = monthTickIndices.length ? monthTickIndices : [0];
+    const priceTicks = priceAxis.ticks;
     const quoteLineY = Number.isFinite(quotePrice) && quotePrice > 0 ? yScale(quotePrice) : null;
     const avgLineY = Number.isFinite(averageEntryPrice) && averageEntryPrice > 0 ? yScale(averageEntryPrice) : null;
     const matchingTradeRows = extractMatchingTradeRows(bootstrap, activeSymbol);
@@ -1122,14 +1948,14 @@
         const y = yScale(tickPrice);
         return `
           <line x1="${margin.left}" y1="${y.toFixed(2)}" x2="${margin.left + innerWidth}" y2="${y.toFixed(2)}" stroke="rgba(148,163,184,0.10)" stroke-width="1" />
-          <text x="${margin.left - 8}" y="${(y + 4).toFixed(2)}" fill="rgba(226,232,240,0.74)" font-size="11" text-anchor="end">${formatNumber(tickPrice, 2)}</text>`;
+          <text x="${margin.left - 8}" y="${(y + 4).toFixed(2)}" fill="rgba(226,232,240,0.74)" font-size="11" text-anchor="end">${formatPriceAxisLabel(tickPrice, priceAxis.step)}</text>`;
       }),
       ...uniqueTickIndices.map((index) => {
-        const candle = candles[index];
+        const candle = dedupedCandles[index];
         const x = xScale(index);
         return `
           <line x1="${x.toFixed(2)}" y1="${margin.top + innerHeight}" x2="${x.toFixed(2)}" y2="${margin.top + innerHeight + 4}" stroke="rgba(148,163,184,0.24)" stroke-width="1" />
-          <text x="${x.toFixed(2)}" y="${height - 10}" fill="rgba(226,232,240,0.74)" font-size="11" text-anchor="middle">${formatSnapshotAxisDate(candle.timestamp)}</text>`;
+          <text x="${x.toFixed(2)}" y="${height - 10}" fill="rgba(226,232,240,0.74)" font-size="11" text-anchor="middle">${formatMonthAxisDate(candle.timestamp)}</text>`;
       }),
       quoteLineY === null ? "" : `<line x1="${margin.left}" y1="${quoteLineY.toFixed(2)}" x2="${margin.left + innerWidth}" y2="${quoteLineY.toFixed(2)}" stroke="rgba(251,146,60,0.92)" stroke-width="1.8" stroke-dasharray="7 5" />`,
       quoteTagText ? `<g aria-hidden="true">
@@ -1148,7 +1974,7 @@
           </g>`
         : "",
     ].join("");
-    const candlesMarkup = candles
+    const candlesMarkup = dedupedCandles
       .map((candle, index) => {
         const x = xScale(index);
         const wickTop = yScale(candle.high);
@@ -1196,8 +2022,12 @@
           }).join("")}
         </g>`
       : "";
+    const historyBadgeMarkup = historyAsOf
+      ? `<div class="trade-chart-refresh-badge" data-finance-trade-history-badge title="History cache updated ${formatResearchTimestamp(historyAsOf)}">${formatHistoryRefreshBadge(historyAsOf)}</div>`
+      : "";
     tradeHistoryMetaEl.textContent = `${activeSymbol}: 30-Day Snapshot, ${formatTradeDate(windowStart)} to ${formatTradeDate(windowEnd)}`;
     tradeHistoryChartEl.innerHTML = `
+      ${historyBadgeMarkup}
       <svg class="trade-chart-svg" viewBox="0 0 ${width} ${height}" width="100%" height="${height}" preserveAspectRatio="none" role="img" aria-label="30-day snapshot chart for ${activeSymbol}">
         ${gridLines}
         ${candlesMarkup}
@@ -1431,14 +2261,15 @@
     const path = points
       .map((point, index) => `${index === 0 ? "M" : "L"} ${xScale(point.date.getTime()).toFixed(2)} ${yScale(point.price).toFixed(2)}`)
       .join(" ");
-    const tickDates = Array.from({ length: 5 }, (_, index) => {
-      const ratio = index / 4;
-      return new Date(minTime + ((maxTime - minTime) * ratio));
-    });
-    const priceTicks = Array.from({ length: 4 }, (_, index) => {
-      const ratio = index / 3;
-      return minPrice + ((maxPrice - minPrice) * ratio);
-    });
+    const priceAxis = buildPriceAxisTicks(minPrice, maxPrice);
+    minPrice = priceAxis.axisMin;
+    maxPrice = priceAxis.axisMax;
+    const tickDates = getMonthBoundaryTicks(minTime, maxTime)
+      .map((timestamp) => new Date(timestamp));
+    if (!tickDates.length) {
+      tickDates.push(points[0].date);
+    }
+    const priceTicks = priceAxis.ticks;
     const quoteLine = Number.isFinite(quotePrice) && quotePrice > 0
       ? `
         <line x1="${margin.left}" y1="${yScale(quotePrice).toFixed(2)}" x2="${margin.left + innerWidth}" y2="${yScale(quotePrice).toFixed(2)}" stroke="rgba(251,191,36,0.92)" stroke-width="1.8" stroke-dasharray="7 5" />`
@@ -1471,13 +2302,13 @@
         const y = yScale(tickPrice);
         return `
           <line x1="${margin.left}" y1="${y.toFixed(2)}" x2="${margin.left + innerWidth}" y2="${y.toFixed(2)}" stroke="rgba(148,163,184,0.10)" stroke-width="1" />
-          <text x="${margin.left - 8}" y="${(y + 4).toFixed(2)}" fill="rgba(226,232,240,0.74)" font-size="11" text-anchor="end">${formatNumber(tickPrice, 2)}</text>`;
+          <text x="${margin.left - 8}" y="${(y + 4).toFixed(2)}" fill="rgba(226,232,240,0.74)" font-size="11" text-anchor="end">${formatPriceAxisLabel(tickPrice, priceAxis.step)}</text>`;
       }),
       ...tickDates.map((tickDate) => {
         const x = xScale(tickDate.getTime());
         return `
           <line x1="${x.toFixed(2)}" y1="${margin.top + innerHeight}" x2="${x.toFixed(2)}" y2="${margin.top + innerHeight + 4}" stroke="rgba(148,163,184,0.24)" stroke-width="1" />
-          <text x="${x.toFixed(2)}" y="${height - 10}" fill="rgba(226,232,240,0.74)" font-size="11" text-anchor="middle">${formatTradeDate(tickDate)}</text>`;
+          <text x="${x.toFixed(2)}" y="${height - 10}" fill="rgba(226,232,240,0.74)" font-size="11" text-anchor="middle">${formatMonthAxisDate(tickDate)}</text>`;
       }),
       quoteLine,
       avgLine,
@@ -1608,6 +2439,156 @@
     noteEl.textContent = "Use Refresh now for a background update.";
   }
 
+  async function loadTickerResearch(symbol, options = {}) {
+    const selectedSymbol = String(symbol || "").trim().toUpperCase();
+    if (!selectedSymbol || !researchUrl) {
+      return false;
+    }
+    const queueRefresh = options.queueRefresh !== false;
+    const requestId = tickerResearchRequestId + 1;
+    tickerResearchRequestId = requestId;
+    try {
+      const response = await fetch(`${researchUrl}?symbol=${encodeURIComponent(selectedSymbol)}&queue=${queueRefresh ? 1 : 0}`, {
+        method: "GET",
+        credentials: "same-origin",
+        headers: {
+          Accept: "application/json",
+          "X-Requested-With": "XMLHttpRequest",
+        },
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (requestId !== tickerResearchRequestId) {
+        return false;
+      }
+      if (!response.ok || !payload.ok) {
+        warn("ticker research lookup failed", response.status, payload);
+        return false;
+      }
+      renderResearchContext(payload.context || {});
+      if (searchInputEl) {
+        searchInputEl.value = selectedSymbol;
+      }
+      const portfolioSymbols = Array.isArray(currentBootstrap?.positions)
+        ? currentBootstrap.positions.map((position) => extractPositionSymbol(position))
+        : [];
+      if (portfolioSymbols.includes(selectedSymbol)) {
+        selectedPositionSymbol = selectedSymbol;
+        renderBootstrapSnapshot(currentBootstrap || {});
+      }
+      lastTickerResearchSymbol = selectedSymbol;
+      if (queueRefresh) {
+        const ready = isResearchContextReady(payload.context || {});
+        if (!ready) {
+          scheduleTickerResearchPoll(selectedSymbol);
+        } else {
+          clearTickerResearchPoll();
+        }
+      } else {
+        const ready = isResearchContextReady(payload.context || {});
+        if (!ready && options.scheduleRetry !== false) {
+          scheduleTickerResearchPoll(selectedSymbol);
+        } else if (ready) {
+          clearTickerResearchPoll();
+        }
+      }
+      return true;
+    } catch (error) {
+      warn("ticker research lookup request failed", error);
+      if (queueRefresh && options.scheduleRetry !== false) {
+        scheduleTickerResearchPoll(selectedSymbol);
+      }
+      return false;
+    }
+  }
+
+  async function fetchTickerSearch(query) {
+    const term = String(query || "").trim();
+    if (!searchUrl || term.length < 1) {
+      clearTickerSearchResults();
+      return [];
+    }
+    const requestId = tickerSearchRequestId + 1;
+    tickerSearchRequestId = requestId;
+    try {
+      const response = await fetch(`${searchUrl}?query=${encodeURIComponent(term)}&limit=10`, {
+        method: "GET",
+        credentials: "same-origin",
+        headers: {
+          Accept: "application/json",
+          "X-Requested-With": "XMLHttpRequest",
+        },
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (requestId !== tickerSearchRequestId) {
+        return [];
+      }
+      if (!response.ok || !payload.ok) {
+        warn("ticker search failed", response.status, payload);
+        clearTickerSearchResults();
+        return [];
+      }
+      const matches = Array.isArray(payload.matches) ? payload.matches : [];
+      renderTickerSearchResults(matches);
+      if (matches.length === 1) {
+        const onlyMatch = matches[0];
+        const symbol = String(onlyMatch?.symbol || "").trim().toUpperCase();
+        if (symbol) {
+          renderResearchContext({
+            symbol,
+            status: "lookup",
+            ticker: onlyMatch,
+            quote_cache: null,
+            history_cache: null,
+            research_snapshot: null,
+          });
+        }
+      }
+      return matches;
+    } catch (error) {
+      warn("ticker search request failed", error);
+      clearTickerSearchResults();
+      return [];
+    }
+  }
+
+  function scheduleTickerSearch(query) {
+    if (tickerSearchTimer !== null) {
+      window.clearTimeout(tickerSearchTimer);
+      tickerSearchTimer = null;
+    }
+    const term = String(query || "").trim();
+    if (!term) {
+      clearTickerSearchResults();
+      return;
+    }
+    tickerSearchTimer = window.setTimeout(() => {
+      tickerSearchTimer = null;
+      void fetchTickerSearch(term);
+    }, 180);
+  }
+
+  function selectTickerFromSearch(match) {
+    const symbol = String(match?.symbol || "").trim().toUpperCase();
+    if (!symbol) {
+      return;
+    }
+    if (searchInputEl) {
+      searchInputEl.value = symbol;
+    }
+    clearTickerSearchResults();
+    setActiveFinanceTab("research");
+    renderResearchContext({
+      symbol,
+      status: "lookup",
+      ticker: match,
+      quote_cache: null,
+      history_cache: null,
+      research_snapshot: null,
+    });
+    clearTickerResearchPoll();
+    void loadTickerResearch(symbol, { queueRefresh: true, scheduleRetry: true });
+  }
+
   function syncAutoFetchToggle() {
     if (!autoFetchToggle) {
       return;
@@ -1622,6 +2603,53 @@
       }
     });
   }
+
+  tabButtons.forEach((button) => {
+    button.addEventListener("click", () => {
+      const nextTab = String(button.dataset.financeTabButton || "portfolio").trim() || "portfolio";
+      setActiveFinanceTab(nextTab);
+    });
+  });
+
+  researchChartTimeframeButtons.forEach((button) => {
+    button.addEventListener("click", () => {
+      const nextTimeframe = String(button.dataset.financeResearchChartTimeframe || "daily").trim() || "daily";
+      setResearchChartTimeframe(nextTimeframe);
+    });
+  });
+  syncResearchChartControls();
+
+  searchInputEl?.addEventListener("input", () => {
+    if (String(searchInputEl.value || "").trim()) {
+      setActiveFinanceTab("research");
+    }
+    scheduleTickerSearch(searchInputEl.value);
+  });
+
+  searchInputEl?.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      clearTickerSearchResults();
+      return;
+    }
+    if (event.key === "Enter") {
+      event.preventDefault();
+      const nextMatch = lastTickerSearchMatches[0];
+      if (nextMatch) {
+        void selectTickerFromSearch(nextMatch);
+      }
+    }
+  });
+
+  shell.ownerDocument.addEventListener("pointerdown", (event) => {
+    const target = event.target instanceof Element ? event.target : null;
+    if (!target) {
+      return;
+    }
+    const withinSearch = target.closest("[data-finance-search-shell]");
+    if (!withinSearch) {
+      clearTickerSearchResults();
+    }
+  });
 
   function sendPayload(payload) {
     if (!socket || socket.readyState !== WebSocket.OPEN) {
@@ -1910,6 +2938,8 @@
   if (initialBootstrap) {
     renderBootstrapSnapshot(initialBootstrap);
   }
+  setActiveFinanceTab("portfolio");
+  clearTickerSearchResults();
 
   syncAutoFetchToggle();
   updateNote();

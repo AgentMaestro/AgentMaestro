@@ -14,6 +14,7 @@ from finance.services.refresh import (
     refresh_finance_symbol_batch,
     refresh_finance_workspace,
 )
+from finance.services.ticker_universe import refresh_ticker_history, refresh_ticker_universe
 
 
 logger = get_app_logger("finance")
@@ -163,6 +164,59 @@ def refresh_finance_symbol_batch_task(workspace_id: str, owner_id: str, symbols:
     return {"ok": True, **result}
 
 
+@shared_task(name="finance.tasks.refresh_ticker_research_quote")
+def refresh_ticker_research_quote_task(workspace_id: str, owner_id: str, symbol: str, force: bool = False) -> dict[str, object]:
+    logger.info(
+        "finance research quote task started workspace_id=%s owner_id=%s symbol=%s force=%s",
+        workspace_id,
+        owner_id,
+        symbol,
+        force,
+    )
+    workspace = Workspace.objects.filter(id=workspace_id).first()
+    if workspace is None:
+        return {"ok": False, "status": "missing_workspace", "workspace_id": str(workspace_id)}
+    owner = get_user_model().objects.filter(id=owner_id).first()
+    if owner is None:
+        return {"ok": False, "status": "missing_owner", "owner_id": str(owner_id), "workspace_id": str(workspace_id)}
+    result = refresh_finance_symbol_batch(workspace=workspace, owner=owner, symbols=[symbol], force=force, rebuild_snapshot=False)
+    logger.info(
+        "finance research quote task finished workspace_id=%s owner_id=%s refreshed=%s quote_status=%s",
+        workspace.id,
+        owner_id,
+        ",".join(result.get("refreshed_symbols") or []) or "-",
+        result.get("quote_status") or "cached",
+    )
+    return {"ok": True, **result}
+
+
+@shared_task(name="finance.tasks.refresh_ticker_research_history")
+def refresh_ticker_research_history_task(workspace_id: str, owner_id: str, symbol: str, days: int = 250) -> dict[str, object]:
+    logger.info(
+        "finance research history task started workspace_id=%s owner_id=%s symbol=%s days=%s",
+        workspace_id,
+        owner_id,
+        symbol,
+        days,
+    )
+    workspace = Workspace.objects.filter(id=workspace_id).first()
+    if workspace is None:
+        return {"ok": False, "status": "missing_workspace", "workspace_id": str(workspace_id)}
+    owner = get_user_model().objects.filter(id=owner_id).first()
+    if owner is None:
+        return {"ok": False, "status": "missing_owner", "owner_id": str(owner_id), "workspace_id": str(workspace_id)}
+    result = refresh_ticker_history(workspace=workspace, owner=owner, symbol=symbol, days=days)
+    logger.info(
+        "finance research history task finished workspace_id=%s owner_id=%s symbol=%s refreshed=%s bar_count=%s",
+        workspace.id,
+        owner_id,
+        symbol,
+        bool(result.get("refreshed")),
+        result.get("bar_count") or 0,
+    )
+    return {"ok": True, **result}
+
+
 @shared_task(name="finance.tasks.refresh_expired_quotes_sweep")
 def refresh_expired_quotes_sweep_task(force: bool = False) -> dict[str, object]:
     total_refreshed = 0
@@ -213,3 +267,17 @@ def refresh_finance_snapshot_sweep_task() -> dict[str, object]:
         refreshed_targets,
     )
     return {"ok": True, "targets": total_targets, "refreshed_targets": refreshed_targets}
+
+
+@shared_task(name="finance.tasks.refresh_ticker_universe")
+def refresh_ticker_universe_task() -> dict[str, object]:
+    logger.info("finance ticker universe refresh started")
+    result = refresh_ticker_universe()
+    logger.info(
+        "finance ticker universe refresh finished pages=%s rows=%s upserted=%s finished=%s",
+        result.get("pages") or 0,
+        result.get("rows") or 0,
+        result.get("upserted") or 0,
+        bool(result.get("finished")),
+    )
+    return {"ok": True, **result}

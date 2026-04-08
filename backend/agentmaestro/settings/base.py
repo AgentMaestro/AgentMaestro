@@ -283,6 +283,9 @@ FINANCE_QUOTE_TTL_SECONDS = int(_env_value("FINANCE_QUOTE_TTL_SECONDS") or "120"
 FINANCE_RESEARCH_SNAPSHOT_TTL_SECONDS = int(_env_value("FINANCE_RESEARCH_SNAPSHOT_TTL_SECONDS") or "300")
 FINANCE_BROKERAGE_REFRESH_TTL_SECONDS = int(_env_value("FINANCE_BROKERAGE_REFRESH_TTL_SECONDS") or "300")
 FINANCE_BROKERAGE_TRANSACTION_LOOKBACK_DAYS = int(_env_value("FINANCE_BROKERAGE_TRANSACTION_LOOKBACK_DAYS") or "30")
+FINANCE_TICKER_UNIVERSE_REFRESH_INTERVAL_HOURS = int(_env_value("FINANCE_TICKER_UNIVERSE_REFRESH_INTERVAL_HOURS") or "24")
+FINANCE_TICKER_UNIVERSE_PAGE_SIZE = int(_env_value("FINANCE_TICKER_UNIVERSE_PAGE_SIZE") or "1000")
+FINANCE_TICKER_UNIVERSE_MAX_PAGES = int(_env_value("FINANCE_TICKER_UNIVERSE_MAX_PAGES") or "50")
 
 TELEGRAM_ENABLE_POLLING = (_env_value("TELEGRAM_ENABLE_POLLING") or "0").lower() in {
     "1",
@@ -422,6 +425,11 @@ CELERY_BEAT_SCHEDULE["finance.refresh_finance_snapshot"] = {
     "task": "finance.tasks.refresh_finance_snapshot_sweep",
     "schedule": timedelta(seconds=max(300, FINANCE_RESEARCH_SNAPSHOT_TTL_SECONDS)),
     "options": {"expires": max(FINANCE_RESEARCH_SNAPSHOT_TTL_SECONDS * 2, 600)},
+}
+CELERY_BEAT_SCHEDULE["finance.refresh_ticker_universe"] = {
+    "task": "finance.tasks.refresh_ticker_universe",
+    "schedule": timedelta(hours=FINANCE_TICKER_UNIVERSE_REFRESH_INTERVAL_HOURS),
+    "options": {"expires": max(FINANCE_TICKER_UNIVERSE_REFRESH_INTERVAL_HOURS * 7200, 3600)},
 }
 
 # ToolRunner settings (new preferred names)

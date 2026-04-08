@@ -14,11 +14,13 @@ from finance.models import (
     Portfolio,
     Position,
     Ticker,
+    TickerUniverseEntry,
     Watchlist,
     WatchlistItem,
 )
 from finance.providers.registry import build_default_providers
 from finance.services.market_hours import get_schwab_market_hours_state
+from finance.services.ticker_universe import search_ticker_universe
 
 
 def _ok(tool_name: str, result: dict[str, Any]) -> dict[str, Any]:
@@ -46,6 +48,13 @@ def _normalize_symbol(value: object) -> str:
 
 def _normalize_name(value: object) -> str:
     return str(value or "").strip()
+
+
+def _looks_like_symbol(value: str) -> bool:
+    candidate = value.strip().upper().replace(" ", "")
+    if not candidate or len(candidate) > 12:
+        return False
+    return candidate.replace(".", "").replace("-", "").isalnum()
 
 
 def _parse_tool_datetime(value: object) -> datetime | None:
@@ -137,6 +146,20 @@ def _serialize_ticker(ticker: Ticker) -> dict[str, Any]:
     }
 
 
+def _serialize_universe_ticker(entry: TickerUniverseEntry) -> dict[str, Any]:
+    return {
+        "symbol": entry.symbol,
+        "name": entry.name,
+        "exchange": entry.exchange,
+        "asset_type": entry.asset_type,
+        "currency": entry.currency,
+        "is_active": entry.is_active,
+        "source_name": entry.source_name,
+        "last_seen_at": entry.last_seen_at.isoformat() if entry.last_seen_at else "",
+        "metadata": entry.metadata,
+    }
+
+
 def _serialize_portfolio(portfolio: Portfolio) -> dict[str, Any]:
     positions = []
     market_value = 0.0
@@ -187,15 +210,41 @@ def _snapshot_key_for_args(args: dict[str, Any], *, kind: str) -> str:
 def execute_finance_tool(tool_name: str, run, args: dict[str, Any]) -> dict[str, Any]:
     workspace, owner = _resolve_workspace_context(run)
     if tool_name == "ticker_lookup":
-        query = _normalize_symbol(args.get("query") or args.get("symbol") or args.get("ticker"))
-        if not query:
+        query_text = _normalize_name(args.get("query") or args.get("symbol") or args.get("ticker"))
+        if not query_text:
             return _unavailable(tool_name, "finance", detail="ticker_lookup requires query.")
-        ticker = _get_or_create_ticker(query, source_name="finance_lookup")
+        matches = search_ticker_universe(query_text, limit=10)
+        best_match = matches[0] if matches else None
+        if best_match is not None:
+            universe_entry = TickerUniverseEntry.objects.filter(symbol=best_match["symbol"]).first()
+            base_result = _serialize_universe_ticker(universe_entry) if universe_entry else dict(best_match)
+            return _ok(
+                tool_name,
+                {
+                    **base_result,
+                    "source": "finance_universe",
+                    "query": query_text,
+                    "count": len(matches),
+                    "matches": matches,
+                    "best_match": best_match,
+                    "as_of": timezone.now().isoformat(),
+                },
+            )
         return _ok(
             tool_name,
             {
-                **_serialize_ticker(ticker),
-                "source": "finance_local",
+                "symbol": "",
+                "name": "",
+                "exchange": "",
+                "asset_type": Ticker.AssetType.EQUITY,
+                "currency": "USD",
+                "is_active": False,
+                "metadata": {"query": query_text, "source": "finance_universe"},
+                "source": "finance_universe",
+                "query": query_text,
+                "count": 0,
+                "matches": [],
+                "best_match": None,
                 "as_of": timezone.now().isoformat(),
             },
         )

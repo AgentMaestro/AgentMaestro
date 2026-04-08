@@ -906,13 +906,18 @@ def bootstrap_finance_workspace(
         for symbol in position_symbols
         if isinstance(existing_history_map.get(symbol), dict)
     }
+    price_history_as_of_map: dict[str, str] = {
+        symbol: str((existing_history_map.get(symbol) or {}).get("as_of") or "").strip()
+        for symbol in position_symbols
+        if isinstance(existing_history_map.get(symbol), dict)
+    }
     had_misses = False
     refreshed_any = False
-    if live_refresh and refresh_quotes:
+    if live_refresh:
         providers = build_default_providers(workspace=workspace, owner=owner)
         market_data = providers["market_data"]
         market_data_backup = providers.get("market_data_backup")
-        if symbols:
+        if refresh_quotes and symbols:
             try:
                 primary_quote_map = market_data.get_quotes(symbols)
             except NotImplementedError:
@@ -949,6 +954,7 @@ def bootstrap_finance_workspace(
             history_start = now - timedelta(days=30)
             for symbol in position_symbols:
                 history_payload: dict[str, Any] | None = None
+                source_provider = None
                 for provider in (market_data, market_data_backup):
                     if provider is None:
                         continue
@@ -968,9 +974,16 @@ def bootstrap_finance_workspace(
                         continue
                     if _history_payload_has_bars(candidate):
                         history_payload = candidate
+                        source_provider = getattr(provider, "provider_name", "market_data")
                         break
                 if history_payload is not None:
-                    price_history_map[symbol] = history_payload
+                    history_as_of = now.isoformat()
+                    price_history_map[symbol] = {
+                        "payload": history_payload,
+                        "as_of": history_as_of,
+                        "source": source_provider or "market_data",
+                    }
+                    price_history_as_of_map[symbol] = history_as_of
 
     ticker_map = {ticker.symbol.upper(): ticker for ticker in Ticker.objects.filter(symbol__in=symbols)}
 
@@ -1043,8 +1056,9 @@ def bootstrap_finance_workspace(
     price_history_rows = [
         {
             "symbol": symbol,
-            "payload": dict(payload or {}),
+            "payload": dict(payload.get("payload") if isinstance(payload, dict) and isinstance(payload.get("payload"), dict) else payload or {}),
             "cache_key": f"price_history:{symbol}:30d",
+            "as_of": str((payload or {}).get("as_of") or price_history_as_of_map.get(symbol) or "").strip(),
         }
         for symbol, payload in sorted(price_history_map.items())
         if isinstance(payload, dict)

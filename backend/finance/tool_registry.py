@@ -33,7 +33,7 @@ def build_finance_tool_group() -> dict[str, object]:
         "tools": [
             {
                 "name": "ticker_lookup",
-                "description": "Resolve a ticker or company query into canonical finance metadata.",
+                "description": "Resolve a ticker or company query into canonical finance metadata from the ticker universe.",
                 "risk": ToolRisk.SAFE,
                 "requires_approval": False,
                 "released": True,

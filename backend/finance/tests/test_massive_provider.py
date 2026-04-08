@@ -35,6 +35,21 @@ class _FakeClient:
                 },
             }
             return httpx.Response(200, json=payload, request=request)
+        if path.startswith("/v3/reference/tickers"):
+            payload = {
+                "request_id": "req-0",
+                "results": [
+                    {
+                        "ticker": "AAPL",
+                        "name": "Apple Inc.",
+                        "exchange": "XNAS",
+                        "type": "stock",
+                        "active": True,
+                    }
+                ],
+                "next_cursor": "",
+            }
+            return httpx.Response(200, json=payload, request=request)
         if path.startswith("/v2/aggs/ticker/AAPL/range/1/day/2026-01-01/2026-01-31"):
             payload = {"request_id": "req-2", "results": [{"t": 1, "o": 1, "h": 2, "l": 0.5, "c": 1.5, "v": 100, "vw": 1.2, "n": 3}]}
             return httpx.Response(200, json=payload, request=request)
@@ -97,6 +112,7 @@ def test_massive_provider_shaping_and_pricing(monkeypatch):
     provider = MassiveMarketDataProvider(base_url="https://api.massive.com", api_key="test-key")
 
     quote = provider.get_quote("AAPL")
+    universe = provider.get_ticker_universe()
     history = provider.get_history("AAPL", timeframe="daily", start=date(2026, 1, 1), end=date(2026, 1, 31))
     news = provider.get_news("AAPL", limit=1)
     chain = provider.get_options_chain("AAPL", expiration="2026-04-17")
@@ -124,6 +140,8 @@ def test_massive_provider_shaping_and_pricing(monkeypatch):
 
     assert quote["symbol"] == "AAPL"
     assert quote["quote"]["bid"] == 195.4
+    assert universe["count"] == 1
+    assert universe["tickers"][0]["symbol"] == "AAPL"
     assert history["count"] == 1
     assert history["bars"][0]["close"] == 1.5
     assert news["count"] == 1

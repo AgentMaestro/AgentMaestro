@@ -37,6 +37,31 @@ class Ticker(TimeStampedModel):
         return self.symbol
 
 
+class TickerUniverseEntry(TimeStampedModel):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    symbol = models.CharField(max_length=24, unique=True)
+    name = models.CharField(max_length=180, blank=True, default="")
+    exchange = models.CharField(max_length=64, blank=True, default="")
+    asset_type = models.CharField(max_length=16, choices=Ticker.AssetType.choices, default=Ticker.AssetType.EQUITY)
+    currency = models.CharField(max_length=8, default="USD")
+    is_active = models.BooleanField(default=True, db_index=True)
+    source_name = models.CharField(max_length=64, blank=True, default="")
+    last_seen_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    source_payload = models.JSONField(default=dict, blank=True)
+    metadata = models.JSONField(default=dict, blank=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["symbol"]),
+            models.Index(fields=["name"]),
+            models.Index(fields=["exchange", "asset_type"]),
+            models.Index(fields=["source_name", "is_active"]),
+        ]
+
+    def __str__(self) -> str:
+        return self.symbol
+
+
 class Portfolio(TimeStampedModel):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     workspace = models.ForeignKey(

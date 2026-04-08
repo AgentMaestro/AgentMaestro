@@ -11,6 +11,7 @@ from django.views.decorators.http import require_http_methods
 from logging_utils import get_app_logger
 
 from finance.services import bootstrap_finance_workspace, build_finance_system_context_overlay
+from finance.services.ticker_universe import build_ticker_lookup_context, build_ticker_research_context, search_ticker_universe
 from finance.providers.schwab import (
     build_schwab_authorize_url,
     build_schwab_market_authorize_url,
@@ -18,7 +19,11 @@ from finance.providers.schwab import (
     exchange_schwab_market_authorization_code,
     store_schwab_credential,
 )
-from finance.tasks import prefetch_finance_workspace
+from finance.tasks import (
+    prefetch_finance_workspace,
+    refresh_ticker_research_history_task,
+    refresh_ticker_research_quote_task,
+)
 
 
 logger = get_app_logger("finance")
@@ -107,6 +112,70 @@ def finance_state(request):
     workspace = _get_or_create_finance_workspace(request.user)
     bootstrap = bootstrap_finance_workspace(workspace=workspace, owner=request.user, refresh_quotes=False, refresh_brokerage=False, live_refresh=False)
     return JsonResponse({"ok": True, "bootstrap": bootstrap})
+
+
+@login_required
+@require_http_methods(["GET"])
+def ticker_search(request):
+    workspace = _get_or_create_finance_workspace(request.user)
+    query = str(request.GET.get("query") or request.GET.get("q") or "").strip()
+    symbol = str(request.GET.get("symbol") or "").strip().upper()
+    try:
+        limit = int(request.GET.get("limit") or 10)
+    except (TypeError, ValueError):
+        limit = 10
+    limit = min(max(limit, 1), 10)
+    matches = search_ticker_universe(query, limit=limit) if query else []
+    selected = build_ticker_lookup_context(symbol) if symbol else None
+    if selected is None and matches:
+        selected = build_ticker_lookup_context(str(matches[0].get("symbol") or "").strip())
+    return JsonResponse(
+        {
+            "ok": True,
+            "workspace_id": str(workspace.id),
+            "query": query,
+            "symbol": symbol,
+            "count": len(matches),
+            "matches": matches,
+            "selected": selected,
+        }
+    )
+
+
+@login_required
+@require_http_methods(["GET"])
+def ticker_research(request):
+    workspace = _get_or_create_finance_workspace(request.user)
+    symbol = str(request.GET.get("symbol") or request.GET.get("ticker") or "").strip().upper()
+    if not symbol:
+        return JsonResponse({"ok": False, "error": "symbol is required"}, status=400)
+    queue_refresh = str(request.GET.get("queue") or "1").strip().lower() not in {"0", "false", "no"}
+    context = build_ticker_research_context(symbol, workspace=workspace, owner=request.user)
+    quote_task_id = ""
+    history_task_id = ""
+    if queue_refresh:
+        quote_task = refresh_ticker_research_quote_task.delay(str(workspace.id), str(request.user.id), symbol, True)
+        history_task = refresh_ticker_research_history_task.delay(str(workspace.id), str(request.user.id), symbol, 250)
+        quote_task_id = quote_task.id
+        history_task_id = history_task.id
+        logger.info(
+            "queued ticker research refresh workspace_id=%s owner_id=%s symbol=%s quote_task_id=%s history_task_id=%s",
+            workspace.id,
+            request.user.id,
+            symbol,
+            quote_task_id,
+            history_task_id,
+        )
+    return JsonResponse(
+        {
+            "ok": True,
+            "workspace_id": str(workspace.id),
+            "queued": queue_refresh,
+            "quote_task_id": quote_task_id,
+            "history_task_id": history_task_id,
+            "context": context,
+        }
+    )
 
 
 @login_required

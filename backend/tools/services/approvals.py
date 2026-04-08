@@ -5,6 +5,7 @@ from typing import Any, Dict, Optional
 from django.db import transaction
 from django.utils import timezone
 from logging_utils import get_app_logger
+from finance.tool_registry import FINANCE_TOOL_NAMES
 from runs.models import AgentRun, AgentStep
 from runs.services.events import append_event, broadcast_approvals_event
 from runs.services.state import transition_run
@@ -77,6 +78,12 @@ def _broadcast_tool_call_status(tool_call: ToolCall, *, status: Optional[str] = 
     )
 
 
+def _tool_call_queue_name(tool_call: ToolCall) -> str:
+    if tool_call.tool_name in FINANCE_TOOL_NAMES:
+        return "finance"
+    return "tools"
+
+
 def _publish_terminal_tool_feedback(tool_call: ToolCall, *, payload: dict[str, Any]) -> None:
     from tools.services.execution import _publish_tool_result_ready
     from tools.services.result_bus import store_tool_result
@@ -114,9 +121,17 @@ def _enqueue_and_schedule(tool_call_id: str) -> None:
     tool_call.save(update_fields=["status", "updated_at"])
     _broadcast_tool_call_status(tool_call, status=ToolCall.Status.QUEUED)
     from tools.tasks import execute_tool_call_async
-    task = execute_tool_call_async.delay(tool_call_id)
+    queue_name = _tool_call_queue_name(tool_call)
+    task = execute_tool_call_async.apply_async(args=[tool_call_id], queue=queue_name)
     tool_call.celery_task_id = task.id or ""
     tool_call.save(update_fields=["celery_task_id", "updated_at"])
+    logger.info(
+        "scheduled tool call tool_call_id=%s tool=%s queue=%s celery_task_id=%s",
+        tool_call_id,
+        tool_call.tool_name,
+        queue_name,
+        tool_call.celery_task_id,
+    )
 
 
 def _schedule_execution_after_commit(tool_call_id: str) -> None:

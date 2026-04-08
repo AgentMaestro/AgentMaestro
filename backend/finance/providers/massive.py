@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import re
 from contextlib import contextmanager
 from datetime import datetime
 from datetime import date as date_class
@@ -15,6 +16,7 @@ from .base import MarketDataProvider
 
 class MassiveMarketDataProvider(MarketDataProvider):
     provider_name = "massive"
+    _NEXT_LINK_CURSOR_RE = re.compile(r"[?&]cursor=([^&>]+)")
 
     def __init__(
         self,
@@ -70,6 +72,15 @@ class MassiveMarketDataProvider(MarketDataProvider):
             return payload[0]
         return {}
 
+    @staticmethod
+    def _normalize_asset_type(value: Any) -> str:
+        text = str(value or "").strip().upper()
+        if text in {"STOCK", "EQUITY", "COMMON_STOCK", "CS", "COMMON"}:
+            return "EQUITY"
+        if text in {"ETF", "FUND", "INDEX", "OPTION", "CRYPTO", "OTHER"}:
+            return text
+        return "OTHER"
+
     def _request_json(self, method: str, path: str, *, params: dict[str, Any] | None = None) -> dict[str, Any]:
         request_params = dict(params or {})
         if self.api_key:
@@ -78,6 +89,25 @@ class MassiveMarketDataProvider(MarketDataProvider):
             response = client.request(method, path, params=request_params)
             response.raise_for_status()
             return response.json()
+
+    @classmethod
+    def _extract_next_cursor(cls, response: httpx.Response, payload: dict[str, Any] | None = None) -> str:
+        if isinstance(payload, dict):
+            next_cursor = str(
+                payload.get("next_cursor")
+                or payload.get("nextCursor")
+                or payload.get("cursor")
+                or payload.get("next_page_token")
+                or payload.get("next_page")
+                or ""
+            ).strip()
+            if next_cursor:
+                return next_cursor
+        link_header = str(response.headers.get("Link") or response.headers.get("link") or "").strip()
+        if not link_header:
+            return ""
+        match = cls._NEXT_LINK_CURSOR_RE.search(link_header)
+        return match.group(1).strip() if match else ""
 
     @staticmethod
     def _normalize_bar(bar: dict[str, Any]) -> dict[str, Any]:
@@ -146,6 +176,69 @@ class MassiveMarketDataProvider(MarketDataProvider):
         symbol = self._normalize_symbol(symbol)
         payload = self._request_json("GET", f"/v2/snapshot/locale/us/markets/stocks/tickers/{symbol}")
         return self._normalize_snapshot(symbol, payload)
+
+    def get_ticker_universe(
+        self,
+        *,
+        market: str = "stocks",
+        active: bool = True,
+        limit: int = 1000,
+        cursor: str | None = None,
+        search: str | None = None,
+        ticker_type: str | None = None,
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {
+            "market": market,
+            "active": "true" if active else "false",
+            "limit": max(1, min(int(limit or 1000), 1000)),
+            "sort": "ticker",
+            "order": "asc",
+        }
+        if cursor:
+            params["cursor"] = cursor
+        if search:
+            params["search"] = search
+        if ticker_type:
+            params["type"] = str(ticker_type).strip().upper()
+        request_params = dict(params)
+        if self.api_key:
+            request_params["apiKey"] = self.api_key
+        with self._client() as client:
+            response = client.request("GET", "/v3/reference/tickers", params=request_params)
+            response.raise_for_status()
+            payload = response.json()
+        rows = self._coalesce_results(payload)
+        tickers: list[dict[str, Any]] = []
+        for item in rows:
+            symbol = self._normalize_symbol(item.get("ticker") or item.get("symbol") or item.get("id") or "")
+            if not symbol:
+                continue
+            tickers.append(
+                {
+                    "symbol": symbol,
+                    "name": str(item.get("name") or item.get("title") or item.get("market") or "").strip(),
+                    "exchange": str(item.get("primary_exchange") or item.get("exchange") or item.get("mic") or "").strip(),
+                    "asset_type": self._normalize_asset_type(item.get("type") or item.get("market") or item.get("asset_type")),
+                    "currency": str(item.get("currency") or "USD").strip() or "USD",
+                    "is_active": bool(item.get("active", active)),
+                    "metadata": {
+                        "raw_ticker": item.get("ticker") or item.get("symbol") or "",
+                        "raw_type": item.get("type") or item.get("asset_type") or "",
+                        "raw_market": item.get("market") or "",
+                        "raw_exchange": item.get("exchange") or item.get("primary_exchange") or "",
+                    },
+                }
+            )
+        next_cursor = self._extract_next_cursor(response, payload if isinstance(payload, dict) else None)
+        return {
+            "provider": self.provider_name,
+            "status": str(payload.get("status") or "ok").strip() if isinstance(payload, dict) else "ok",
+            "request_id": payload.get("request_id") or payload.get("requestId") or "",
+            "count": len(tickers),
+            "tickers": tickers,
+            "next_cursor": next_cursor,
+            "has_more": bool(next_cursor),
+        }
 
     def get_history(self, symbol: str, *, timeframe: str, start: datetime | None = None, end: datetime | None = None) -> dict[str, Any]:
         symbol = self._normalize_symbol(symbol)

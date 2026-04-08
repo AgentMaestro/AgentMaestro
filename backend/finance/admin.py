@@ -7,6 +7,7 @@ from .models import (
     Position,
     SchwabOAuthCredential,
     Ticker,
+    TickerUniverseEntry,
     Watchlist,
     WatchlistItem,
 )
@@ -17,6 +18,13 @@ class TickerAdmin(admin.ModelAdmin):
     list_display = ("symbol", "name", "exchange", "asset_type", "currency", "is_active")
     search_fields = ("symbol", "name", "exchange")
     list_filter = ("asset_type", "currency", "is_active")
+
+
+@admin.register(TickerUniverseEntry)
+class TickerUniverseEntryAdmin(admin.ModelAdmin):
+    list_display = ("symbol", "name", "exchange", "asset_type", "is_active", "source_name", "last_seen_at")
+    search_fields = ("symbol", "name", "exchange", "source_name")
+    list_filter = ("asset_type", "exchange", "is_active", "source_name")
 
 
 @admin.register(Portfolio)
