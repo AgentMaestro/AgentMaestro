@@ -1572,6 +1572,7 @@ def test_execute_google_task_can_merge_multiple_accounts(monkeypatch):
     assert result["result"]["resultSizeEstimate"] == 2
     assert len(result["result"]["messages"]) == 2
     assert result["result"]["messages"][0]["subject"].startswith("Subject for ")
+    assert "account_google_subject" not in result["result"]["messages"][0]
     assert "Returned 2 Gmail messages across 2 accounts" in result["summary_text"]
 
 
@@ -1940,6 +1941,76 @@ def test_execute_google_task_runs_multi_step_read_plan(monkeypatch):
     assert "1. Returned 1 Gmail messages" in result["summary_text"]
     assert "2. Found 1 calendar events" in result["summary_text"]
     assert account.access_token  # ensure the account fixture remains valid
+
+
+def test_execute_google_task_calendar_list_accepts_account_google_subject_and_camelcase_bounds(monkeypatch):
+    User = get_user_model()
+    user = User.objects.create_user(username="googlebridge-calendar-alias", password="x")
+    workspace = Workspace.objects.create(name="Google Calendar Alias Workspace")
+    first = GoogleAccount.objects.create(
+        workspace=workspace,
+        owner=user,
+        google_subject="sub-cal-1",
+        email="first@example.com",
+        token_expires_at=timezone.now() + timedelta(hours=1),
+        is_active=True,
+    )
+    first.set_tokens(access_token="access-1", refresh_token="refresh-1")
+    first.save()
+    second = GoogleAccount.objects.create(
+        workspace=workspace,
+        owner=user,
+        google_subject="sub-cal-2",
+        email="second@example.com",
+        token_expires_at=timezone.now() + timedelta(hours=1),
+        is_active=True,
+    )
+    second.set_tokens(access_token="access-2", refresh_token="refresh-2")
+    second.save()
+
+    captured: dict[str, object] = {}
+
+    class FakeClient:
+        def __init__(self, connection):
+            self.connection = connection
+            captured["google_subject"] = connection.google_subject
+
+        def list_calendar_events(self, *, calendar_id: str = "primary", q: str = "", time_min: str = "", time_max: str = "", max_results: int = 10):
+            captured["calendar_id"] = calendar_id
+            captured["q"] = q
+            captured["time_min"] = time_min
+            captured["time_max"] = time_max
+            captured["max_results"] = max_results
+            return {"items": [{"id": "event-1", "summary": "Standup"}]}
+
+    monkeypatch.setattr("google_bridge.services.bridge.GoogleBridgeClient", FakeClient)
+
+    result = execute_google_task(
+        payload={
+            "integration_kind": "google",
+            "resource_kind": "calendar",
+            "action_kind": "list",
+            "operation": "list",
+            "account_scope": "primary",
+            "account_google_subject": "sub-cal-2",
+            "calendar_id": "primary",
+            "timeMin": "2026-03-25T00:00:00-04:00",
+            "timeMax": "2026-03-25T23:59:59-04:00",
+            "timeZone": "America/New_York",
+            "singleEvents": True,
+            "max_results": 250,
+        },
+        workspace=workspace,
+        owner=user,
+    )
+
+    assert captured["google_subject"] == "sub-cal-2"
+    assert captured["calendar_id"] == "primary"
+    assert captured["time_min"] == "2026-03-25T00:00:00-04:00"
+    assert captured["time_max"] == "2026-03-25T23:59:59-04:00"
+    assert captured["max_results"] == 250
+    assert result["result"]["items"][0]["id"] == "event-1"
+    assert "Found 1 calendar events" in result["summary_text"]
 
 
 def test_execute_google_task_normalizes_calendar_bounds_to_eastern_time(monkeypatch):

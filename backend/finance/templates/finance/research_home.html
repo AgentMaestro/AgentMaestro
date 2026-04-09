@@ -278,11 +278,190 @@
         font-weight: 800;
       }
 
+      .research-quote-shell {
+        display: grid;
+        gap: 14px;
+      }
+
+      .research-nav {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        padding: 10px 0 2px;
+      }
+
+      .research-nav-button {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 36px;
+        padding: 0 14px;
+        border-radius: 999px;
+        border: 1px solid rgba(148, 163, 184, 0.18);
+        background: rgba(148, 163, 184, 0.06);
+        color: rgba(226, 232, 240, 0.84);
+        font-size: 0.82rem;
+        font-weight: 800;
+        letter-spacing: 0.02em;
+      }
+
+      .research-nav-button.is-active {
+        border-color: rgba(56, 189, 248, 0.34);
+        background: rgba(14, 165, 233, 0.18);
+        color: #e0f2fe;
+      }
+
+      .research-hero {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 16px;
+        padding: 18px;
+        border-radius: 22px;
+        border: 1px solid rgba(148, 163, 184, 0.16);
+        background: linear-gradient(180deg, rgba(15, 23, 42, 0.92), rgba(2, 6, 23, 0.58));
+      }
+
+      .research-hero-title {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        align-items: baseline;
+      }
+
+      .research-hero-title h2 {
+        margin: 0;
+        font-size: clamp(1.7rem, 2.6vw, 2.35rem);
+        line-height: 1.05;
+      }
+
+      .research-hero-symbol {
+        display: inline-flex;
+        align-items: center;
+        min-height: 30px;
+        padding: 0 0.72rem;
+        border-radius: 999px;
+        border: 1px solid rgba(56, 189, 248, 0.24);
+        background: rgba(56, 189, 248, 0.10);
+        color: #e0f2fe;
+        font-size: 0.78rem;
+        font-weight: 800;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+
+      .research-hero-meta {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        margin-top: 10px;
+        color: rgba(226, 232, 240, 0.78);
+        font-size: 0.88rem;
+      }
+
+      .research-hero-stats {
+        display: grid;
+        gap: 8px;
+        min-width: 220px;
+      }
+
+      .research-hero-stat {
+        display: grid;
+        grid-template-columns: auto auto;
+        justify-content: space-between;
+        gap: 14px;
+        padding: 10px 12px;
+        border-radius: 14px;
+        border: 1px solid rgba(148, 163, 184, 0.14);
+        background: rgba(2, 6, 23, 0.26);
+        font-size: 0.82rem;
+      }
+
+      .research-hero-stat strong {
+        font-size: 0.78rem;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: rgba(248, 250, 252, 0.58);
+      }
+
+      .research-hero-stat span {
+        font-weight: 800;
+        color: #e2e8f0;
+      }
+
+      .research-dashboard {
+        display: grid;
+        grid-template-columns: minmax(0, 1.45fr) minmax(240px, 0.8fr);
+        gap: 14px;
+      }
+
+      .research-dashboard-main {
+        display: grid;
+        gap: 14px;
+      }
+
+      .research-dashboard-side {
+        display: grid;
+        gap: 14px;
+        align-content: start;
+      }
+
+      .research-quote-shell [data-finance-research-cards] {
+        display: none;
+      }
+
+      .research-section-title {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        margin-bottom: 12px;
+      }
+
+      .research-section-title h3 {
+        margin: 0;
+        font-size: 1rem;
+      }
+
+      .research-section-title span {
+        color: rgba(226, 232, 240, 0.62);
+        font-size: 0.78rem;
+        font-weight: 700;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+      }
+
+      .research-mini-list {
+        display: grid;
+        gap: 8px;
+      }
+
+      .research-mini-item {
+        padding: 10px 12px;
+        border-radius: 14px;
+        border: 1px solid rgba(148, 163, 184, 0.14);
+        background: rgba(2, 6, 23, 0.22);
+      }
+
+      .research-mini-item strong {
+        display: block;
+        margin-bottom: 4px;
+      }
+
+      .research-mini-item span {
+        color: rgba(226, 232, 240, 0.72);
+        font-size: 0.84rem;
+      }
+
       .research-grid {
         display: grid;
         grid-template-columns: minmax(0, 1.2fr) minmax(280px, 0.8fr);
         gap: 14px;
         margin-top: 14px;
+      }
+
+      .research-grid-main {
+        display: grid;
+        gap: 14px;
       }
 
       .research-empty {
@@ -295,11 +474,444 @@
         margin-top: 12px;
       }
 
+      .research-fundamental-list {
+        grid-template-columns: minmax(0, 1fr);
+        gap: 8px;
+      }
+
+      .research-fundamental-group {
+        display: grid;
+        gap: 6px;
+        padding: 10px;
+        border-radius: 12px;
+        border: 1px solid rgba(148, 163, 184, 0.16);
+        background: rgba(2, 6, 23, 0.24);
+      }
+
+      .research-fundamental-group-title {
+        font-size: 0.69rem;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+        color: rgba(125, 211, 252, 0.9);
+      }
+
+      .research-fundamentals-loading {
+        display: none;
+        position: absolute;
+        inset: 50% auto auto 50%;
+        transform: translate(-50%, -50%);
+        width: 46px;
+        height: 46px;
+        border-radius: 999px;
+        border: 2px solid rgba(56, 189, 248, 0.18);
+        border-top-color: rgba(56, 189, 248, 0.9);
+        border-right-color: rgba(56, 189, 248, 0.48);
+        animation: research-spin 0.9s linear infinite;
+        pointer-events: none;
+        box-shadow: 0 0 24px rgba(56, 189, 248, 0.12);
+      }
+
+      .research-fundamentals-shell {
+        position: relative;
+        margin-bottom: 0;
+      }
+
+      .research-fundamentals-shell.is-loading .research-fundamentals-loading {
+        display: block;
+      }
+
+      .research-fundamental-row {
+        display: grid;
+        grid-template-columns: minmax(128px, 0.42fr) minmax(0, 1fr);
+        align-items: baseline;
+        gap: 12px;
+        padding: 6px 8px;
+        border-radius: 10px;
+        border: 1px solid rgba(148, 163, 184, 0.10);
+        background: rgba(15, 23, 42, 0.34);
+      }
+
+      .research-fundamental-row strong {
+        margin: 0;
+        font-size: 0.77rem;
+        color: rgba(226, 232, 240, 0.86);
+      }
+
+      .research-fundamental-row div {
+        margin: 0;
+        text-align: left;
+        color: rgba(248, 250, 252, 0.88);
+        font-size: 0.8rem;
+        font-variant-numeric: tabular-nums;
+      }
+
       .research-source-item {
         padding: 12px 14px;
         border-radius: 14px;
         border: 1px solid rgba(148, 163, 184, 0.16);
         background: rgba(2, 6, 23, 0.24);
+      }
+
+      .research-news-shell {
+        position: relative;
+      }
+
+      .research-news-shell.is-loading .research-news-loading {
+        display: block;
+      }
+
+      .research-news-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+        gap: 10px;
+        margin-top: 12px;
+      }
+
+      .research-news-card {
+        display: grid;
+        gap: 8px;
+        padding: 12px;
+        border-radius: 14px;
+        border: 1px solid rgba(148, 163, 184, 0.14);
+        background: rgba(2, 6, 23, 0.24);
+      }
+
+      .research-news-card[hidden] {
+        display: none !important;
+      }
+
+      .research-news-card-title {
+        display: flex;
+        justify-content: space-between;
+        gap: 10px;
+        align-items: center;
+        margin: 0;
+      }
+
+      .research-news-card-title strong {
+        font-size: 0.84rem;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        color: rgba(125, 211, 252, 0.9);
+      }
+
+      .research-news-card-title span {
+        color: rgba(148, 163, 184, 0.84);
+        font-size: 0.76rem;
+      }
+
+      .research-news-list {
+        display: grid;
+        gap: 8px;
+      }
+
+      .research-news-item {
+        padding: 10px 12px;
+        border-radius: 12px;
+        border: 1px solid rgba(148, 163, 184, 0.12);
+        background: rgba(15, 23, 42, 0.34);
+      }
+
+      .research-news-item a {
+        color: #e0f2fe;
+        font-weight: 700;
+        text-decoration: none;
+      }
+
+      .research-news-item a:hover {
+        text-decoration: underline;
+      }
+
+      .research-news-item-meta {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-top: 4px;
+        color: rgba(148, 163, 184, 0.86);
+        font-size: 0.74rem;
+      }
+
+      .research-news-item-meta span {
+        display: inline-flex;
+        align-items: center;
+        padding: 0.1rem 0.42rem;
+        border-radius: 999px;
+        background: rgba(56, 189, 248, 0.08);
+        border: 1px solid rgba(56, 189, 248, 0.16);
+      }
+
+      .research-news-item p {
+        margin: 8px 0 0;
+        color: rgba(226, 232, 240, 0.76);
+        line-height: 1.45;
+        font-size: 0.82rem;
+      }
+
+      .research-news-item-footer {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-top: 10px;
+        padding-top: 8px;
+        border-top: 1px solid rgba(148, 163, 184, 0.12);
+        color: rgba(148, 163, 184, 0.88);
+        font-size: 0.72rem;
+      }
+
+      .research-news-item-footer span {
+        color: rgba(226, 232, 240, 0.72);
+      }
+
+      .research-news-item-footer a {
+        color: rgba(125, 211, 252, 0.92);
+        word-break: break-all;
+      }
+
+      .research-news-loading {
+        display: none;
+        position: absolute;
+        inset: 50% auto auto 50%;
+        transform: translate(-50%, -50%);
+        width: 46px;
+        height: 46px;
+        border-radius: 999px;
+        border: 2px solid rgba(56, 189, 248, 0.18);
+        border-top-color: rgba(56, 189, 248, 0.9);
+        border-right-color: rgba(56, 189, 248, 0.48);
+        animation: research-spin 0.9s linear infinite;
+        pointer-events: none;
+        box-shadow: 0 0 24px rgba(56, 189, 248, 0.12);
+      }
+
+      .research-filings-shell {
+        position: relative;
+      }
+
+      .research-filings-shell.is-loading .research-filings-loading {
+        display: block;
+      }
+
+      .research-filings-loading {
+        display: none;
+        position: absolute;
+        inset: 50% auto auto 50%;
+        transform: translate(-50%, -50%);
+        width: 46px;
+        height: 46px;
+        border-radius: 999px;
+        border: 2px solid rgba(56, 189, 248, 0.18);
+        border-top-color: rgba(56, 189, 248, 0.9);
+        border-right-color: rgba(56, 189, 248, 0.48);
+        animation: research-spin 0.9s linear infinite;
+        pointer-events: none;
+        box-shadow: 0 0 24px rgba(56, 189, 248, 0.12);
+      }
+
+      .research-filings-summary {
+        display: grid;
+        gap: 10px;
+        margin-top: 12px;
+      }
+
+      .research-filings-list {
+        display: grid;
+        gap: 10px;
+      }
+
+      .research-filings-item {
+        display: grid;
+        gap: 6px;
+        padding: 12px 14px;
+        padding-right: 44px;
+        border-radius: 14px;
+        border: 1px solid rgba(148, 163, 184, 0.14);
+        background: rgba(2, 6, 23, 0.24);
+        width: 100%;
+        min-width: 0;
+        position: relative;
+      }
+
+      .research-filings-item.is-loading::before {
+        content: "";
+        position: absolute;
+        inset: 0;
+        border-radius: inherit;
+        background: linear-gradient(180deg, rgba(2, 6, 23, 0.12), rgba(2, 6, 23, 0.3));
+        backdrop-filter: blur(1px);
+        pointer-events: none;
+      }
+
+      .research-filings-item.is-loading .research-filings-item-loading {
+        display: block;
+      }
+
+      .research-filings-item-loading {
+        display: none;
+        position: absolute;
+        inset: 50% auto auto 50%;
+        transform: translate(-50%, -50%);
+        width: 42px;
+        height: 42px;
+        border-radius: 999px;
+        border: 2px solid rgba(56, 189, 248, 0.18);
+        border-top-color: rgba(56, 189, 248, 0.92);
+        border-right-color: rgba(56, 189, 248, 0.5);
+        animation: research-spin 0.9s linear infinite;
+        pointer-events: none;
+        box-shadow: 0 0 24px rgba(56, 189, 248, 0.12);
+      }
+
+      .research-filings-item-title {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 8px;
+      }
+
+      .research-filings-item-title strong,
+      .research-filings-item-title a {
+        font-size: 0.84rem;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        color: rgba(125, 211, 252, 0.92);
+      }
+
+      .research-filings-item-title a {
+        text-decoration: none;
+      }
+
+      .research-filings-item-title a:hover {
+        text-decoration: underline;
+      }
+
+      .research-filings-item-title span {
+        color: rgba(148, 163, 184, 0.84);
+        font-size: 0.76rem;
+      }
+
+      .research-filings-item p {
+        margin: 0;
+        color: rgba(226, 232, 240, 0.78);
+        line-height: 1.45;
+        font-size: 0.82rem;
+      }
+
+      .research-ai-summary-button {
+        position: absolute;
+        top: 10px;
+        right: 10px;
+        width: 28px;
+        height: 28px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        padding: 0;
+        border-radius: 999px;
+        border: 1px solid rgba(56, 189, 248, 0.24);
+        background: rgba(15, 23, 42, 0.94);
+        color: #e0f2fe;
+        box-shadow: 0 8px 20px rgba(2, 6, 23, 0.26);
+        overflow: hidden;
+      }
+
+      .research-ai-summary-button:hover {
+        border-color: rgba(56, 189, 248, 0.42);
+        background: rgba(14, 165, 233, 0.16);
+      }
+
+      .research-ai-summary-button:disabled {
+        opacity: 0.92;
+        cursor: wait;
+      }
+
+      .research-ai-summary-icon {
+        width: 18px;
+        height: 18px;
+        flex: 0 0 auto;
+      }
+
+      .research-ai-summary-spinner {
+        display: none;
+        position: absolute;
+        width: 12px;
+        height: 12px;
+        border-radius: 999px;
+        border: 2px solid rgba(56, 189, 248, 0.18);
+        border-top-color: rgba(56, 189, 248, 0.92);
+        border-right-color: rgba(56, 189, 248, 0.48);
+        animation: research-spin 0.8s linear infinite;
+        pointer-events: none;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+      }
+
+      .research-ai-summary-button.is-loading .research-ai-summary-icon {
+        opacity: 0;
+      }
+
+      .research-ai-summary-button.is-loading .research-ai-summary-spinner {
+        display: block;
+      }
+
+      .research-filings-item > a {
+        display: block;
+        max-width: 100%;
+        overflow-wrap: anywhere;
+        word-break: break-word;
+        color: rgba(125, 211, 252, 0.92);
+        font-size: 0.76rem;
+        line-height: 1.35;
+      }
+
+      .research-filings-summary-placeholder {
+        display: grid;
+        gap: 6px;
+        padding-top: 6px;
+      }
+
+      .research-filings-summary-line {
+        padding: 0.25rem 0;
+        color: rgba(226, 232, 240, 0.74);
+        font-size: 0.78rem;
+        line-height: 1.35;
+        border-bottom: 1px solid rgba(148, 163, 184, 0.08);
+      }
+
+      .research-filings-summary-line:last-child {
+        border-bottom: 0;
+      }
+
+      .research-filings-meta {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        color: rgba(148, 163, 184, 0.88);
+        font-size: 0.72rem;
+      }
+
+      .research-filings-meta span {
+        display: inline-flex;
+        align-items: center;
+        padding: 0.1rem 0.42rem;
+        border-radius: 999px;
+        background: rgba(56, 189, 248, 0.08);
+        border: 1px solid rgba(56, 189, 248, 0.16);
+      }
+
+      .research-filings-item-footer {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        padding-top: 8px;
+        border-top: 1px solid rgba(148, 163, 184, 0.12);
+        color: rgba(148, 163, 184, 0.88);
+        font-size: 0.72rem;
+      }
+
+      .research-filings-item-footer a {
+        color: rgba(125, 211, 252, 0.92);
+        word-break: break-all;
       }
 
       .research-source-item strong {
@@ -308,6 +920,7 @@
       }
 
       .research-chart-shell {
+        position: relative;
         margin-top: 14px;
         padding: 16px 18px;
         border-radius: 18px;
@@ -317,6 +930,7 @@
 
       .research-chart-placeholder {
         min-height: 220px;
+        position: relative;
         border-radius: 14px;
         border: 1px dashed rgba(148, 163, 184, 0.24);
         background: rgba(255, 255, 255, 0.02);
@@ -326,6 +940,30 @@
         padding: 18px;
         color: rgba(248, 250, 252, 0.72);
         line-height: 1.5;
+      }
+
+      .research-chart-loading {
+        position: absolute;
+        inset: 50% auto auto 50%;
+        transform: translate(-50%, -50%);
+        width: 46px;
+        height: 46px;
+        border-radius: 999px;
+        border: 2px solid rgba(56, 189, 248, 0.18);
+        border-top-color: rgba(56, 189, 248, 0.9);
+        border-right-color: rgba(56, 189, 248, 0.48);
+        animation: research-spin 0.9s linear infinite;
+        pointer-events: none;
+        box-shadow: 0 0 24px rgba(56, 189, 248, 0.12);
+        display: none;
+      }
+
+      .research-chart-shell.is-loading .research-chart-loading {
+        display: block;
+      }
+
+      @keyframes research-spin {
+        to { transform: translate(-50%, -50%) rotate(360deg); }
       }
 
       .research-chart-meta {
@@ -603,6 +1241,26 @@
         text-align: left;
         font-weight: 800;
         color: #e0f2fe;
+      }
+
+      .finance-table .ticker-cell-stack {
+        display: inline-flex;
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 2px;
+        line-height: 1.05;
+      }
+
+      .finance-table .ticker-cell-value {
+        line-height: 1.05;
+      }
+
+      .finance-table .ticker-cell-sublabel {
+        color: rgba(226, 232, 240, 0.58);
+        font-size: 0.68rem;
+        letter-spacing: 0.04em;
+        line-height: 1;
+        font-weight: 700;
       }
 
       .finance-table .last-price-cell {
@@ -1180,15 +1838,41 @@
 
             <div class="finance-tab-panel" data-finance-tab-panel="research" hidden>
               <div class="section">
-                <div class="research-header">
+                <div class="research-nav" role="tablist" aria-label="Research sections">
+                  <button class="research-nav-button is-active" type="button" data-finance-research-view-button="dashboard" aria-pressed="true">Dashboard</button>
+                  <button class="research-nav-button" type="button" data-finance-research-view-button="options" aria-pressed="false">Options</button>
+                  <button class="research-nav-button" type="button" data-finance-research-view-button="news" aria-pressed="false">News</button>
+                  <button class="research-nav-button" type="button" data-finance-research-view-button="corporate-actions" aria-pressed="false">Corporate Actions</button>
+                  <button class="research-nav-button" type="button" data-finance-research-view-button="financials" aria-pressed="false">Financials</button>
+                </div>
+
+                <div class="research-hero">
                   <div>
-                    <p class="eyebrow">Research</p>
-                    <h2 data-finance-research-title>Search a ticker to begin</h2>
+                    <div class="research-hero-title">
+                      <span class="research-hero-symbol" data-finance-research-source>Cached data ready</span>
+                      <h2 data-finance-research-title>Search a ticker to begin</h2>
+                    </div>
                     <p data-finance-research-subtitle>
                       Cached universe results load immediately. Research data will fill in from cached market data first, then queued data refreshes.
                     </p>
+                    <div class="research-hero-meta">
+                      <span data-finance-research-hero-line>Search a ticker to begin</span>
+                    </div>
                   </div>
-                  <div class="research-pill" data-finance-research-source>Cached data ready</div>
+                  <div class="research-hero-stats">
+                    <div class="research-hero-stat">
+                      <strong>Current Price</strong>
+                      <span data-finance-research-price>
+                        <span class="research-price-stack">
+                          <span class="research-price-value">—</span>
+                        </span>
+                      </span>
+                    </div>
+                    <div class="research-hero-stat">
+                      <strong>Research Snapshot</strong>
+                      <span data-finance-research-snapshot>None cached yet</span>
+                    </div>
+                  </div>
                 </div>
                 <div class="research-chart-shell" data-finance-research-chart-shell>
                   <div class="research-chart-meta">
@@ -1202,8 +1886,9 @@
                   <div class="research-chart-placeholder" data-finance-research-chart-placeholder>
                     Select a ticker to load the daily OHLCV chart placeholder here. The research hydration step will populate this area first, before fundamentals, news, and filings grow around it.
                   </div>
+                  <div class="research-chart-loading" data-finance-research-chart-loading aria-hidden="true"></div>
                 </div>
-                <div class="card-grid" data-finance-research-cards>
+                <div class="card-grid" data-finance-research-cards hidden>
                   <div class="card">
                     <span class="card-label">Symbol</span>
                     <div class="card-value" data-finance-research-symbol>—</div>
@@ -1233,22 +1918,102 @@
                     <div class="card-value" data-finance-research-snapshot>None cached yet</div>
                   </div>
                 </div>
-              </div>
+                </div>
 
-              <div class="research-grid">
-                <div class="section">
-                  <h2>Fundamental analysis</h2>
-                  <p>Revenue, earnings, margins, debt, and valuation will be populated from the research layer.</p>
-                  <div class="research-source-list" data-finance-research-fundamentals>
-                    <div class="research-source-item">
-                      <strong>Awaiting research selection</strong>
-                      Search for a symbol to hydrate the research pane from cached data.
+                <div class="card-grid" style="margin-top: 14px;">
+                  <div class="card">
+                    <div class="research-section-title">
+                      <h3>Short Interest</h3>
+                      <span>Massive-style placeholder</span>
+                    </div>
+                    <div class="card-value" data-finance-research-short-interest>Awaiting short-interest data</div>
+                  </div>
+                  <div class="card">
+                    <div class="research-section-title">
+                      <h3>Short Volume</h3>
+                      <span>Massive-style placeholder</span>
+                    </div>
+                    <div class="card-value" data-finance-research-short-volume>Awaiting short-volume data</div>
+                  </div>
+                  <div class="card">
+                    <div class="research-section-title">
+                      <h3>Related Companies</h3>
+                      <span>Universe cache</span>
+                    </div>
+                    <div class="research-mini-list" data-finance-research-related-companies>
+                      <div class="research-mini-item">
+                        <strong>Search a ticker</strong>
+                        <span>Related companies will appear from the cached ticker universe once a symbol is selected.</span>
+                      </div>
                     </div>
                   </div>
                 </div>
-                <div class="section">
-                  <h2>Sentiment and filings</h2>
-                  <p>Recent filings, news, upgrades, and ownership context will land here as the research slice expands.</p>
+
+              <div class="research-grid">
+                <div class="research-grid-main">
+                  <div class="section research-fundamentals-shell" data-finance-research-fundamentals-shell>
+                    <h2>Fundamental analysis</h2>
+                    <p>Revenue, earnings, margins, debt, and valuation will be populated from the research layer.</p>
+                    <div class="research-source-list research-fundamental-list" data-finance-research-fundamentals>
+                      <div class="research-source-item">
+                        <strong>Awaiting research selection</strong>
+                        Search for a symbol to hydrate the research pane from cached data.
+                      </div>
+                    </div>
+                    <div class="research-fundamentals-loading" data-finance-research-fundamentals-loading aria-hidden="true"></div>
+                  </div>
+
+                  <div class="section research-news-shell" data-finance-research-news-shell>
+                    <h2>News</h2>
+                    <p>Massive endpoint news is shown here. Web search stays wired in the code but is hidden from the page.</p>
+                    <div class="research-news-grid">
+                      <div class="research-news-card" data-finance-research-news-web-card hidden>
+                        <div class="research-news-card-title">
+                          <strong>Web Search</strong>
+                          <span data-finance-research-news-web-meta>Waiting</span>
+                        </div>
+                        <div class="research-news-list" data-finance-research-news-web>
+                          <div class="research-news-item">
+                            <strong>Awaiting research selection</strong>
+                            Search for a symbol to populate web search results.
+                          </div>
+                        </div>
+                      </div>
+                      <div class="research-news-card">
+                        <div class="research-news-card-title">
+                          <strong>Massive News</strong>
+                          <span data-finance-research-news-massive-meta>Waiting</span>
+                        </div>
+                        <div class="research-news-list" data-finance-research-news-massive>
+                          <div class="research-news-item">
+                            <strong>Awaiting research selection</strong>
+                            Search for a symbol to populate Massive news results.
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                    <div class="research-news-loading" data-finance-research-news-loading aria-hidden="true"></div>
+                  </div>
+                </div>
+                <div class="section research-filings-shell" data-finance-research-filings-shell>
+                  <h2>SEC Filings</h2>
+                  <p>Critical 10-K, 10-Q, and 8-K filings are fetched on first load and summarized here.</p>
+                  <div class="research-filings-summary" data-finance-research-filings-summary>
+                    <div class="research-filings-item">
+                      <div class="research-filings-item-title">
+                        <strong>Awaiting research selection</strong>
+                        <span>SEC filings will populate after the research refresh starts.</span>
+                      </div>
+                      <p>Select a ticker to fetch the most recent critical filings from EDGAR.</p>
+                    </div>
+                  </div>
+                  <div class="research-filings-list" data-finance-research-filings>
+                    <div class="research-filings-item">
+                      <strong>Cached universe first</strong>
+                      SEC filings appear once the queued research job returns a filings cache entry.
+                    </div>
+                  </div>
+                  <div class="research-filings-loading" data-finance-research-filings-loading aria-hidden="true"></div>
                   <div class="research-source-list" data-finance-research-sources>
                     <div class="research-source-item">
                       <strong>Cached universe first</strong>
@@ -1271,6 +2036,7 @@
                 data-finance-state-url="/finance/state/"
                 data-finance-search-url="/finance/search/"
                 data-finance-research-url="/finance/research/"
+                data-finance-source-summary-url="/finance/source-summary/"
                 data-finance-quote-ttl-seconds="{{ finance_quote_ttl_seconds|default:120 }}"
                 data-finance-brokerage-ttl-seconds="{{ finance_brokerage_ttl_seconds|default:600 }}"
                 data-finance-research-ttl-seconds="{{ finance_research_ttl_seconds|default:86400 }}"
@@ -1301,6 +2067,6 @@
     </div>
     {{ finance_system_context|json_script:"finance-system-context" }}
     {{ finance_bootstrap|json_script:"finance-bootstrap" }}
-    <script src="{% static 'finance/chat.js' %}?v=20260408-dedup-snapshot-v30" defer></script>
+    <script src="{% static 'finance/chat.js' %}?v=20260408-quote-merge-purge-v35" defer></script>
   </body>
 </html>

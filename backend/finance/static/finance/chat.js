@@ -24,18 +24,40 @@
   const researchTitleEl = shell.ownerDocument.querySelector("[data-finance-research-title]");
   const researchSubtitleEl = shell.ownerDocument.querySelector("[data-finance-research-subtitle]");
   const researchSourceEl = shell.ownerDocument.querySelector("[data-finance-research-source]");
+  const researchHeroLineEl = shell.ownerDocument.querySelector("[data-finance-research-hero-line]");
   const researchSymbolEl = shell.ownerDocument.querySelector("[data-finance-research-symbol]");
   const researchCompanyEl = shell.ownerDocument.querySelector("[data-finance-research-company]");
   const researchExchangeEl = shell.ownerDocument.querySelector("[data-finance-research-exchange]");
   const researchPriceEl = shell.ownerDocument.querySelector("[data-finance-research-price]");
   const researchQuoteAsOfEl = shell.ownerDocument.querySelector("[data-finance-research-quote-as-of]");
   const researchSnapshotEl = shell.ownerDocument.querySelector("[data-finance-research-snapshot]");
+  const researchShortInterestEl = shell.ownerDocument.querySelector("[data-finance-research-short-interest]");
+  const researchShortVolumeEl = shell.ownerDocument.querySelector("[data-finance-research-short-volume]");
+  const researchRelatedCompaniesEl = shell.ownerDocument.querySelector("[data-finance-research-related-companies]");
+  const researchCompanySideEl = shell.ownerDocument.querySelector("[data-finance-research-company-side]");
+  const researchSymbolSideEl = shell.ownerDocument.querySelector("[data-finance-research-symbol-side]");
+  const researchExchangeSideEl = shell.ownerDocument.querySelector("[data-finance-research-exchange-side]");
   const researchFundamentalsEl = shell.ownerDocument.querySelector("[data-finance-research-fundamentals]");
+  const researchFundamentalsShellEl = shell.ownerDocument.querySelector("[data-finance-research-fundamentals-shell]");
+  const researchFundamentalsLoadingEl = shell.ownerDocument.querySelector("[data-finance-research-fundamentals-loading]");
+  const researchNewsShellEl = shell.ownerDocument.querySelector("[data-finance-research-news-shell]");
+  const researchNewsWebEl = shell.ownerDocument.querySelector("[data-finance-research-news-web]");
+  const researchNewsWebMetaEl = shell.ownerDocument.querySelector("[data-finance-research-news-web-meta]");
+  const researchNewsMassiveEl = shell.ownerDocument.querySelector("[data-finance-research-news-massive]");
+  const researchNewsMassiveMetaEl = shell.ownerDocument.querySelector("[data-finance-research-news-massive-meta]");
+  const researchNewsLoadingEl = shell.ownerDocument.querySelector("[data-finance-research-news-loading]");
+  const researchFilingsShellEl = shell.ownerDocument.querySelector("[data-finance-research-filings-shell]");
+  const researchFilingsSummaryEl = shell.ownerDocument.querySelector("[data-finance-research-filings-summary]");
+  const researchFilingsListEl = shell.ownerDocument.querySelector("[data-finance-research-filings]");
+  const researchFilingsLoadingEl = shell.ownerDocument.querySelector("[data-finance-research-filings-loading]");
+  const researchSourceSummaryUrl = (shell.dataset.financeSourceSummaryUrl || "").trim();
   const researchSourcesEl = shell.ownerDocument.querySelector("[data-finance-research-sources]");
   const researchChartTitleEl = shell.ownerDocument.querySelector("[data-finance-research-chart-title]");
   const researchChartAsOfEl = shell.ownerDocument.querySelector("[data-finance-research-chart-as-of]");
   const researchChartPlaceholderEl = shell.ownerDocument.querySelector("[data-finance-research-chart-placeholder]");
+  const researchChartLoadingEl = shell.ownerDocument.querySelector("[data-finance-research-chart-loading]");
   const researchChartTimeframeButtons = Array.from(shell.ownerDocument.querySelectorAll("[data-finance-research-chart-timeframe]"));
+  const researchViewButtons = Array.from(shell.ownerDocument.querySelectorAll("[data-finance-research-view-button]"));
   const workspaceNameEl = shell.ownerDocument.querySelector("[data-finance-workspace-name]");
   const positionCountEl = shell.ownerDocument.querySelector("[data-finance-position-count]");
   const quoteCountEl = shell.ownerDocument.querySelector("[data-finance-quote-count]");
@@ -79,6 +101,8 @@
   let tickerResearchAttempts = 0;
   let lastTickerResearchSymbol = "";
   let researchChartTimeframe = "daily";
+  let activeResearchView = "dashboard";
+  const researchSourceSummaryPending = new Set();
 
   function readJsonScript(script) {
     if (!script || !script.textContent) {
@@ -368,6 +392,24 @@
     return `${monthDay} ${hour}:${minute}${suffix}`;
   }
 
+  function formatResearchPriceValue(value) {
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric)) {
+      return "—";
+    }
+    const roundedToTwo = Math.round(numeric * 100) / 100;
+    if (Math.abs(numeric - roundedToTwo) < 0.00005) {
+      return roundedToTwo.toLocaleString("en-US", {
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2,
+      });
+    }
+    return numeric.toLocaleString("en-US", {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 4,
+    });
+  }
+
   function renderResearchPriceDisplay(price, asOf) {
     if (!researchPriceEl) {
       return;
@@ -377,7 +419,7 @@
     wrapper.className = "research-price-stack";
     const value = document.createElement("span");
     value.className = "research-price-value";
-    value.textContent = Number.isFinite(price) ? formatNumber(price, 4) : "—";
+    value.textContent = formatResearchPriceValue(price);
     wrapper.appendChild(value);
     const badgeText = formatQuoteCacheBadge(asOf);
     if (badgeText) {
@@ -428,6 +470,199 @@
     return bars.length;
   }
 
+  function extractResearchQuoteSnapshot(context) {
+    const quoteCache = context && typeof context === "object" ? context.quote_cache || {} : {};
+    const payload = quoteCache && typeof quoteCache === "object" ? quoteCache.payload || {} : {};
+    if (payload && typeof payload === "object" && payload.snapshot && typeof payload.snapshot === "object") {
+      return payload.snapshot;
+    }
+    return payload && typeof payload === "object" ? payload : null;
+  }
+
+  function formatResearchValue(value, digits = 2) {
+    const numeric = Number(value);
+    if (Number.isFinite(numeric)) {
+      return numeric.toLocaleString("en-US", {
+        minimumFractionDigits: digits,
+        maximumFractionDigits: digits,
+      });
+    }
+    const text = String(value ?? "").trim();
+    return text || "—";
+  }
+
+  function formatResearchFundamentalValue(key, value) {
+    const numeric = Number(value);
+    const normalizedKey = String(key || "").toLowerCase();
+    if (!Number.isFinite(numeric)) {
+      const text = String(value ?? "").trim();
+      if (!text) {
+        return "—";
+      }
+      if (normalizedKey.includes("date")) {
+        const date = new Date(text);
+        if (!Number.isNaN(date.getTime())) {
+          return date.toLocaleDateString("en-US", {
+            month: "short",
+            day: "numeric",
+            year: "numeric",
+          });
+        }
+      }
+      return text;
+    }
+    if (normalizedKey.includes("yield")) {
+      return `${numeric.toLocaleString("en-US", { minimumFractionDigits: 1, maximumFractionDigits: 1 })}%`;
+    }
+    if (normalizedKey.includes("eps")) {
+      return numeric.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    }
+    if (
+      normalizedKey === "amount" ||
+      normalizedKey.includes("dividend amount") ||
+      (normalizedKey.includes("dividend") && normalizedKey.includes("amount")) ||
+      normalizedKey.includes("div amount")
+    ) {
+      return numeric.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    }
+    if (normalizedKey.includes("volume") || normalizedKey.includes("shares") || normalizedKey.includes("marketcap") || normalizedKey.includes("market cap") || normalizedKey.includes("revenue") || normalizedKey.includes("income")) {
+      return numeric.toLocaleString("en-US", { maximumFractionDigits: 0 });
+    }
+    if (normalizedKey.includes("ratio") || normalizedKey.includes("div")) {
+      return numeric.toLocaleString("en-US", { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+    }
+    return numeric.toLocaleString("en-US", { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+  }
+
+  function extractResearchFundamentalCache(context) {
+    return context && typeof context === "object" && context.fundamental_cache && typeof context.fundamental_cache === "object"
+      ? context.fundamental_cache
+      : null;
+  }
+
+  function extractSchwabInstrumentFundamental(context) {
+    const snapshot = extractResearchQuoteSnapshot(context) || {};
+    const fundamentalCache = extractResearchFundamentalCache(context);
+    const candidates = [
+      snapshot.fundamentals && typeof snapshot.fundamentals === "object" ? snapshot.fundamentals.schwab_instrument : null,
+      fundamentalCache ? fundamentalCache.payload : null,
+    ];
+    for (const candidate of candidates) {
+      if (!candidate || typeof candidate !== "object") {
+        continue;
+      }
+      if (candidate.fundamental && typeof candidate.fundamental === "object") {
+        return candidate.fundamental;
+      }
+      if (candidate.snapshot && typeof candidate.snapshot === "object") {
+        if (candidate.snapshot.fundamental && typeof candidate.snapshot.fundamental === "object") {
+          return candidate.snapshot.fundamental;
+        }
+        return candidate.snapshot;
+      }
+      if (
+        candidate.high52 !== undefined ||
+        candidate.low52 !== undefined ||
+        candidate.marketCap !== undefined ||
+        candidate.symbol
+      ) {
+        return candidate;
+      }
+    }
+    return {};
+  }
+
+  function buildResearchFundamentalSections(context) {
+    const snapshot = extractResearchQuoteSnapshot(context) || {};
+    const quote = snapshot.quote && typeof snapshot.quote === "object" ? snapshot.quote : {};
+    const fundamental = snapshot.fundamental && typeof snapshot.fundamental === "object" ? snapshot.fundamental : {};
+    const instrument = extractSchwabInstrumentFundamental(context);
+    const latestPrice = extractResearchPrice(context);
+    const sections = [];
+    const row = (label, value, options = {}) => {
+      const text = formatResearchFundamentalValue(label, value);
+      if (!text || text === "—") {
+        return null;
+      }
+      return {
+        label,
+        text: options.percent && !String(text).trim().endsWith("%") ? `${text}%` : text,
+      };
+    };
+
+    const earnings = [
+      row("P/E", instrument.peRatio ?? fundamental.peRatio),
+      row("EPS", instrument.eps ?? fundamental.eps),
+      row("EPS TTM", instrument.epsTTM),
+      row("EPS Change TTM", instrument.epsChangePercentTTM, { percent: true }),
+    ].filter(Boolean);
+    if (earnings.length) {
+      sections.push({ title: "Earnings", rows: earnings });
+    }
+
+    const dividendFreq = Number(instrument.dividendFreq);
+    const dividendFrequencyLabel = dividendFreq === 12 ? "Monthly" : dividendFreq === 4 ? "Quarterly" : dividendFreq === 2 ? "Semi-annual" : dividendFreq === 1 ? "Annual" : "";
+    const dividends = [
+      row("Yield", instrument.dividendYield ?? fundamental.divYield),
+      row("Amount", instrument.dividendAmount ?? fundamental.divAmount),
+      row("Ex-div Date", instrument.dividendDate),
+      row("3Y growth", instrument.divGrowthRate3Year),
+      row("Frequency", dividendFrequencyLabel),
+    ].filter(Boolean);
+    if (dividends.length) {
+      sections.push({ title: "Dividends", rows: dividends });
+    }
+
+    const growth = [
+      row("PEG", instrument.pegRatio),
+      row("Revenue change year", instrument.revChangeYear, { percent: true }),
+      row("Revenue change TTM", instrument.revChangeTTM, { percent: true }),
+    ].filter(Boolean);
+    if (growth.length) {
+      sections.push({ title: "Growth", rows: growth });
+    }
+
+    const bookValuePerShare = Number(instrument.bookValuePerShare);
+    let computedPb = null;
+    if (Number.isFinite(latestPrice) && latestPrice > 0 && Number.isFinite(bookValuePerShare) && bookValuePerShare > 0) {
+      computedPb = latestPrice / bookValuePerShare;
+    }
+    const financial = [
+      row("Quick ratio", instrument.quickRatio),
+      row("Current ratio", instrument.currentRatio),
+      row("Interest coverage", instrument.interestCoverage),
+      row("LT debt/equity", instrument.ltDebtToEquity),
+      row("Total debt/capital", instrument.totalDebtToCapital),
+    ].filter(Boolean);
+    if (financial.length) {
+      sections.push({ title: "Financial", rows: financial });
+    }
+
+    if (!sections.length) {
+      const source = fundamental && typeof fundamental === "object" ? fundamental : quote;
+      const rows = [];
+      for (const [key, value] of Object.entries(source)) {
+        if (value === null || value === undefined || value === "") {
+          continue;
+        }
+        if (typeof value === "object") {
+          continue;
+        }
+        rows.push({
+          label: key.replace(/([a-z0-9])([A-Z])/g, "$1 $2").replace(/_/g, " "),
+          text: formatResearchFundamentalValue(key, value),
+        });
+        if (rows.length >= 8) {
+          break;
+        }
+      }
+      if (rows.length) {
+        sections.push({ title: "Fundamentals", rows });
+      }
+    }
+    return sections;
+  }
+
   function clearTickerSearchResults() {
     lastTickerSearchMatches = [];
     if (!searchResultsEl) {
@@ -467,8 +702,34 @@
       meta.textContent = match.source_name ? String(match.source_name) : "";
 
       button.append(label, meta);
-      button.addEventListener("click", () => {
+      const activateMatch = () => {
         void selectTickerFromSearch(match);
+      };
+      button.addEventListener("pointerdown", (event) => {
+        if (event.button !== undefined && event.button !== 0) {
+          return;
+        }
+        event.preventDefault();
+        event.stopPropagation();
+        activateMatch();
+      });
+      button.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        activateMatch();
+      });
+      button.addEventListener("dblclick", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        activateMatch();
+      });
+      button.addEventListener("keydown", (event) => {
+        if (event.key !== "Enter" && event.key !== " ") {
+          return;
+        }
+        event.preventDefault();
+        event.stopPropagation();
+        activateMatch();
       });
       searchResultsEl.appendChild(button);
     });
@@ -489,10 +750,57 @@
     }
     const quoteCache = context.quote_cache && typeof context.quote_cache === "object" ? context.quote_cache : null;
     const historyCache = context.history_cache && typeof context.history_cache === "object" ? context.history_cache : null;
+    const fundamentalCache = context.fundamental_cache && typeof context.fundamental_cache === "object" ? context.fundamental_cache : null;
+    const newsCache = context.news_cache && typeof context.news_cache === "object" ? context.news_cache : null;
+    const newsMassiveCache = newsCache && typeof newsCache.massive === "object" ? newsCache.massive : null;
     const quoteReady = !!(quoteCache && String(quoteCache.as_of || "").trim());
     const historyPayload = historyCache && typeof historyCache.payload === "object" ? historyCache.payload : {};
     const barCount = Array.isArray(historyPayload.bars) ? historyPayload.bars.length : Array.isArray(historyPayload.candles) ? historyPayload.candles.length : 0;
-    return quoteReady && barCount > 0;
+    const fundamentalReady = !!(fundamentalCache && String(fundamentalCache.as_of || "").trim());
+    const newsReady = !!(newsMassiveCache && String(newsMassiveCache.as_of || "").trim());
+    const filingsReady = isFilingsReady(context);
+    return quoteReady && barCount > 0 && fundamentalReady && newsReady && filingsReady;
+  }
+
+  function isFundamentalsReady(context) {
+    if (!context || typeof context !== "object") {
+      return false;
+    }
+    const fundamentalCache = context.fundamental_cache && typeof context.fundamental_cache === "object" ? context.fundamental_cache : null;
+    return !!(fundamentalCache && String(fundamentalCache.as_of || "").trim());
+  }
+
+  function isNewsReady(context) {
+    if (!context || typeof context !== "object") {
+      return false;
+    }
+    const newsCache = context.news_cache && typeof context.news_cache === "object" ? context.news_cache : null;
+    const webCache = newsCache && typeof newsCache.web_search === "object" ? newsCache.web_search : null;
+    const massiveCache = newsCache && typeof newsCache.massive === "object" ? newsCache.massive : null;
+    return !!(
+      webCache && String(webCache.as_of || "").trim()
+      && massiveCache && String(massiveCache.as_of || "").trim()
+    );
+  }
+
+  function extractResearchFilingsCache(context) {
+    if (!context || typeof context !== "object") {
+      return null;
+    }
+    if (context.filings_cache && typeof context.filings_cache === "object") {
+      return context.filings_cache;
+    }
+    const snapshot = context.research_snapshot && typeof context.research_snapshot === "object" ? context.research_snapshot : null;
+    const payload = snapshot && typeof snapshot.payload === "object" ? snapshot.payload : null;
+    if (payload && payload.filings_cache && typeof payload.filings_cache === "object") {
+      return payload.filings_cache;
+    }
+    return null;
+  }
+
+  function isFilingsReady(context) {
+    const filingsCache = extractResearchFilingsCache(context);
+    return !!(filingsCache && String(filingsCache.as_of || "").trim());
   }
 
   function scheduleTickerResearchPoll(symbol) {
@@ -500,11 +808,23 @@
     if (!selectedSymbol) {
       return;
     }
+    const maxAttempts = hasPendingResearchSourceSummaries() ? 30 : 6;
+    log("ticker research poll schedule", {
+      symbol: selectedSymbol,
+      attempts: tickerResearchAttempts,
+      maxAttempts,
+      pendingSummaries: researchSourceSummaryPending.size,
+    });
     if (tickerResearchTimer !== null) {
       window.clearTimeout(tickerResearchTimer);
       tickerResearchTimer = null;
     }
-    if (tickerResearchAttempts >= 6) {
+    if (tickerResearchAttempts >= maxAttempts) {
+      warn("ticker research poll stopped", {
+        symbol: selectedSymbol,
+        attempts: tickerResearchAttempts,
+        maxAttempts,
+      });
       return;
     }
     tickerResearchTimer = window.setTimeout(() => {
@@ -535,6 +855,11 @@
     const ticker = context.ticker && typeof context.ticker === "object" ? context.ticker : null;
     const quoteCache = context.quote_cache && typeof context.quote_cache === "object" ? context.quote_cache : null;
     const historyCache = context.history_cache && typeof context.history_cache === "object" ? context.history_cache : null;
+    const fundamentalCache = context.fundamental_cache && typeof context.fundamental_cache === "object" ? context.fundamental_cache : null;
+    const newsCache = context.news_cache && typeof context.news_cache === "object" ? context.news_cache : null;
+    const newsWebCache = newsCache && typeof newsCache.web_search === "object" ? newsCache.web_search : null;
+    const newsMassiveCache = newsCache && typeof newsCache.massive === "object" ? newsCache.massive : null;
+    const filingsCache = extractResearchFilingsCache(context);
     const snapshot = context.research_snapshot && typeof context.research_snapshot === "object" ? context.research_snapshot : null;
     const symbol = String(context.symbol || ticker?.symbol || "").trim().toUpperCase();
     const company = String(ticker?.name || ticker?.company_name || ticker?.description || "Search for a ticker").trim();
@@ -545,6 +870,22 @@
     const snapshotSummary = String(snapshot?.summary_text || "").trim();
     const historyCount = extractResearchHistoryCount(context);
     const historyAsOf = String(historyCache?.as_of || "").trim();
+    const newsWebReady = !!(newsWebCache && String(newsWebCache.as_of || "").trim());
+    const newsMassiveReady = !!(newsMassiveCache && String(newsMassiveCache.as_of || "").trim());
+    const filingsReady = !!(filingsCache && String(filingsCache.as_of || "").trim());
+    const filingsSummaryKeys = filingsCache && typeof filingsCache.payload === "object" && filingsCache.payload.ai_summaries && typeof filingsCache.payload.ai_summaries === "object"
+      ? Object.keys(filingsCache.payload.ai_summaries)
+      : [];
+    syncResearchSourceSummaryPending(filingsCache);
+    log("renderResearchContext", {
+      symbol,
+      quoteAsOf,
+      historyAsOf,
+      filingsReady,
+      filingsSummaryCount: filingsSummaryKeys.length,
+      filingsSummaryKeys: filingsSummaryKeys.slice(0, 4),
+      pendingSummaries: researchSourceSummaryPending.size,
+    });
 
     if (researchTitleEl) {
       researchTitleEl.textContent = symbol ? `${symbol}: Research` : "Search a ticker to begin";
@@ -557,6 +898,12 @@
     if (researchSourceEl) {
       researchSourceEl.textContent = String(context.status || "Cached data ready").replace(/_/g, " ");
     }
+    if (researchHeroLineEl) {
+      const heroExchange = [exchange, assetType].filter(Boolean).join(" · ");
+      const heroAsOf = quoteAsOf ? formatResearchTimestamp(quoteAsOf) : "";
+      const heroText = [symbol, company, heroExchange].filter(Boolean).join(" • ");
+      researchHeroLineEl.textContent = heroText ? `${heroText}${heroAsOf ? ` as of ${heroAsOf}` : ""}` : "Search a ticker to begin";
+    }
     if (researchSymbolEl) {
       researchSymbolEl.textContent = symbol || "—";
     }
@@ -567,6 +914,16 @@
       const exchangeParts = [exchange, assetType].filter(Boolean);
       researchExchangeEl.textContent = exchangeParts.length ? exchangeParts.join(" · ") : "—";
     }
+    if (researchCompanySideEl) {
+      researchCompanySideEl.textContent = company || "Search for a ticker";
+    }
+    if (researchSymbolSideEl) {
+      researchSymbolSideEl.textContent = symbol || "—";
+    }
+    if (researchExchangeSideEl) {
+      const exchangeParts = [exchange, assetType].filter(Boolean);
+      researchExchangeSideEl.textContent = exchangeParts.length ? exchangeParts.join(" · ") : "—";
+    }
     if (researchPriceEl) {
       renderResearchPriceDisplay(price, quoteAsOf);
     }
@@ -576,31 +933,169 @@
     if (researchSnapshotEl) {
       researchSnapshotEl.textContent = snapshotSummary || (historyCount ? `${historyCount} cached history bars` : "None cached yet");
     }
+    if (researchShortInterestEl) {
+      researchShortInterestEl.textContent = symbol ? "Awaiting short-interest data" : "Select a ticker";
+    }
+    if (researchShortVolumeEl) {
+      researchShortVolumeEl.textContent = symbol ? "Awaiting short-volume data" : "Select a ticker";
+    }
+    if (researchRelatedCompaniesEl) {
+      researchRelatedCompaniesEl.innerHTML = "";
+      const relatedItem = document.createElement("div");
+      relatedItem.className = "research-mini-item";
+      const relatedTitle = document.createElement("strong");
+      relatedTitle.textContent = symbol ? "Related companies coming next" : "Search a ticker";
+      const relatedBody = document.createElement("span");
+      relatedBody.textContent = symbol
+        ? "The cached universe table will be used here to surface peers and close matches."
+        : "Related companies will appear from the cached ticker universe once a symbol is selected.";
+      relatedItem.append(relatedTitle, relatedBody);
+      researchRelatedCompaniesEl.appendChild(relatedItem);
+    }
 
     if (researchFundamentalsEl) {
+      const fundamentalsReady = isFundamentalsReady(context);
+      if (researchFundamentalsShellEl) {
+        researchFundamentalsShellEl.classList.toggle("is-loading", symbol && !fundamentalsReady);
+      }
+      if (researchFundamentalsLoadingEl) {
+        researchFundamentalsLoadingEl.setAttribute("aria-hidden", fundamentalsReady ? "true" : "false");
+      }
       researchFundamentalsEl.innerHTML = "";
-      const items = [];
-      if (ticker) {
-        items.push(`Universe match: ${symbol}${company ? ` · ${company}` : ""}`);
-        if (exchange || assetType) {
-          items.push(`Listed on ${[exchange, assetType].filter(Boolean).join(" · ")}`);
+      const sections = buildResearchFundamentalSections(context);
+      if (!sections.length) {
+        sections.push({
+          title: "Research cache",
+          rows: [
+            {
+              label: "Status",
+              text: symbol
+                ? `Quote and fundamental fields will load here after the research refresh completes.${historyCount ? ` ${historyCount} cached price bars are available.` : ""}`
+                : "Search a ticker to populate research fundamentals.",
+            },
+          ],
+        });
+      }
+      if (!symbol || !fundamentalsReady) {
+        const waitingSection = document.createElement("section");
+        waitingSection.className = "research-fundamental-group";
+        const waitingHeading = document.createElement("strong");
+        waitingHeading.className = "research-fundamental-group-title";
+        waitingHeading.textContent = "Loading";
+        const waitingRow = document.createElement("div");
+        waitingRow.className = "research-fundamental-row";
+        const waitingLabel = document.createElement("strong");
+        waitingLabel.textContent = symbol ? "Waiting for Schwab fundamentals" : "Search a ticker";
+        const waitingBody = document.createElement("div");
+        waitingBody.textContent = symbol
+          ? "The research refresh is still fetching Schwab instrument fundamentals."
+          : "Search for a symbol to hydrate the research pane from cached data.";
+        waitingRow.append(waitingLabel, waitingBody);
+        waitingSection.append(waitingHeading, waitingRow);
+        researchFundamentalsEl.appendChild(waitingSection);
+      }
+      for (const section of sections) {
+        const sectionEl = document.createElement("section");
+        sectionEl.className = "research-fundamental-group";
+        const heading = document.createElement("strong");
+        heading.className = "research-fundamental-group-title";
+        heading.textContent = section.title || "Fundamentals";
+        sectionEl.appendChild(heading);
+        for (const itemData of section.rows || []) {
+          const item = document.createElement("div");
+          item.className = "research-fundamental-row";
+          const label = document.createElement("strong");
+          label.textContent = itemData.label || "Field";
+          const body = document.createElement("div");
+          body.textContent = itemData.text || "—";
+          item.append(label, body);
+          sectionEl.appendChild(item);
         }
+        researchFundamentalsEl.appendChild(sectionEl);
       }
-      if (quoteCache && quoteCache.payload) {
-        items.push(`Quote cache as of ${quoteAsOf ? formatResearchTimestamp(quoteAsOf) : "unknown"}`);
-      }
-      if (historyCount) {
-        items.push(`${historyCount} cached price bars available`);
-      }
-      if (!items.length) {
-        items.push("No cached research data yet.");
-      }
-      for (const text of items) {
-        const item = document.createElement("div");
-        item.className = "research-source-item";
-        item.textContent = text;
-        researchFundamentalsEl.appendChild(item);
-      }
+    }
+
+    if (researchNewsShellEl) {
+      researchNewsShellEl.classList.toggle("is-loading", symbol && !newsMassiveReady);
+    }
+    if (researchNewsLoadingEl) {
+      researchNewsLoadingEl.setAttribute("aria-hidden", newsMassiveReady ? "true" : "false");
+    }
+    if (researchNewsWebMetaEl) {
+      const payload = newsWebCache && typeof newsWebCache.payload === "object" ? newsWebCache.payload : {};
+      const newsCount = Array.isArray(payload.news) ? payload.news.length : Array.isArray(payload.results) ? payload.results.length : 0;
+      const newsStatus = String(payload.status || "").trim().toLowerCase();
+      researchNewsWebMetaEl.textContent = newsWebReady
+        ? `${newsCount} item${newsCount === 1 ? "" : "s"} · ${formatResearchNewsTimestamp(String(newsWebCache?.as_of || "")) || formatResearchTimestamp(String(newsWebCache?.as_of || ""))}`
+        : (newsStatus === "unavailable" ? "Unavailable" : "Waiting");
+    }
+    if (researchNewsMassiveMetaEl) {
+      const payload = newsMassiveCache && typeof newsMassiveCache.payload === "object" ? newsMassiveCache.payload : {};
+      const newsCount = Array.isArray(payload.news) ? payload.news.length : Array.isArray(payload.results) ? payload.results.length : 0;
+      const newsStatus = String(payload.status || "").trim().toLowerCase();
+      researchNewsMassiveMetaEl.textContent = newsMassiveReady
+        ? `${newsCount} item${newsCount === 1 ? "" : "s"} · ${formatResearchNewsTimestamp(String(newsMassiveCache?.as_of || "")) || formatResearchTimestamp(String(newsMassiveCache?.as_of || ""))}`
+        : (newsStatus === "unavailable" ? "Unavailable" : "Waiting");
+    }
+    if (researchNewsWebEl) {
+      renderResearchNewsList(
+        researchNewsWebEl,
+        newsWebCache,
+        {
+          title: "Web search pending",
+          body: "Search for a ticker to populate web search news.",
+        },
+        "Web",
+      );
+    }
+    if (researchNewsMassiveEl) {
+      renderResearchNewsList(
+        researchNewsMassiveEl,
+        newsMassiveCache,
+        {
+          title: "Massive news pending",
+          body: "Search for a ticker to populate Massive news.",
+        },
+        "Massive",
+      );
+    }
+
+    if (researchFilingsShellEl) {
+      researchFilingsShellEl.classList.toggle("is-loading", symbol && !filingsReady);
+    }
+    if (researchFilingsLoadingEl) {
+      researchFilingsLoadingEl.setAttribute("aria-hidden", filingsReady ? "true" : "false");
+    }
+    if (researchFilingsSummaryEl) {
+      researchFilingsSummaryEl.innerHTML = "";
+      const summaryItem = document.createElement("div");
+      summaryItem.className = "research-filings-item";
+      const summaryTitle = document.createElement("div");
+      summaryTitle.className = "research-filings-item-title";
+      const summaryLabel = document.createElement("strong");
+      summaryLabel.textContent = filingsReady ? "SEC filings summary" : (symbol ? "Waiting for SEC filings" : "Search a ticker");
+      const summaryState = document.createElement("span");
+      summaryState.textContent = filingsReady
+        ? "Critical filings are cached and summarized below."
+        : (symbol ? "The queued research refresh is still fetching EDGAR filings." : "SEC filings will populate after a ticker is selected.");
+      summaryTitle.append(summaryLabel, summaryState);
+      summaryItem.appendChild(summaryTitle);
+      const summaryBody = document.createElement("p");
+      summaryBody.textContent = filingsReady
+        ? buildResearchFilingSummary(filingsCache)
+        : (symbol ? "The filings spinner stays active until the SEC cache entry arrives." : "Select a ticker to fetch the most recent 10-K, 10-Q, and 8-K filings.");
+      summaryItem.appendChild(summaryBody);
+      researchFilingsSummaryEl.appendChild(summaryItem);
+    }
+    if (researchFilingsListEl) {
+      renderResearchFilingsList(
+        researchFilingsListEl,
+        filingsCache,
+        {
+          title: "SEC filings pending",
+          body: "Search for a ticker to populate SEC filings.",
+        },
+      );
     }
 
     if (researchSourcesEl) {
@@ -614,6 +1109,12 @@
       }
       if (historyCache && historyCache.cache_key) {
         items.push({ title: "Price history cache", text: `${historyCache.cache_key}${historyCache.timeframe ? ` · ${historyCache.timeframe}` : ""}` });
+      }
+      if (fundamentalCache && fundamentalCache.cache_key) {
+        items.push({ title: "Fundamental cache", text: `${fundamentalCache.cache_key}${fundamentalCache.as_of ? ` · ${formatResearchTimestamp(fundamentalCache.as_of)}` : ""}` });
+      }
+      if (filingsCache && filingsCache.cache_key) {
+        items.push({ title: "Filings cache", text: `${filingsCache.cache_key}${filingsCache.as_of ? ` · ${formatResearchTimestamp(filingsCache.as_of)}` : ""}` });
       }
       if (!items.length) {
         items.push({
@@ -655,11 +1156,715 @@
     }
   }
 
+  function syncResearchViewControls() {
+    for (const button of researchViewButtons) {
+      const viewName = String(button.dataset.financeResearchViewButton || "dashboard").trim() || "dashboard";
+      const isActive = viewName === activeResearchView;
+      button.classList.toggle("is-active", isActive);
+      button.setAttribute("aria-pressed", isActive ? "true" : "false");
+    }
+  }
+
+  function setResearchView(viewName) {
+    activeResearchView = String(viewName || "dashboard").trim() || "dashboard";
+    syncResearchViewControls();
+  }
+
   function setResearchChartTimeframe(timeframe) {
     researchChartTimeframe = timeframe === "weekly" ? "weekly" : "daily";
     syncResearchChartControls();
     if (currentResearchContext) {
       renderResearchChart(currentResearchContext);
+    }
+  }
+
+  function extractResearchNewsItems(cacheEntry) {
+    if (!cacheEntry || typeof cacheEntry !== "object") {
+      return [];
+    }
+    const payload = cacheEntry.payload && typeof cacheEntry.payload === "object" ? cacheEntry.payload : {};
+    const items = Array.isArray(payload.news)
+      ? payload.news
+      : Array.isArray(payload.results)
+        ? payload.results
+        : [];
+    return items
+      .map((item) => {
+        if (!item || typeof item !== "object") {
+          return null;
+        }
+        return {
+          title: extractNewsText(item.title || item.headline || item.name || ""),
+          url: extractNewsUrl(item.article_url || item.url || item.link || item.href || ""),
+          snippet: extractNewsText(item.description || item.snippet || item.summary || ""),
+          publisher: extractNewsText(item.publisher || item.source || payload.provider || cacheEntry.source_name || ""),
+          sourceUrl: extractNewsUrl(item.publisher_url || item.source_url || payload.source_url || payload.url || ""),
+          publishedAt: String(item.published_utc || item.published || item.timestamp || "").trim(),
+        };
+      })
+      .filter((item) => item && item.title);
+  }
+
+  function extractNewsText(value) {
+    if (value === null || value === undefined) {
+      return "";
+    }
+    if (typeof value === "string") {
+      return value.trim();
+    }
+    if (typeof value === "number" || typeof value === "boolean") {
+      return String(value).trim();
+    }
+    if (Array.isArray(value)) {
+      for (const item of value) {
+        const text = extractNewsText(item);
+        if (text) {
+          return text;
+        }
+      }
+      return "";
+    }
+    if (typeof value === "object") {
+      for (const key of ["name", "title", "source", "publisher", "display_name", "displayName", "label", "text"]) {
+        const text = extractNewsText(value[key]);
+        if (text) {
+          return text;
+        }
+      }
+      const stringified = String(value).trim();
+      return stringified && stringified !== "[object Object]" ? stringified : "";
+    }
+    return "";
+  }
+
+  function extractNewsUrl(value) {
+    if (value === null || value === undefined) {
+      return "";
+    }
+    if (typeof value === "string") {
+      return value.trim();
+    }
+    if (Array.isArray(value)) {
+      for (const item of value) {
+        const url = extractNewsUrl(item);
+        if (url) {
+          return url;
+        }
+      }
+      return "";
+    }
+    if (typeof value === "object") {
+      for (const key of ["url", "article_url", "href", "link", "source_url", "publisher_url"]) {
+        const url = extractNewsUrl(value[key]);
+        if (url) {
+          return url;
+        }
+      }
+    }
+    return "";
+  }
+
+  function formatResearchNewsTimestamp(value) {
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) {
+      return "";
+    }
+    const rounded = new Date(Math.round(date.getTime() / 60000) * 60000);
+    const parts = new Intl.DateTimeFormat("en-US", {
+      month: "numeric",
+      day: "numeric",
+      year: "2-digit",
+      hour: "numeric",
+      minute: "2-digit",
+      hour12: true,
+      timeZoneName: "short",
+    }).formatToParts(rounded);
+    const getPart = (type) => parts.find((part) => part.type === type)?.value || "";
+    const month = getPart("month");
+    const day = getPart("day");
+    const year = getPart("year");
+    const hour = getPart("hour");
+    const minute = getPart("minute");
+    const dayPeriod = getPart("dayPeriod");
+    const timeZone = getPart("timeZoneName");
+    const datePart = [month, day, year].filter(Boolean).join("/");
+    const timePart = [hour, minute].filter(Boolean).join(":");
+    return [datePart, timePart, dayPeriod, timeZone].filter(Boolean).join(" ");
+  }
+
+  function formatResearchShortDate(value) {
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) {
+      return "";
+    }
+    const month = String(date.getMonth() + 1);
+    const day = String(date.getDate());
+    const year = String(date.getFullYear()).slice(-2);
+    return `${month}/${day}/${year}`;
+  }
+
+  function renderResearchNewsList(container, cacheEntry, emptyMessage, labelPrefix) {
+    if (!container) {
+      return [];
+    }
+    container.innerHTML = "";
+    const payload = cacheEntry && typeof cacheEntry === "object" && typeof cacheEntry.payload === "object"
+      ? cacheEntry.payload
+      : {};
+    const status = String(payload.status || "").trim().toLowerCase();
+    const items = extractResearchNewsItems(cacheEntry);
+    if (!String(cacheEntry?.as_of || "").trim()) {
+      const item = document.createElement("div");
+      item.className = "research-news-item";
+      const title = document.createElement("strong");
+      title.textContent = emptyMessage.title;
+      const body = document.createElement("div");
+      body.textContent = emptyMessage.body;
+      item.append(title, body);
+      container.appendChild(item);
+      return items;
+    }
+    if (status === "unavailable" || !items.length) {
+      const item = document.createElement("div");
+      item.className = "research-news-item";
+      const reason = String(payload.message || emptyMessage.body || "No stories were returned.").trim();
+      const title = document.createElement("strong");
+      title.textContent = emptyMessage.title;
+      const body = document.createElement("div");
+      body.textContent = reason;
+      item.append(title, body);
+      container.appendChild(item);
+      return items;
+    }
+    for (const itemData of items) {
+      const item = document.createElement("div");
+      item.className = "research-news-item";
+      const title = document.createElement(itemData.url ? "a" : "strong");
+      title.textContent = itemData.title;
+      if (itemData.url) {
+        title.href = itemData.url;
+        title.target = "_blank";
+        title.rel = "noopener noreferrer";
+      }
+      item.appendChild(title);
+      const meta = document.createElement("div");
+      meta.className = "research-news-item-meta";
+      const sourceChip = document.createElement("span");
+      sourceChip.textContent = labelPrefix;
+      meta.appendChild(sourceChip);
+      if (itemData.publisher) {
+        const publisherChip = document.createElement("span");
+        publisherChip.textContent = itemData.publisher;
+        meta.appendChild(publisherChip);
+      }
+      if (itemData.publishedAt) {
+        const timeChip = document.createElement("span");
+        timeChip.textContent = formatResearchNewsTimestamp(itemData.publishedAt) || itemData.publishedAt;
+        meta.appendChild(timeChip);
+      }
+      item.appendChild(meta);
+      if (itemData.snippet) {
+        const body = document.createElement("p");
+        body.textContent = itemData.snippet;
+        item.appendChild(body);
+      }
+      const footer = document.createElement("div");
+      footer.className = "research-news-item-footer";
+      const footerSource = document.createElement("span");
+      footerSource.textContent = `Source: ${itemData.publisher || labelPrefix}`;
+      footer.appendChild(footerSource);
+      const footerUrl = itemData.sourceUrl || itemData.url;
+      if (footerUrl) {
+        const footerLink = document.createElement("a");
+        footerLink.href = footerUrl;
+        footerLink.textContent = footerUrl;
+        footerLink.target = "_blank";
+        footerLink.rel = "noopener noreferrer";
+        footer.appendChild(footerLink);
+      }
+      item.appendChild(footer);
+      container.appendChild(item);
+    }
+    return items;
+  }
+
+  function extractResearchFilingItems(cacheEntry) {
+    if (!cacheEntry || typeof cacheEntry !== "object") {
+      return [];
+    }
+    const payload = cacheEntry.payload && typeof cacheEntry.payload === "object" ? cacheEntry.payload : {};
+    const summaryMap = payload.ai_summaries && typeof payload.ai_summaries === "object" ? payload.ai_summaries : {};
+    const cik = String(payload.cik || payload.cik_str || "").trim();
+    const items = Array.isArray(payload.filings)
+      ? payload.filings
+      : Array.isArray(payload.results)
+        ? payload.results
+        : [];
+    return items
+      .map((item) => {
+        if (!item || typeof item !== "object") {
+          return null;
+        }
+        return {
+          form: String(item.form || item.type || "").trim().toUpperCase(),
+          filingDate: String(item.filing_date || item.filingDate || "").trim(),
+          reportDate: String(item.report_date || item.reportDate || "").trim(),
+          accessionNumber: String(item.accession_number || item.accessionNumber || "").trim(),
+          primaryDocument: String(item.primary_document || item.primaryDocument || "").trim(),
+          description: String(item.description || item.summary || "").trim(),
+          url: buildResearchFilingUrl(item, cik),
+          aiSummary: buildResearchFilingUrl(item, cik)
+            ? summaryMap[buildResearchFilingUrl(item, cik)] || null
+            : null,
+        };
+      })
+      .filter((item) => item && item.form);
+  }
+
+  function buildResearchFilingUrl(item, cik) {
+    const filingUrl = String(item?.filing_url || item?.url || item?.link || "").trim();
+    if (filingUrl) {
+      return filingUrl;
+    }
+    const accessionNumber = String(item?.accession_number || item?.accessionNumber || "").trim();
+    const primaryDocument = String(item?.primary_document || item?.primaryDocument || "").trim();
+    const normalizedCik = String(cik || "").trim();
+    if (!normalizedCik || !accessionNumber || !primaryDocument) {
+      return "";
+    }
+    const accessionClean = accessionNumber.replace(/-/g, "");
+    return accessionClean ? `https://www.sec.gov/Archives/edgar/data/${normalizedCik}/${accessionClean}/${primaryDocument}` : "";
+  }
+
+  function getResearchSourceSummaryState(cacheEntry, sourceUrl) {
+    const payload = cacheEntry && typeof cacheEntry === "object" && typeof cacheEntry.payload === "object"
+      ? cacheEntry.payload
+      : {};
+    const summaryMap = payload.ai_summaries && typeof payload.ai_summaries === "object" ? payload.ai_summaries : {};
+    const key = String(sourceUrl || "").trim();
+    if (key && researchSourceSummaryPending.has(key)) {
+      log("resolve source summary state", {
+        sourceUrl: key,
+        hasSummary: !!summaryMap[key],
+        summaryKeys: Object.keys(summaryMap).slice(0, 4),
+      });
+    }
+    return key ? summaryMap[key] || null : null;
+  }
+
+  function syncResearchSourceSummaryPending(cacheEntry) {
+    const payload = cacheEntry && typeof cacheEntry === "object" && typeof cacheEntry.payload === "object"
+      ? cacheEntry.payload
+      : {};
+    const summaryMap = payload.ai_summaries && typeof payload.ai_summaries === "object" ? payload.ai_summaries : {};
+    if (!researchSourceSummaryPending.size || !Object.keys(summaryMap).length) {
+      return;
+    }
+    const cleared = [];
+    for (const [sourceUrl, state] of Object.entries(summaryMap)) {
+      if (!researchSourceSummaryPending.has(sourceUrl) || !state || typeof state !== "object") {
+        continue;
+      }
+      const status = String(state.status || "").trim().toLowerCase();
+      const summaryText = String(state.summary_text || "").trim();
+      const summaryLines = Array.isArray(state.summary_lines) ? state.summary_lines : [];
+      const terminalState = status === "ready"
+        || status === "error"
+        || ((summaryText || summaryLines.length) && status !== "queued" && status !== "running");
+      if (!terminalState) {
+        continue;
+      }
+      researchSourceSummaryPending.delete(sourceUrl);
+      cleared.push({
+        sourceUrl,
+        status: status || "unknown",
+      });
+    }
+    if (cleared.length) {
+      log("sync source summary pending", {
+        cleared,
+        pendingSummaries: researchSourceSummaryPending.size,
+        summaryKeys: Object.keys(summaryMap).slice(0, 4),
+      });
+    }
+  }
+
+  function setResearchSourceSummaryPending(sourceUrl, pending) {
+    const key = String(sourceUrl || "").trim();
+    if (!key) {
+      return;
+    }
+    if (pending) {
+      researchSourceSummaryPending.add(key);
+      return;
+    }
+    researchSourceSummaryPending.delete(key);
+  }
+
+  function isResearchSourceSummaryPending(sourceUrl) {
+    const key = String(sourceUrl || "").trim();
+    return key ? researchSourceSummaryPending.has(key) : false;
+  }
+
+  function hasPendingResearchSourceSummaries() {
+    return researchSourceSummaryPending.size > 0;
+  }
+
+  function createResearchAiSummaryIcon() {
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.setAttribute("viewBox", "0 0 24 24");
+    svg.setAttribute("aria-hidden", "true");
+    svg.classList.add("research-ai-summary-icon");
+
+    const shield = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    shield.setAttribute("d", "M12 2.5 19.5 6v5.6c0 4.7-3 8.8-7.5 10.9C7.5 20.4 4.5 16.3 4.5 11.6V6L12 2.5Z");
+    shield.setAttribute("fill", "#1d4ed8");
+    shield.setAttribute("opacity", "0.95");
+
+    const face = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+    face.setAttribute("x", "6.3");
+    face.setAttribute("y", "6.7");
+    face.setAttribute("width", "11.4");
+    face.setAttribute("height", "8.2");
+    face.setAttribute("rx", "3.6");
+    face.setAttribute("fill", "#0f172a");
+    face.setAttribute("stroke", "#dbeafe");
+    face.setAttribute("stroke-width", "0.8");
+
+    const leftEye = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+    leftEye.setAttribute("cx", "9.2");
+    leftEye.setAttribute("cy", "10.6");
+    leftEye.setAttribute("r", "1.2");
+    leftEye.setAttribute("fill", "#f8fafc");
+
+    const rightEye = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+    rightEye.setAttribute("cx", "14.8");
+    rightEye.setAttribute("cy", "10.6");
+    rightEye.setAttribute("r", "1.2");
+    rightEye.setAttribute("fill", "#f8fafc");
+
+    const mouth = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    mouth.setAttribute("d", "M10.3 13.3c.6.6 1.3.9 1.7.9.4 0 1.1-.3 1.7-.9");
+    mouth.setAttribute("fill", "none");
+    mouth.setAttribute("stroke", "#dbeafe");
+    mouth.setAttribute("stroke-width", "1.1");
+    mouth.setAttribute("stroke-linecap", "round");
+
+    const sparkleOne = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    sparkleOne.setAttribute("d", "M18.1 6.1 18.6 7.4 19.9 7.9 18.6 8.4 18.1 9.7 17.6 8.4 16.3 7.9 17.6 7.4Z");
+    sparkleOne.setAttribute("fill", "#f8fafc");
+
+    const sparkleTwo = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    sparkleTwo.setAttribute("d", "M14.6 4.8 14.9 5.5 15.6 5.8 14.9 6.1 14.6 6.8 14.3 6.1 13.6 5.8 14.3 5.5Z");
+    sparkleTwo.setAttribute("fill", "#e0f2fe");
+
+    svg.append(shield, face, leftEye, rightEye, mouth, sparkleOne, sparkleTwo);
+    return svg;
+  }
+
+  function createResearchAiSummarySpinner() {
+    const spinner = document.createElement("span");
+    spinner.className = "research-ai-summary-spinner";
+    spinner.setAttribute("aria-hidden", "true");
+    return spinner;
+  }
+
+  function createResearchAiSummaryButton(itemData, cacheEntry, summaryState) {
+    if (!itemData || !itemData.url || !researchSourceSummaryUrl) {
+      return null;
+    }
+    const isLoading = !!summaryState?.isBusy;
+    const isReady = !!summaryState?.isReady;
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "research-ai-summary-button";
+    button.dataset.financeAiSummaryButton = "true";
+    button.dataset.financeAiSummaryParentCacheKey = String(cacheEntry?.cache_key || "");
+    button.dataset.financeAiSummarySourceUrl = String(itemData.url || "").trim();
+    button.dataset.financeAiSummarySourceTitle = String(itemData.form || itemData.url || "").trim();
+    button.dataset.financeAiSummarySourceKind = "sec_filing";
+    button.title = isReady ? "Summary already exists" : "Summarize with AI";
+    button.setAttribute("aria-label", isReady ? "Summary already exists" : "Summarize with AI");
+    button.classList.toggle("is-loading", isLoading);
+    button.classList.toggle("is-ready", isReady);
+    button.disabled = isLoading || isReady;
+    if (isReady) {
+      button.setAttribute("aria-disabled", "true");
+    } else {
+      button.removeAttribute("aria-disabled");
+    }
+    button.append(createResearchAiSummaryIcon(), createResearchAiSummarySpinner());
+    return button;
+  }
+
+  function normalizeResearchSummaryLines(state, itemData) {
+    const summaryText = String(state?.summary_text || "").trim();
+    const summaryLines = Array.isArray(state?.summary_lines) ? state.summary_lines : [];
+    const status = String(state?.status || "").trim().toLowerCase();
+    if (status === "ready") {
+      if (summaryLines.length) {
+        return summaryLines.slice(0, 6).map((line) => String(line || "").trim()).filter(Boolean);
+      }
+      if (summaryText) {
+        return summaryText
+          .replace(/\r/g, "\n")
+          .split(/\n+/)
+          .map((line) => line.trim())
+          .filter(Boolean)
+          .slice(0, 6);
+      }
+    }
+    if (status === "error") {
+      return summaryLines.length
+        ? summaryLines.slice(0, 6).map((line) => String(line || "").trim()).filter(Boolean)
+        : [
+            `AI summary failed for ${itemData?.form || "this filing"}.`,
+            "Use the AI button to retry the fetch.",
+            "If the page is blocked or paywalled, the card will show that condition.",
+            "The card will update again once a successful headless run returns.",
+            "The finance agent can retry the same source once the issue clears.",
+            "This card stays ready for another background summary request.",
+          ];
+    }
+    if (status === "queued" || status === "running") {
+      return summaryLines.length
+        ? summaryLines.slice(0, 6).map((line) => String(line || "").trim()).filter(Boolean)
+        : [
+            `Fetching ${itemData?.form || "this filing"} for AI summary.`,
+            "The finance agent is loading the linked source now.",
+            "This placeholder stays in place while the headless run works.",
+            "The loading circle remains visible until the summary returns.",
+            "The same button can be used again if the source needs a refresh.",
+            "The summary will replace these lines when the cache updates.",
+          ];
+    }
+    return [
+      `Click the AI button to summarize ${itemData?.form || "this filing"}.`,
+      "The headless run will fetch the linked URL and return a short note.",
+      "The summary area is intentionally capped to a compact 5-6 line block.",
+      "This component is reusable for any linked research card.",
+      "The icon-only button keeps the card visually quiet.",
+      "The spinner shows while the AI is working in the background.",
+    ];
+  }
+
+  function renderResearchSummaryLines(container, lines) {
+    if (!container) {
+      return;
+    }
+    container.innerHTML = "";
+    const normalized = Array.isArray(lines) ? lines.slice(0, 6) : [];
+    const visibleLines = normalized.length ? normalized : ["Summary will appear here once the AI run completes."];
+    for (const text of visibleLines) {
+      const line = document.createElement("div");
+      line.className = "research-filings-summary-line";
+      line.textContent = String(text || "").trim();
+      container.appendChild(line);
+    }
+  }
+
+  function buildResearchFilingSummary(cacheEntry) {
+    const payload = cacheEntry && typeof cacheEntry === "object" && typeof cacheEntry.payload === "object"
+      ? cacheEntry.payload
+      : {};
+    const items = extractResearchFilingItems(cacheEntry);
+    if (!String(cacheEntry?.as_of || "").trim()) {
+      return payload.message || "Search a ticker to queue the SEC filings refresh.";
+    }
+    if (!items.length) {
+      return payload.message || "No critical SEC filings were returned for this ticker.";
+    }
+    const latestByForm = new Map();
+    for (const item of items) {
+      if (!latestByForm.has(item.form)) {
+        latestByForm.set(item.form, item);
+      }
+    }
+    const parts = [];
+    for (const form of ["10-K", "10-Q", "8-K"]) {
+      const item = latestByForm.get(form);
+      if (!item) {
+        continue;
+      }
+      const partsForItem = [form];
+      if (item.filingDate) {
+        partsForItem.push(item.filingDate);
+      }
+      parts.push(partsForItem.join(" "));
+    }
+    if (!parts.length) {
+      return `${items.length} SEC filing${items.length === 1 ? "" : "s"} cached.`;
+    }
+    return `Critical filings cached: ${parts.join(" · ")}.`;
+  }
+
+  function renderResearchFilingsList(container, cacheEntry, emptyMessage) {
+    if (!container) {
+      return [];
+    }
+    container.innerHTML = "";
+    const payload = cacheEntry && typeof cacheEntry === "object" && typeof cacheEntry.payload === "object"
+      ? cacheEntry.payload
+      : {};
+    const status = String(payload.status || "").trim().toLowerCase();
+    const items = extractResearchFilingItems(cacheEntry);
+    if (!String(cacheEntry?.as_of || "").trim()) {
+      const item = document.createElement("div");
+      item.className = "research-filings-item";
+      const header = document.createElement("div");
+      header.className = "research-filings-item-title";
+      const title = document.createElement("strong");
+      title.textContent = emptyMessage.title;
+      header.appendChild(title);
+      item.appendChild(header);
+      const body = document.createElement("p");
+      body.textContent = emptyMessage.body;
+      item.appendChild(body);
+      const summary = document.createElement("div");
+      summary.className = "research-filings-summary-placeholder";
+      renderResearchSummaryLines(summary, [
+        "Click the AI button to summarize a filing once a URL is available.",
+        "The headless run will fetch the linked page and return a short note.",
+        "The card stays compact so the chat rail remains readable.",
+        "This placeholder will be replaced by the returned summary text.",
+        "The summary area will hold five to six short lines.",
+        "The button stays icon-only so it fits the card header cleanly.",
+      ]);
+      item.appendChild(summary);
+      container.appendChild(item);
+      return items;
+    }
+    if (status === "unavailable" || status === "error" || !items.length) {
+      const item = document.createElement("div");
+      item.className = "research-filings-item";
+      const header = document.createElement("div");
+      header.className = "research-filings-item-title";
+      const title = document.createElement("strong");
+      title.textContent = emptyMessage.title;
+      header.appendChild(title);
+      item.appendChild(header);
+      const body = document.createElement("p");
+      body.textContent = String(payload.message || emptyMessage.body || "No filings were returned.").trim();
+      item.appendChild(body);
+      const summary = document.createElement("div");
+      summary.className = "research-filings-summary-placeholder";
+      renderResearchSummaryLines(summary, [
+        "Search a ticker to queue the SEC filings refresh again.",
+        "The summary area stays ready for a linked-source AI note.",
+        "This card uses the same reusable pattern as any linked source.",
+        "A successful run will replace this placeholder with the summary.",
+        "The loading state will appear in the top-right button.",
+        "The card remains narrow enough for the chat-side rail.",
+      ]);
+      item.appendChild(summary);
+      container.appendChild(item);
+      return items;
+    }
+    for (const itemData of items) {
+      const item = document.createElement("div");
+      item.className = "research-filings-item";
+      const aiSummaryState = getResearchSourceSummaryState(cacheEntry, itemData.url);
+      const aiSummaryStatus = String(aiSummaryState?.status || "").trim().toLowerCase();
+      const isAiSummaryBusy = isResearchSourceSummaryPending(itemData.url) || aiSummaryStatus === "queued" || aiSummaryStatus === "running";
+      const aiSummaryRenderState = aiSummaryState || (isAiSummaryBusy ? { status: "queued" } : null);
+      item.classList.toggle("is-loading", isAiSummaryBusy);
+      if (aiSummaryStatus === "ready" || aiSummaryStatus === "error") {
+        setResearchSourceSummaryPending(itemData.url, false);
+      }
+      const header = document.createElement("div");
+      header.className = "research-filings-item-title";
+      const title = document.createElement("strong");
+      const filedDate = formatResearchShortDate(itemData.filingDate);
+      title.textContent = filedDate ? `${itemData.form} filed ${filedDate}` : itemData.form;
+      header.appendChild(title);
+      item.appendChild(header);
+      if (itemData.url) {
+        const link = document.createElement("a");
+        link.href = itemData.url;
+        link.target = "_blank";
+        link.rel = "noopener noreferrer";
+        link.textContent = itemData.url;
+        item.appendChild(link);
+      }
+      const aiButton = createResearchAiSummaryButton(itemData, cacheEntry, {
+        isBusy: isAiSummaryBusy,
+        isReady: aiSummaryStatus === "ready",
+      });
+      if (aiButton) {
+        item.appendChild(aiButton);
+      }
+      if (isAiSummaryBusy) {
+        const itemLoading = document.createElement("div");
+        itemLoading.className = "research-filings-item-loading";
+        itemLoading.setAttribute("aria-hidden", "true");
+        item.appendChild(itemLoading);
+      }
+      const summary = document.createElement("div");
+      summary.className = "research-filings-summary-placeholder";
+      renderResearchSummaryLines(summary, normalizeResearchSummaryLines(aiSummaryRenderState, itemData));
+      item.appendChild(summary);
+      container.appendChild(item);
+    }
+    return items;
+  }
+
+  async function requestResearchSourceSummary(button) {
+    if (!button || !researchSourceSummaryUrl) {
+      return false;
+    }
+    if (button.disabled) {
+      return false;
+    }
+    const parentCacheKey = String(button.dataset.financeAiSummaryParentCacheKey || "").trim();
+    const sourceUrl = String(button.dataset.financeAiSummarySourceUrl || "").trim();
+    const sourceTitle = String(button.dataset.financeAiSummarySourceTitle || "").trim();
+    const sourceKind = String(button.dataset.financeAiSummarySourceKind || "source").trim() || "source";
+    if (!parentCacheKey || !sourceUrl) {
+      return false;
+    }
+    setResearchSourceSummaryPending(sourceUrl, true);
+    if (currentResearchContext) {
+      renderResearchContext(currentResearchContext);
+    }
+    try {
+      const response = await fetch(researchSourceSummaryUrl, {
+        method: "POST",
+        credentials: "same-origin",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Requested-With": "XMLHttpRequest",
+          "X-CSRFToken": getCsrfToken(),
+        },
+        body: JSON.stringify({
+          parent_cache_key: parentCacheKey,
+          source_url: sourceUrl,
+          source_title: sourceTitle,
+          source_kind: sourceKind,
+          summary_lines: 6,
+        }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok || !payload.ok) {
+        setResearchSourceSummaryPending(sourceUrl, false);
+        if (currentResearchContext) {
+          renderResearchContext(currentResearchContext);
+        }
+        warn("source summary request failed", response.status, payload);
+        return false;
+      }
+      tickerResearchAttempts = 0;
+      const symbol = String(lastTickerResearchSymbol || currentResearchContext?.symbol || "").trim().toUpperCase();
+      if (symbol) {
+        scheduleTickerResearchPoll(symbol);
+      }
+      return true;
+    } catch (error) {
+      setResearchSourceSummaryPending(sourceUrl, false);
+      if (currentResearchContext) {
+        renderResearchContext(currentResearchContext);
+      }
+      warn("source summary request error", error);
+      return false;
     }
   }
 
@@ -737,10 +1942,38 @@
     if (!dailyCandles.length) {
       return [];
     }
+    const quotePrice = extractResearchPrice(context);
+    const mergedDailyCandles = mergeLatestQuoteIntoCandles(dailyCandles, quotePrice);
     if (researchChartTimeframe === "weekly") {
-      return aggregateResearchWeeklyCandles(dailyCandles);
+      return aggregateResearchWeeklyCandles(mergedDailyCandles);
     }
-    return dailyCandles;
+    return mergedDailyCandles;
+  }
+
+  function mergeLatestQuoteIntoCandles(candles, quotePrice) {
+    const numericQuote = Number(quotePrice);
+    if (!Array.isArray(candles) || !candles.length) {
+      return Array.isArray(candles) ? candles.slice() : [];
+    }
+    if (!Number.isFinite(numericQuote) || numericQuote <= 0) {
+      return candles.map((candle) => ({ ...candle }));
+    }
+    const merged = candles.map((candle) => ({ ...candle }));
+    const last = merged[merged.length - 1];
+    if (!last || typeof last !== "object") {
+      return merged;
+    }
+    last.close = numericQuote;
+    if (!Number.isFinite(last.high) || numericQuote > last.high) {
+      last.high = numericQuote;
+    }
+    if (!Number.isFinite(last.low) || numericQuote < last.low) {
+      last.low = numericQuote;
+    }
+    if (!Number.isFinite(last.open) || last.open <= 0) {
+      last.open = numericQuote;
+    }
+    return merged;
   }
 
   function formatResearchChartTooltip(candle) {
@@ -773,11 +2006,20 @@
     const chartLabel = researchChartTimeframe === "weekly" ? "Weekly" : "Daily";
     researchChartTitleEl.textContent = symbol ? `${symbol}: ${chartLabel} OHLCV` : `${chartLabel} OHLCV`;
     researchChartAsOfEl.textContent = historyAsOf ? `Updated ${formatResearchTimestamp(historyAsOf)}` : "Awaiting selection";
+    if (researchChartLoadingEl && researchChartLoadingEl.parentElement) {
+      researchChartLoadingEl.parentElement.classList.toggle("is-loading", !!symbol && !historyCandles.length);
+    }
     if (!symbol || !historyCandles.length) {
       researchChartPlaceholderEl.textContent = symbol
         ? `Select a ticker to load the ${chartLabel.toLowerCase()} OHLCV chart here. The chart will populate once the queued history refresh finishes.`
         : `Select a ticker to load the ${chartLabel.toLowerCase()} OHLCV chart here. The research hydration step will populate this area first, before fundamentals, news, and filings grow around it.`;
+      if (researchChartLoadingEl) {
+        researchChartLoadingEl.setAttribute("aria-hidden", symbol ? "true" : "true");
+      }
       return;
+    }
+    if (researchChartLoadingEl) {
+      researchChartLoadingEl.setAttribute("aria-hidden", "true");
     }
 
     const width = Math.max(320, researchChartPlaceholderEl.clientWidth || 520);
@@ -864,6 +2106,9 @@
         ${lines}
         ${candlesMarkup}
       </svg>`;
+    if (researchChartLoadingEl && researchChartLoadingEl.parentElement) {
+      researchChartLoadingEl.parentElement.classList.remove("is-loading");
+    }
   }
 
   function escapeSvgText(value) {
@@ -960,7 +2205,71 @@
     if (!position || typeof position !== "object") {
       return "";
     }
-    return String(position.symbol || position.ticker?.symbol || "").trim().toUpperCase();
+    return String(position.display_symbol || position.symbol || position.ticker?.symbol || "").trim().toUpperCase();
+  }
+
+  function extractPositionContractSymbol(position) {
+    if (!position || typeof position !== "object") {
+      return "";
+    }
+    return String(position.contract_symbol || position.symbol || position.ticker?.symbol || "").trim().toUpperCase();
+  }
+
+  function formatOptionContractLabel(contractSymbol, underlyingSymbol = "") {
+    const rawSymbol = String(contractSymbol || "").trim().toUpperCase();
+    if (!rawSymbol) {
+      return "";
+    }
+    const underlyingHint = String(underlyingSymbol || "").trim().toUpperCase();
+    let contractCode = "";
+    let displayUnderlying = "";
+    if (rawSymbol.includes(" ")) {
+      const parts = rawSymbol.split(" ").filter(Boolean);
+      if (parts.length < 2) {
+        return rawSymbol;
+      }
+      displayUnderlying = parts[0];
+      contractCode = parts.slice(1).join("").replace(/\s+/g, "");
+    } else if (underlyingHint && rawSymbol.startsWith(underlyingHint)) {
+      displayUnderlying = underlyingHint;
+      contractCode = rawSymbol.slice(underlyingHint.length);
+    } else if (rawSymbol.length > 15) {
+      displayUnderlying = rawSymbol.slice(0, rawSymbol.length - 15);
+      contractCode = rawSymbol.slice(-15);
+    } else {
+      return rawSymbol;
+    }
+    if (contractCode.length !== 15) {
+      return rawSymbol;
+    }
+    const expirationCode = contractCode.slice(0, 6);
+    const optionType = contractCode.slice(6, 7);
+    const strikeCode = contractCode.slice(7);
+    if (!/^\d{6}$/.test(expirationCode) || !/^[CP]$/.test(optionType) || !/^\d+$/.test(strikeCode)) {
+      return rawSymbol;
+    }
+    const year = Number(expirationCode.slice(0, 2));
+    const month = Number(expirationCode.slice(2, 4));
+    const day = Number(expirationCode.slice(4, 6));
+    const strike = Number(strikeCode) / 1000;
+    if (!Number.isFinite(year) || !Number.isFinite(month) || !Number.isFinite(day) || !Number.isFinite(strike)) {
+      return rawSymbol;
+    }
+    const strikeLabel = strike.toFixed(3).replace(/\.?0+$/, "");
+    return `${displayUnderlying || underlyingHint || rawSymbol} ${optionType} ${month}/${day}/${String(year).padStart(2, "0")} $${strikeLabel}`;
+  }
+
+  function extractPositionDisplaySymbol(position) {
+    if (!position || typeof position !== "object") {
+      return "";
+    }
+    const contractSymbol = extractPositionContractSymbol(position);
+    const underlyingHint = String(position.display_symbol || position.underlying_symbol || position.ticker?.symbol || position.symbol || "").trim().toUpperCase();
+    const formattedLabel = formatOptionContractLabel(contractSymbol, underlyingHint);
+    if (formattedLabel && formattedLabel !== contractSymbol) {
+      return formattedLabel;
+    }
+    return extractPositionSymbol(position);
   }
 
   function extractCurrentQuotePrice(bootstrap, symbol) {
@@ -1252,14 +2561,22 @@
 
   function renderPositionRow(position) {
     const symbol = extractPositionSymbol(position);
+    const displaySymbol = extractPositionDisplaySymbol(position) || symbol;
+    const contractSymbol = extractPositionContractSymbol(position);
     const row = document.createElement("tr");
     row.dataset.symbol = symbol;
+    if (contractSymbol && contractSymbol !== symbol) {
+      row.dataset.contractSymbol = contractSymbol;
+    }
     row.dataset.costBasis = String(position.cost_basis ?? 0);
     row.dataset.marketValue = String(position.market_value ?? 0);
     row.dataset.commissions = String(position.commissions ?? 0);
     row.tabIndex = 0;
     row.setAttribute("role", "button");
-    row.setAttribute("aria-label", symbol ? `Show 30-day snapshot for ${symbol}` : "Show 30-day snapshot");
+    const ariaLabel = contractSymbol && contractSymbol !== symbol
+      ? `${symbol} position for contract ${contractSymbol}`
+      : symbol;
+    row.setAttribute("aria-label", ariaLabel ? `Show 30-day snapshot for ${ariaLabel}` : "Show 30-day snapshot");
     row.addEventListener("click", () => {
       if (symbol) {
         selectPositionSymbol(symbol);
@@ -1275,8 +2592,12 @@
     const gainPercent = Number(position.gain_percent);
     const gainAmount = Number(position.gain_amount);
     const columns = [
-      { value: symbol, className: "ticker-cell" },
-      { value: formatNumber(position.quantity, 0) },
+      {
+        value: displaySymbol,
+        className: "ticker-cell",
+        sublabel: contractSymbol && contractSymbol !== displaySymbol ? contractSymbol : "",
+      },
+      { value: formatNumber(position.quantity_display ?? position.quantity, 0) },
       { value: formatNumber(position.average_cost, 4) },
       {
         value: position.last_price == null ? "-" : formatNumber(position.last_price, 4),
@@ -1300,7 +2621,19 @@
       if (column.className) {
         cell.className = column.className;
       }
-      if (column.lastPriceAsOf) {
+      if (column.sublabel) {
+        const wrapper = document.createElement("span");
+        wrapper.className = "ticker-cell-stack";
+        const primary = document.createElement("span");
+        primary.className = "ticker-cell-value";
+        primary.textContent = column.value;
+        wrapper.appendChild(primary);
+        const sublabel = document.createElement("span");
+        sublabel.className = "ticker-cell-sublabel";
+        sublabel.textContent = column.sublabel;
+        wrapper.appendChild(sublabel);
+        cell.appendChild(wrapper);
+      } else if (column.lastPriceAsOf) {
         cell.classList.add("last-price-cell");
         const wrapper = document.createElement("span");
         wrapper.className = "last-price-stack";
@@ -1565,6 +2898,16 @@
     });
   }
 
+  function formatResearchMonthAxisDate(value) {
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) {
+      return String(value || "");
+    }
+    return date.toLocaleDateString("en-US", {
+      month: "short",
+    });
+  }
+
   function getMonthStartTickIndices(candles) {
     if (!Array.isArray(candles) || !candles.length) {
       return [];
@@ -1784,6 +3127,8 @@
 
     const history = extractPriceHistorySeries(bootstrap, activeSymbol);
     const historyAsOf = extractPriceHistoryUpdatedAt(bootstrap, activeSymbol);
+    const quotePrice = extractCurrentQuotePrice(bootstrap, activeSymbol);
+    const averageEntryPrice = extractPositionAverageEntryPrice(bootstrap, activeSymbol);
     const rawCandles = history && Array.isArray(history.candles)
       ? history.candles
       : history && Array.isArray(history.bars)
@@ -1816,15 +3161,13 @@
           && time <= windowEnd.getTime();
       })
       .sort((left, right) => left.timestamp - right.timestamp);
-    const dedupedCandles = dedupeCandlesByUtcDate(candles);
+    const dedupedCandles = mergeLatestQuoteIntoCandles(dedupeCandlesByUtcDate(candles), quotePrice);
     if (!dedupedCandles.length) {
       tradeHistoryMetaEl.textContent = `${activeSymbol}: 30-Day Snapshot, price history unavailable`;
       tradeHistoryChartEl.innerHTML = '<div class="trade-chart-empty">No usable daily candles were found for the last 30 days.</div>';
       return;
     }
 
-    const quotePrice = extractCurrentQuotePrice(bootstrap, activeSymbol);
-    const averageEntryPrice = extractPositionAverageEntryPrice(bootstrap, activeSymbol);
     const width = Math.max(320, tradeHistoryChartEl.clientWidth || 520);
     const height = 300;
     const margin = { top: 18, right: 22, bottom: 58, left: 56 };
@@ -2308,7 +3651,7 @@
         const x = xScale(tickDate.getTime());
         return `
           <line x1="${x.toFixed(2)}" y1="${margin.top + innerHeight}" x2="${x.toFixed(2)}" y2="${margin.top + innerHeight + 4}" stroke="rgba(148,163,184,0.24)" stroke-width="1" />
-          <text x="${x.toFixed(2)}" y="${height - 10}" fill="rgba(226,232,240,0.74)" font-size="11" text-anchor="middle">${formatMonthAxisDate(tickDate)}</text>`;
+          <text x="${x.toFixed(2)}" y="${height - 10}" fill="rgba(226,232,240,0.74)" font-size="11" text-anchor="middle">${formatResearchMonthAxisDate(tickDate)}</text>`;
       }),
       quoteLine,
       avgLine,
@@ -2447,6 +3790,13 @@
     const queueRefresh = options.queueRefresh !== false;
     const requestId = tickerResearchRequestId + 1;
     tickerResearchRequestId = requestId;
+    log("ticker research request start", {
+      symbol: selectedSymbol,
+      queueRefresh,
+      requestId,
+      pollAttempt: options.attempt || 0,
+      pendingSummaries: researchSourceSummaryPending.size,
+    });
     try {
       const response = await fetch(`${researchUrl}?symbol=${encodeURIComponent(selectedSymbol)}&queue=${queueRefresh ? 1 : 0}`, {
         method: "GET",
@@ -2464,6 +3814,16 @@
         warn("ticker research lookup failed", response.status, payload);
         return false;
       }
+      const filingsSummaryKeys = payload?.context?.filings_cache?.payload?.ai_summaries && typeof payload.context.filings_cache.payload.ai_summaries === "object"
+        ? Object.keys(payload.context.filings_cache.payload.ai_summaries)
+        : [];
+      log("ticker research response", {
+        symbol: selectedSymbol,
+        requestId,
+        filingsSummaryCount: filingsSummaryKeys.length,
+        filingsSummaryKeys: filingsSummaryKeys.slice(0, 4),
+        contextReady: isResearchContextReady(payload.context || {}),
+      });
       renderResearchContext(payload.context || {});
       if (searchInputEl) {
         searchInputEl.value = selectedSymbol;
@@ -2478,16 +3838,16 @@
       lastTickerResearchSymbol = selectedSymbol;
       if (queueRefresh) {
         const ready = isResearchContextReady(payload.context || {});
-        if (!ready) {
+        if (!ready || hasPendingResearchSourceSummaries()) {
           scheduleTickerResearchPoll(selectedSymbol);
         } else {
           clearTickerResearchPoll();
         }
       } else {
         const ready = isResearchContextReady(payload.context || {});
-        if (!ready && options.scheduleRetry !== false) {
+        if ((!ready || hasPendingResearchSourceSummaries()) && options.scheduleRetry !== false) {
           scheduleTickerResearchPoll(selectedSymbol);
-        } else if (ready) {
+        } else if (ready && !hasPendingResearchSourceSummaries()) {
           clearTickerResearchPoll();
         }
       }
@@ -2570,6 +3930,7 @@
   function selectTickerFromSearch(match) {
     const symbol = String(match?.symbol || "").trim().toUpperCase();
     if (!symbol) {
+      warn("ticker search selection missing symbol", match);
       return;
     }
     if (searchInputEl) {
@@ -2577,14 +3938,18 @@
     }
     clearTickerSearchResults();
     setActiveFinanceTab("research");
-    renderResearchContext({
-      symbol,
-      status: "lookup",
-      ticker: match,
-      quote_cache: null,
-      history_cache: null,
-      research_snapshot: null,
-    });
+    try {
+      renderResearchContext({
+        symbol,
+        status: "lookup",
+        ticker: match,
+        quote_cache: null,
+        history_cache: null,
+        research_snapshot: null,
+      });
+    } catch (error) {
+      warn("ticker search selection render failed", error, match);
+    }
     clearTickerResearchPoll();
     void loadTickerResearch(symbol, { queueRefresh: true, scheduleRetry: true });
   }
@@ -2617,6 +3982,13 @@
       setResearchChartTimeframe(nextTimeframe);
     });
   });
+  researchViewButtons.forEach((button) => {
+    button.addEventListener("click", () => {
+      const nextView = String(button.dataset.financeResearchViewButton || "dashboard").trim() || "dashboard";
+      setResearchView(nextView);
+    });
+  });
+  syncResearchViewControls();
   syncResearchChartControls();
 
   searchInputEl?.addEventListener("input", () => {
@@ -2649,6 +4021,24 @@
     if (!withinSearch) {
       clearTickerSearchResults();
     }
+  });
+
+  shell.ownerDocument.addEventListener("click", (event) => {
+    const target = event.target instanceof Element ? event.target : null;
+    if (!target) {
+      return;
+    }
+    const button = target.closest("[data-finance-ai-summary-button]");
+    if (!button) {
+      return;
+    }
+    event.preventDefault();
+    log("AI summary button clicked", {
+      sourceUrl: String(button.dataset.financeAiSummarySourceUrl || "").trim(),
+      parentCacheKey: String(button.dataset.financeAiSummaryParentCacheKey || "").trim(),
+      sourceKind: String(button.dataset.financeAiSummarySourceKind || "").trim(),
+    });
+    void requestResearchSourceSummary(button);
   });
 
   function sendPayload(payload) {

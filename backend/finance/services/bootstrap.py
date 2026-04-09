@@ -42,6 +42,14 @@ def _format_context_currency(value: object) -> str:
     return f"{sign}${abs_value:,.2f}" if numeric >= 0 else f"-${abs_value:,.2f}"
 
 
+def _signed_position_quantity(quantity: object, side: object = "") -> float:
+    try:
+        numeric = abs(float(quantity or 0))
+    except (TypeError, ValueError):
+        return 0.0
+    return -numeric if str(side or "").strip().upper() == Position.Side.SHORT else numeric
+
+
 def _format_position_context_lines(positions: list[Any]) -> list[str]:
     if not positions:
         return ["- No open positions loaded yet."]
@@ -50,8 +58,10 @@ def _format_position_context_lines(positions: list[Any]) -> list[str]:
     max_positions = 12
     for position in positions[:max_positions]:
         if isinstance(position, dict):
-            symbol = str(position.get("symbol") or "").strip()
+            symbol = str(position.get("display_symbol") or position.get("symbol") or "").strip()
+            contract_symbol = str(position.get("symbol") or "").strip()
             side = str(position.get("side") or "").strip()
+            asset_type = str(position.get("asset_type") or "").strip().upper()
             quantity = position.get("quantity") or 0
             average_cost = position.get("average_cost") or 0
             cost_basis = position.get("cost_basis") or 0
@@ -63,7 +73,9 @@ def _format_position_context_lines(positions: list[Any]) -> list[str]:
             gain_percent = position.get("gain_percent")
         else:
             symbol = position.ticker.symbol
+            contract_symbol = ""
             side = position.side
+            asset_type = str(getattr(position.ticker, "asset_type", "") or "").strip().upper()
             quantity = position.quantity
             average_cost = position.average_cost
             cost_basis = position.cost_basis
@@ -73,15 +85,19 @@ def _format_position_context_lines(positions: list[Any]) -> list[str]:
             last_price_as_of = None
             gain_amount = None
             gain_percent = None
-        basis_value = _derive_cost_basis(average_cost, quantity, cost_basis)
+        basis_multiplier = _position_contract_multiplier(asset_type)
+        basis_value = _derive_cost_basis(average_cost, quantity, cost_basis) * basis_multiplier
+        quantity_display = _signed_position_quantity(quantity, side)
         parts = [
             f"- {symbol}",
             f"side={str(side).lower()}",
-            f"qty={float(quantity):g}",
+            f"qty={quantity_display:g}",
             f"entry={float(average_cost):.4f}",
             f"basis={float(basis_value):.2f}",
             "position_ttl=infinite",
         ]
+        if contract_symbol and contract_symbol != symbol:
+            parts.append(f"contract={contract_symbol}")
         if last_price is not None:
             try:
                 parts.append(f"last={float(last_price):.4f}")
@@ -127,6 +143,46 @@ def _derive_cost_basis(average_cost: object, quantity: object, fallback: object 
         return float(fallback or 0)
     except (TypeError, ValueError):
         return 0.0
+
+
+def _parse_option_contract_symbol(symbol: object) -> dict[str, str] | None:
+    raw_symbol = str(symbol or "").strip().upper()
+    if not raw_symbol:
+        return None
+    if " " in raw_symbol:
+        parts = raw_symbol.split()
+        if len(parts) < 2:
+            return None
+        underlying_symbol = parts[0]
+        contract_code = "".join(parts[1:])
+    else:
+        if len(raw_symbol) <= 15:
+            return None
+        underlying_symbol = raw_symbol[:-15]
+        contract_code = raw_symbol[-15:]
+    if not re.fullmatch(r"\d{6}[CP]\d{8}", contract_code):
+        return None
+    return {
+        "underlying_symbol": underlying_symbol,
+        "expiration": contract_code[:6],
+        "option_type": contract_code[6:7],
+        "strike_code": contract_code[7:],
+    }
+
+
+def _infer_position_asset_type(symbol: object, asset_type: object = "", underlying_symbol: object = "") -> str:
+    text = str(asset_type or "").strip().upper()
+    if text:
+        return text
+    parsed = _parse_option_contract_symbol(symbol)
+    if parsed:
+        return Ticker.AssetType.OPTION
+    return text
+
+
+def _position_contract_multiplier(asset_type: object) -> float:
+    text = str(asset_type or "").strip().upper()
+    return 100.0 if text == Ticker.AssetType.OPTION else 1.0
 
 
 def _portfolio_brokerage_refresh_due(portfolio: Portfolio) -> bool:
@@ -219,7 +275,7 @@ def _serialize_position(position: Position) -> dict[str, Any]:
     payload = {
         "symbol": position.ticker.symbol,
         "side": position.side,
-        "quantity": float(position.quantity),
+        "quantity": _signed_position_quantity(position.quantity, position.side),
         "average_cost": float(position.average_cost),
         "cost_basis": float(cost_basis),
         "notes": position.notes,
@@ -303,6 +359,8 @@ def _build_position_rows(positions: list[Any], quote_map: dict[str, dict[str, An
     for position in positions:
         if isinstance(position, dict):
             symbol = str(position.get("symbol") or "").strip().upper()
+            asset_type = str(position.get("asset_type") or position.get("assetType") or "").strip().upper()
+            underlying_symbol = str(position.get("underlying_symbol") or position.get("underlyingSymbol") or "").strip().upper()
             side = str(position.get("side") or "LONG").strip().upper()
             quantity = float(position.get("quantity") or 0)
             average_cost = float(position.get("average_cost") or 0)
@@ -311,6 +369,23 @@ def _build_position_rows(positions: list[Any], quote_map: dict[str, dict[str, An
             notes = str(position.get("notes") or "").strip()
         else:
             symbol = str(position.ticker.symbol).strip().upper()
+            raw_metadata = dict(position.metadata or {})
+            raw_position = dict(raw_metadata.get("raw") or {})
+            raw_instrument = dict(raw_position.get("instrument") or {})
+            asset_type = str(
+                raw_metadata.get("asset_type")
+                or raw_position.get("assetType")
+                or raw_instrument.get("assetType")
+                or ""
+            ).strip().upper()
+            underlying_symbol = str(
+                raw_metadata.get("underlying_symbol")
+                or raw_position.get("underlyingSymbol")
+                or raw_position.get("underlying_symbol")
+                or raw_instrument.get("underlyingSymbol")
+                or raw_instrument.get("underlying_symbol")
+                or ""
+            ).strip().upper()
             side = str(position.side or "LONG").strip().upper()
             quantity = float(position.quantity or 0)
             average_cost = float(position.average_cost or 0)
@@ -319,6 +394,11 @@ def _build_position_rows(positions: list[Any], quote_map: dict[str, dict[str, An
             notes = str(position.notes or "").strip()
         if not symbol:
             continue
+        asset_type = _infer_position_asset_type(symbol, asset_type, underlying_symbol)
+        parsed_contract = _parse_option_contract_symbol(symbol)
+        if asset_type == Ticker.AssetType.OPTION and not underlying_symbol and parsed_contract:
+            underlying_symbol = parsed_contract.get("underlying_symbol", "")
+        display_symbol = underlying_symbol if asset_type == Ticker.AssetType.OPTION and underlying_symbol else symbol
         quote_entry = quote_map.get(symbol) or {}
         quote_payload = {}
         if isinstance(quote_entry, dict):
@@ -333,20 +413,29 @@ def _build_position_rows(positions: list[Any], quote_map: dict[str, dict[str, An
             commissions_value = float(commissions) if commissions is not None else 0.0
         except (TypeError, ValueError):
             commissions_value = 0.0
-        market_value = float(last_price * quantity) if last_price is not None else None
-        basis_value = _derive_cost_basis(average_cost, quantity, cost_basis)
+        signed_quantity = _signed_position_quantity(quantity, side)
+        contract_multiplier = _position_contract_multiplier(asset_type)
+        market_value = float(last_price * abs(quantity) * contract_multiplier) if last_price is not None else None
+        basis_value = _derive_cost_basis(average_cost, quantity, cost_basis) * contract_multiplier
         basis_and_commissions = float(basis_value or 0) + commissions_value
-        gain_amount = (market_value - float(basis_value or 0) - commissions_value) if market_value is not None else None
+        raw_gain_amount = (market_value - float(basis_value or 0) - commissions_value) if market_value is not None else None
+        gain_amount = -raw_gain_amount if asset_type == Ticker.AssetType.OPTION and side == Position.Side.SHORT and raw_gain_amount is not None else raw_gain_amount
         gain_percent = (
-            100.0 * ((market_value / basis_and_commissions) - 1.0)
+            -100.0 * ((market_value / basis_and_commissions) - 1.0)
+            if market_value is not None and basis_and_commissions > 0 and asset_type == Ticker.AssetType.OPTION and side == Position.Side.SHORT
+            else 100.0 * ((market_value / basis_and_commissions) - 1.0)
             if market_value is not None and basis_and_commissions > 0
             else None
         )
         rows.append(
             {
                 "symbol": symbol,
+                "display_symbol": display_symbol,
+                "underlying_symbol": underlying_symbol,
+                "asset_type": asset_type,
                 "side": side,
                 "quantity": quantity,
+                "quantity_display": signed_quantity,
                 "average_cost": average_cost,
                 "last_price": last_price,
                 "last_price_as_of": quote_as_of,

@@ -30,3 +30,5 @@ def test_research_home_renders_compact_research_shell():
     assert "Moving Averages" in content
     assert "ATR" in content
     assert "Black-Scholes" in content
+    assert "SEC Filings" in content
+    assert "data-finance-research-filings-loading" in content

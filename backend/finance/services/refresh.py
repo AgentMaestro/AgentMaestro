@@ -283,14 +283,21 @@ def _refresh_brokerage_positions(*, workspace, owner, force: bool = False, rebui
     }
 
 
-def _refresh_quote_cache(*, workspace, owner, force: bool = False, rebuild_snapshot: bool = True) -> dict[str, Any]:
+def _refresh_quote_cache(*, workspace, owner, force: bool = False, rebuild_snapshot: bool = True, quote_fields: str | list[str] | None = None) -> dict[str, Any]:
     portfolio = _find_default_portfolio(workspace, owner)
     watchlist = _find_default_watchlist(workspace, owner)
     symbols = _collect_market_symbols(portfolio, watchlist)
-    return refresh_finance_symbol_batch(workspace=workspace, owner=owner, symbols=symbols, force=force, rebuild_snapshot=rebuild_snapshot)
+    return refresh_finance_symbol_batch(
+        workspace=workspace,
+        owner=owner,
+        symbols=symbols,
+        force=force,
+        rebuild_snapshot=rebuild_snapshot,
+        quote_fields=quote_fields,
+    )
 
 
-def refresh_finance_symbol_batch(*, workspace, owner, symbols: list[str], force: bool = False, rebuild_snapshot: bool = True) -> dict[str, Any]:
+def refresh_finance_symbol_batch(*, workspace, owner, symbols: list[str], force: bool = False, rebuild_snapshot: bool = True, quote_fields: str | list[str] | None = None) -> dict[str, Any]:
     normalized_symbols: list[str] = []
     seen: set[str] = set()
     for symbol in symbols:
@@ -346,7 +353,7 @@ def refresh_finance_symbol_batch(*, workspace, owner, symbols: list[str], force:
 
     if refreshable_symbols:
         try:
-            primary_quote_map = market_data.get_quotes(refreshable_symbols)
+            primary_quote_map = market_data.get_quotes(refreshable_symbols, fields=quote_fields)
         except NotImplementedError:
             primary_quote_map = {}
         except Exception as exc:
@@ -365,7 +372,7 @@ def refresh_finance_symbol_batch(*, workspace, owner, symbols: list[str], force:
         ]
         if missing_symbols and market_data_backup is not None:
             try:
-                backup_quote_map = market_data_backup.get_quotes(missing_symbols)
+                backup_quote_map = market_data_backup.get_quotes(missing_symbols, fields=quote_fields)
             except NotImplementedError:
                 backup_quote_map = {}
             except Exception as exc:

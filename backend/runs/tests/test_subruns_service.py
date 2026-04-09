@@ -206,14 +206,8 @@ def test_default_failure_policy_resumes_parent_after_failed_child():
 
 
 @pytest.mark.django_db(transaction=True)
-def test_interactive_subrun_flow_executes_child_inline_and_returns_child_text(monkeypatch):
+def test_interactive_subrun_flow_queues_child_without_blocking_parent():
     parent = _make_run("interactive_inline")
-
-    async def fake_run(self, **kwargs):
-        return {"run_id": "", "text": "Focused child summary", "status": "completed", "error": None}
-
-    monkeypatch.setattr("runs.services.headless.LLMRunner.run", fake_run)
-    monkeypatch.setattr("runs.services.headless.send_run_transport_message", lambda **kwargs: True)
 
     from runs.services.subruns import run_subrun_flow
 
@@ -226,30 +220,24 @@ def test_interactive_subrun_flow_executes_child_inline_and_returns_child_text(mo
     parent.refresh_from_db()
     child = AgentRun.objects.get(id=result["child_run_id"])
 
-    assert result["completed_inline"] is True
-    assert result["resumed_parent"] is True
-    assert result["child_final_text"] == "Focused child summary"
+    assert result["completed_inline"] is False
+    assert result["queued"] is True
+    assert result["resumed_parent"] is False
+    assert result["child_final_text"] == ""
     assert result["child_error_summary"] == ""
     assert child.parent_run_id == parent.id
     assert child.execution_mode == AgentRun.ExecutionMode.HEADLESS
-    assert child.status == AgentRun.Status.COMPLETED
-    assert child.final_text == "Focused child summary"
+    assert child.status == AgentRun.Status.PENDING
     assert parent.status == AgentRun.Status.RUNNING
 
 
 @pytest.mark.django_db(transaction=True)
-def test_headless_subrun_flow_executes_child_inline_and_resumes_parent(monkeypatch):
+def test_headless_subrun_flow_queues_child_without_blocking_parent():
     parent = _make_run("headless_inline")
     parent.execution_mode = AgentRun.ExecutionMode.HEADLESS
     parent.trigger_kind = AgentRun.TriggerKind.SYSTEM
     parent.save(update_fields=["execution_mode", "trigger_kind", "updated_at"])
 
-    async def fake_run(self, **kwargs):
-        return {"run_id": "", "text": "Focused child summary", "status": "completed", "error": None}
-
-    monkeypatch.setattr("runs.services.headless.LLMRunner.run", fake_run)
-    monkeypatch.setattr("runs.services.headless.send_run_transport_message", lambda **kwargs: True)
-
     from runs.services.subruns import run_subrun_flow
 
     result = run_subrun_flow(
@@ -261,18 +249,19 @@ def test_headless_subrun_flow_executes_child_inline_and_resumes_parent(monkeypat
     parent.refresh_from_db()
     child = AgentRun.objects.get(id=result["child_run_id"])
 
-    assert result["completed_inline"] is True
-    assert result["resumed_parent"] is True
+    assert result["completed_inline"] is False
+    assert result["queued"] is True
+    assert result["resumed_parent"] is False
     assert child.parent_run_id == parent.id
     assert child.execution_mode == AgentRun.ExecutionMode.HEADLESS
-    assert child.status == AgentRun.Status.COMPLETED
+    assert child.status == AgentRun.Status.PENDING
     assert parent.status == AgentRun.Status.RUNNING
 
     event_types = list(
         RunEvent.objects.filter(run=parent).order_by("seq").values_list("event_type", flat=True)
     )
     assert SUBRUN_SPAWN_EVENT in event_types
-    assert SUBRUN_COMPLETED_EVENT in event_types
+    assert SUBRUN_COMPLETED_EVENT not in event_types
 
 
 @pytest.mark.django_db(transaction=True)
@@ -300,11 +289,11 @@ def test_inline_subrun_failure_returns_retryable_diagnostics(monkeypatch):
     parent.refresh_from_db()
 
     assert result["parent_status"] == AgentRun.Status.RUNNING
-    assert result["child_status"] == AgentRun.Status.FAILED
-    assert result["resumed_parent"] is True
-    assert result["child_retryable"] is True
-    assert result["child_failure"]["classification"] == "network_error"
-    assert result["child_failure"]["request_id"] == "req-subrun-123"
+    assert result["child_status"] == AgentRun.Status.PENDING
+    assert result["queued"] is True
+    assert result["resumed_parent"] is False
+    assert result["child_retryable"] is False
+    assert result["child_failure"] is None
 
 
 @pytest.mark.django_db(transaction=True)

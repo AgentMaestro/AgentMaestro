@@ -10,6 +10,7 @@ urlpatterns = [
     path("state/", views.finance_state, name="finance_state"),
     path("search/", views.ticker_search, name="ticker_search"),
     path("research/", views.ticker_research, name="ticker_research"),
+    path("source-summary/", views.source_summary, name="source_summary"),
     path("schwab/connect/", views.schwab_connect, name="schwab_connect"),
     path("schwab/callback/", views.schwab_callback, name="schwab_callback"),
     path("schwab/market/connect/", views.schwab_market_connect, name="schwab_market_connect"),

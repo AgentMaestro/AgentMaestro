@@ -1,9 +1,14 @@
 from __future__ import annotations
 
 import httpx
+from django.contrib.auth import get_user_model
+
+from core.models import Workspace, WorkspaceMembership
+from finance.models import FinanceDataCacheEntry
 
 from finance.providers import sec as sec_provider_module
 from finance.providers.sec import SECFilingsProvider
+from finance.services.ticker_universe import refresh_ticker_filings
 
 
 class _FakeClient:
@@ -67,3 +72,27 @@ def test_sec_filings_provider_returns_recent_filings(monkeypatch):
     assert result["filings"][0]["filing_url"].startswith("https://www.sec.gov/Archives/edgar/data/320193/")
     assert "jeeves" in sec_provider_module._sec_user_agent()
     assert "jeeves" in captured_headers.get("User-Agent", "")
+
+
+def test_refresh_ticker_filings_caches_sec_results(monkeypatch):
+    sec_provider_module._company_ticker_map.cache_clear()
+    monkeypatch.setattr(sec_provider_module.settings, "FINANCE_AGENT_SLUG", "jeeves", raising=False)
+
+    def _client_factory(*args, **kwargs):
+        return _FakeClient(timeout=kwargs.get("timeout", 30.0), headers=kwargs.get("headers", {}))
+
+    monkeypatch.setattr("finance.providers.sec.httpx.Client", _client_factory)
+
+    user = get_user_model().objects.create_user(username="sec-filings-user", password="secret")
+    workspace = Workspace.objects.create(name="SEC Filings Workspace")
+    WorkspaceMembership.objects.create(workspace=workspace, user=user, role=WorkspaceMembership.Role.OWNER)
+
+    result = refresh_ticker_filings(workspace=workspace, owner=user, symbol="AAPL")
+
+    assert result["refreshed"] is True
+    assert result["status"] == "ok"
+
+    entry = FinanceDataCacheEntry.objects.get(cache_key="filings:AAPL:sec")
+    assert entry.data_kind == FinanceDataCacheEntry.DataKind.FILINGS
+    assert entry.payload["count"] == 2
+    assert entry.payload["filings"][0]["form"] == "10-Q"

@@ -421,8 +421,8 @@ def run_subrun_flow(
     group_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
-    Spawn a child run and, for headless parents, execute the child inline so the
-    current planner/model round can continue with the child result.
+    Spawn a child run and queue it for background execution so the current
+    planner/model round can continue immediately.
     """
     if not str(input_text or "").strip():
         raise RuntimeError("spawn_subrun requires a non-empty input_text.")
@@ -460,6 +460,7 @@ def run_subrun_flow(
             "join_policy": join_policy,
             "failure_policy": failure_policy,
             "completed_inline": False,
+            "queued": False,
             "resumed_parent": False,
             "child_final_text": "",
             "child_error_summary": summary,
@@ -486,7 +487,6 @@ def run_subrun_flow(
             "subrun_failure_count": network_error_failures,
         }
 
-    inline_child_execution = AgentRun.ExecutionMode.HEADLESS
     child = spawn_subrun(
         parent_run_id=parent_run_id,
         input_text=input_text,
@@ -496,46 +496,17 @@ def run_subrun_flow(
         timeout_seconds=timeout_seconds,
         failure_policy=failure_policy,
         group_id=group_id,
-        schedule_child=False,
-        child_execution_mode=inline_child_execution,
+        child_execution_mode=AgentRun.ExecutionMode.HEADLESS,
+        block_parent=False,
     )
 
-    from runs.services.headless import execute_headless_run
-    from runs.services.headless import get_headless_failure_details
-
     logger.info(
-        "Executing subrun inline for tool flow parent_run=%s child_run=%s parent_execution_mode=%s child_execution_mode=%s",
+        "Queued subrun for tool flow parent_run=%s child_run=%s parent_execution_mode=%s child_execution_mode=%s",
         parent_run_id,
         child.id,
         parent.execution_mode,
-        inline_child_execution,
+        child.execution_mode,
     )
-    execute_headless_run(str(child.id))
-    completed_inline = True
-    resumed_parent = complete_subrun(child_run_id=str(child.id), schedule_parent=False) == str(parent.id)
-
-    child.refresh_from_db()
-    parent.refresh_from_db()
-    failure_details = get_headless_failure_details(child) if child.status in FAILURE_RUN_STATUSES else None
-    if child.status in FAILURE_RUN_STATUSES and failure_details is None:
-        failure_details = {
-            "summary": child.error_summary or f"Child run finished with status {child.status}.",
-            "classification": "child_run_failed",
-            "code": "",
-            "param": "",
-            "status": "",
-            "request_id": "",
-            "retryable": False,
-            "recommended_action": "Review the child error summary and decide whether to retry or continue with partial results.",
-        }
-    child_failed = child.status in FAILURE_RUN_STATUSES
-    fallback_notice = ""
-    if child_failed:
-        fallback_notice = (
-            "Child subrun failed. Briefly acknowledge the failure, continue the task in the parent run "
-            "without asking the user for permission to proceed, and mention the child error summary when it "
-            "helps the user understand what failed."
-        )
     return {
         "parent_run_id": str(parent.id),
         "parent_status": parent.status,
@@ -544,13 +515,16 @@ def run_subrun_flow(
         "child_execution_mode": child.execution_mode,
         "join_policy": join_policy,
         "failure_policy": failure_policy,
-        "completed_inline": completed_inline,
-        "resumed_parent": resumed_parent,
-        "child_final_text": child.final_text,
-        "child_error_summary": child.error_summary,
-        "child_failed": child_failed,
-        "child_failure": failure_details,
-        "child_retryable": bool((failure_details or {}).get("retryable")),
-        "child_recommended_action": str((failure_details or {}).get("recommended_action") or "").strip(),
-        "fallback_notice": fallback_notice,
+        "completed_inline": False,
+        "queued": True,
+        "resumed_parent": False,
+        "child_final_text": "",
+        "child_error_summary": "",
+        "child_failed": False,
+        "child_failure": None,
+        "child_retryable": False,
+        "child_recommended_action": "",
+        "fallback_notice": (
+            "Subrun queued in background; continue the parent task without waiting for the child result."
+        ),
     }

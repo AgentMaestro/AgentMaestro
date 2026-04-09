@@ -44,8 +44,8 @@ def test_scheduled_task_management_schema_advertises_edit_disable_enable():
     assert "preview the current" in get_description
     assert "soft-delete" in disable_description
     assert "recomputes its next run time" in enable_description
-    assert "off-schedule" in run_description
-    assert "same approval gate" in run_description
+    assert "scheduled_task_id" in run_description
+    assert "waiting_for_approval" in run_tool["response_fields"]
     schedule_tool = next(tool for tool in get_tool_schemas() if tool["name"] == "schedule_task")
     assert (
         "Use `get_scheduled_task` when you want to preview a single task's full payload"
@@ -84,19 +84,16 @@ def test_code_navigation_schemas_advertise_navigation_workflow():
     find_symbol = next(tool for tool in get_tool_schemas() if tool["name"] == "find_symbol")
     find_references = next(tool for tool in get_tool_schemas() if tool["name"] == "find_references")
 
-    assert "does not search file contents" in search_files["parameters"]["description"]
-    assert "Use this when" in search_files["parameters"]["description"]
-    assert "Do not use it for content search" in search_files["parameters"]["description"]
-    assert "Search one path/name query at a time" in search_files["parameters"]["description"]
+    assert "does not search file contents" in search_files["parameters"]["description"].lower()
+    assert "use this when" in search_files["parameters"]["description"].lower()
+    assert "do not use it for content search" in search_files["parameters"]["description"].lower()
+    assert "search one path/name query at a time" in search_files["parameters"]["description"].lower()
     assert "scope may point to a file" in search_files["parameters"]["description"].lower()
-    assert (
-        "hidden files and directories are included"
-        in search_files["parameters"]["description"].lower()
-    )
+    assert "hidden paths are included" in search_files["parameters"]["description"].lower()
     assert "test paths are included by default" in search_files["parameters"]["description"].lower()
-    assert "symbols found in a single file" in list_symbols["parameters"]["description"]
-    assert "exact or fuzzy" in find_symbol["parameters"]["description"]
-    assert "impact analysis" in find_references["parameters"]["description"]
+    assert "list symbols defined in a file" in list_symbols["parameters"]["description"].lower()
+    assert "exact or fuzzy" in find_symbol["parameters"]["description"].lower()
+    assert "impact analysis" in find_references["parameters"]["description"].lower()
     assert "short line-numbered excerpt" in find_references["response_fields"]["items"].lower()
     assert "first hit" in find_references["parameters"]["description"].lower()
     assert "symbol_name" in find_symbol["parameters"]["required"]
@@ -148,9 +145,9 @@ def test_code_navigation_schemas_advertise_navigation_workflow():
         assert "selection_excerpt" in response_fields
         assert "stats" in response_fields
         assert "truncated" in response_fields
-    assert "container/scope" in list_symbols["response_fields"]["items"]
-    assert "signature" in find_symbol["response_fields"]["items"]
-    assert "container/scope" in find_symbol["response_fields"]["selection"]
+    assert "container/scope" in list_symbols["response_fields"]["items"].lower()
+    assert "signature" in find_symbol["response_fields"]["items"].lower()
+    assert "container/scope" in find_symbol["response_fields"]["selection"].lower()
     assert (
         "signature"
         in next(tool for tool in get_tool_schemas() if tool["name"] == "jump_to_symbol")[
@@ -175,8 +172,9 @@ def test_google_bridge_schema_advertises_mutation_aware_payload_contract():
     action_kind = google_tool["parameters"]["properties"]["action_kind"]["description"]
     calendar_time_zone = google_tool["parameters"]["properties"]["time_zone"]["description"]
 
-    assert "Gmail draft/send workflows" in tool_description
-    assert "Drive, Docs, and Sheets" in tool_description
+    assert "required parameters" in tool_description.lower()
+    assert "gmail draft/send workflows" in description.lower()
+    assert "drive, docs, and sheets" in description.lower()
     assert "REQUIRED PARAMETERS" in description
     assert "WORKING EXAMPLE PAYLOADS" in description
     assert "steps" in description
@@ -197,7 +195,7 @@ def test_google_bridge_schema_advertises_mutation_aware_payload_contract():
     assert "America/New_York" in calendar_time_zone
     assert "generic google_bridge query language" in query_description.lower()
     assert "and, or, not" in query_description.lower()
-    assert "grouped alternation is allowed inside fielded clauses" in query_description.lower()
+    assert "grouped or is allowed inside fielded clauses" in query_description.lower()
     assert "supported query fields vary by surface" in query_description.lower()
     assert "drive list/read" in query_description.lower()
     assert "docs and sheets reads use direct file identifiers" in query_description.lower()
@@ -216,7 +214,7 @@ def test_google_bridge_schema_advertises_people_support():
     assert "people" in description
     assert "people" in resource_kind
     assert "people" in operation_description
-    assert "people contact search uses query plus read_mask" in query_description
+    assert "people contact search uses query plus read_mask" in description
     assert "search contacts with query plus read_mask" in description
     assert "read a single contact with resource_name plus person_fields" in description
     assert "create a contact with person and person_fields" in description

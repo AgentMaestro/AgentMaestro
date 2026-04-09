@@ -80,6 +80,20 @@ def _is_equity_quote_window_open(now: datetime) -> bool:
     return _QUOTE_WINDOW_START <= current_time < _QUOTE_WINDOW_END
 
 
+def next_equity_quote_purge_cutoff(now: datetime | None = None) -> datetime:
+    candidate_now = now or timezone.now()
+    local_now = timezone.localtime(candidate_now)
+    candidate_day = local_now.date()
+    if local_now.time() >= _QUOTE_WINDOW_START:
+        candidate_day = candidate_day + timedelta(days=1)
+    while candidate_day.weekday() >= 5 or _is_us_federal_holiday(candidate_day):
+        candidate_day = candidate_day + timedelta(days=1)
+    return timezone.make_aware(
+        datetime.combine(candidate_day, _QUOTE_WINDOW_START),
+        local_now.tzinfo,
+    )
+
+
 def _load_cached_market_hours(day: date_class) -> FinanceDataCacheEntry | None:
     return (
         FinanceDataCacheEntry.objects.filter(

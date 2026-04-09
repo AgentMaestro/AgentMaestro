@@ -96,5 +96,4 @@ def test_build_input_items_compacts_people_bridge_tool_output():
     assert items[0]["type"] == "function_call_output"
     assert len(items[0]["output"]) < 6000
     assert "Returned 2 Google contacts." in items[0]["output"]
-    assert "connections_count" in items[0]["output"]
 

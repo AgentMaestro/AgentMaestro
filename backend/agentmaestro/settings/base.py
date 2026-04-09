@@ -283,6 +283,10 @@ FINANCE_QUOTE_TTL_SECONDS = int(_env_value("FINANCE_QUOTE_TTL_SECONDS") or "120"
 FINANCE_RESEARCH_SNAPSHOT_TTL_SECONDS = int(_env_value("FINANCE_RESEARCH_SNAPSHOT_TTL_SECONDS") or "300")
 FINANCE_BROKERAGE_REFRESH_TTL_SECONDS = int(_env_value("FINANCE_BROKERAGE_REFRESH_TTL_SECONDS") or "300")
 FINANCE_BROKERAGE_TRANSACTION_LOOKBACK_DAYS = int(_env_value("FINANCE_BROKERAGE_TRANSACTION_LOOKBACK_DAYS") or "30")
+FINANCE_CACHE_PURGE_INTERVAL_HOURS = int(_env_value("FINANCE_CACHE_PURGE_INTERVAL_HOURS") or "24")
+FINANCE_CACHE_PURGE_LIMIT = int(_env_value("FINANCE_CACHE_PURGE_LIMIT") or "1000")
+FINANCE_NEWS_TTL_SECONDS = int(_env_value("FINANCE_NEWS_TTL_SECONDS") or "3600")
+FINANCE_NEWS_WEB_SEARCH_TIMEOUT_SECONDS = _env_float_value("FINANCE_NEWS_WEB_SEARCH_TIMEOUT_SECONDS", 10.0)
 FINANCE_TICKER_UNIVERSE_REFRESH_INTERVAL_HOURS = int(_env_value("FINANCE_TICKER_UNIVERSE_REFRESH_INTERVAL_HOURS") or "24")
 FINANCE_TICKER_UNIVERSE_PAGE_SIZE = int(_env_value("FINANCE_TICKER_UNIVERSE_PAGE_SIZE") or "1000")
 FINANCE_TICKER_UNIVERSE_MAX_PAGES = int(_env_value("FINANCE_TICKER_UNIVERSE_MAX_PAGES") or "50")
@@ -332,6 +336,7 @@ SCHWAB_MARKET_DATA_CALLBACK_URL = _env_value("SCHWAB_MARKET_DATA_CALLBACK_URL")
 SCHWAB_OAUTH_AUTHORIZE_URL = _env_value("SCHWAB_OAUTH_AUTHORIZE_URL", "https://api.schwabapi.com/v1/oauth/authorize").rstrip("/")
 SCHWAB_OAUTH_TOKEN_URL = _env_value("SCHWAB_OAUTH_TOKEN_URL", "https://api.schwabapi.com/v1/oauth/token").rstrip("/")
 SCHWAB_OAUTH_SCOPE = _env_value("SCHWAB_OAUTH_SCOPE", "readonly")
+BRAVE_SEARCH_API_KEY = _env_value("BRAVE_SEARCH_API_KEY")
 FINANCE_AGENT_SLUG = _env_value("FINANCE_AGENT_SLUG")
 FINANCE_MARKET_DATA_PROVIDER = (_env_value("FINANCE_MARKET_DATA_PROVIDER") or "schwab").strip().lower() or "schwab"
 FINANCE_MARKET_DATA_BACKUP_PROVIDER = (_env_value("FINANCE_MARKET_DATA_BACKUP_PROVIDER") or "massive").strip().lower() or "massive"
@@ -415,6 +420,11 @@ CELERY_BEAT_SCHEDULE["finance.refresh_expired_quotes"] = {
     "task": "finance.tasks.refresh_expired_quotes_sweep",
     "schedule": timedelta(seconds=max(15, FINANCE_QUOTE_TTL_SECONDS)),
     "options": {"expires": max(FINANCE_QUOTE_TTL_SECONDS * 2, 60)},
+}
+CELERY_BEAT_SCHEDULE["finance.purge_expired_cache"] = {
+    "task": "finance.tasks.purge_expired_finance_cache",
+    "schedule": timedelta(hours=FINANCE_CACHE_PURGE_INTERVAL_HOURS),
+    "options": {"expires": max(FINANCE_CACHE_PURGE_INTERVAL_HOURS * 7200, 3600)},
 }
 CELERY_BEAT_SCHEDULE["finance.refresh_brokerage_snapshot"] = {
     "task": "finance.tasks.refresh_brokerage_snapshot_sweep",

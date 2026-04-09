@@ -1,6 +1,7 @@
 from core.models import Workspace, WorkspaceMembership
 from django.conf import settings
 from django.contrib.auth.decorators import login_required
+import json
 from django.http import JsonResponse
 from django.db.models import Case, IntegerField, Value, When
 from django.shortcuts import redirect, render
@@ -21,9 +22,14 @@ from finance.providers.schwab import (
 )
 from finance.tasks import (
     prefetch_finance_workspace,
+    refresh_finance_source_summary_task,
+    refresh_ticker_research_fundamentals_task,
+    refresh_ticker_research_filings_task,
     refresh_ticker_research_history_task,
+    refresh_ticker_research_news_task,
     refresh_ticker_research_quote_task,
 )
+from finance.services.source_summary import mark_source_summary_queued
 
 
 logger = get_app_logger("finance")
@@ -150,22 +156,50 @@ def ticker_research(request):
     if not symbol:
         return JsonResponse({"ok": False, "error": "symbol is required"}, status=400)
     queue_refresh = str(request.GET.get("queue") or "1").strip().lower() not in {"0", "false", "no"}
+    logger.info(
+        "ticker research request started workspace_id=%s owner_id=%s symbol=%s queue_refresh=%s",
+        workspace.id,
+        request.user.id,
+        symbol,
+        queue_refresh,
+    )
     context = build_ticker_research_context(symbol, workspace=workspace, owner=request.user)
     quote_task_id = ""
     history_task_id = ""
+    fundamentals_task_id = ""
+    filings_task_id = ""
+    news_task_id = ""
     if queue_refresh:
-        quote_task = refresh_ticker_research_quote_task.delay(str(workspace.id), str(request.user.id), symbol, True)
+        quote_task = refresh_ticker_research_quote_task.delay(str(workspace.id), str(request.user.id), symbol, True, "all")
         history_task = refresh_ticker_research_history_task.delay(str(workspace.id), str(request.user.id), symbol, 250)
+        fundamentals_task = refresh_ticker_research_fundamentals_task.delay(str(workspace.id), str(request.user.id), symbol)
+        filings_task = refresh_ticker_research_filings_task.delay(str(workspace.id), str(request.user.id), symbol)
+        news_task = refresh_ticker_research_news_task.delay(str(workspace.id), str(request.user.id), symbol, 10)
         quote_task_id = quote_task.id
         history_task_id = history_task.id
+        fundamentals_task_id = fundamentals_task.id
+        filings_task_id = filings_task.id
+        news_task_id = news_task.id
         logger.info(
-            "queued ticker research refresh workspace_id=%s owner_id=%s symbol=%s quote_task_id=%s history_task_id=%s",
+            "queued ticker research refresh workspace_id=%s owner_id=%s symbol=%s quote_task_id=%s history_task_id=%s fundamentals_task_id=%s filings_task_id=%s news_task_id=%s",
             workspace.id,
             request.user.id,
             symbol,
             quote_task_id,
             history_task_id,
+            fundamentals_task_id,
+            filings_task_id,
+            news_task_id,
         )
+    logger.info(
+        "ticker research request finished workspace_id=%s owner_id=%s symbol=%s quote_cache=%s history_cache=%s research_snapshot=%s",
+        workspace.id,
+        request.user.id,
+        symbol,
+        bool(context.get("quote_cache")),
+        bool(context.get("history_cache")),
+        bool(context.get("research_snapshot")),
+    )
     return JsonResponse(
         {
             "ok": True,
@@ -173,7 +207,75 @@ def ticker_research(request):
             "queued": queue_refresh,
             "quote_task_id": quote_task_id,
             "history_task_id": history_task_id,
+            "fundamentals_task_id": fundamentals_task_id,
+            "filings_task_id": filings_task_id,
+            "news_task_id": news_task_id,
             "context": context,
+        }
+    )
+
+
+@login_required
+@require_http_methods(["POST"])
+def source_summary(request):
+    workspace = _get_or_create_finance_workspace(request.user)
+    try:
+        payload = request.json if hasattr(request, "json") else None
+    except Exception:  # noqa: BLE001
+        payload = None
+    if not isinstance(payload, dict):
+        try:
+            payload = json.loads(request.body.decode("utf-8") or "{}")
+        except Exception:  # noqa: BLE001
+            payload = {}
+    parent_cache_key = str(payload.get("parent_cache_key") or payload.get("cache_key") or "").strip()
+    source_url = str(payload.get("source_url") or "").strip()
+    source_title = str(payload.get("source_title") or "").strip()
+    source_kind = str(payload.get("source_kind") or "source").strip() or "source"
+    if not parent_cache_key:
+        return JsonResponse({"ok": False, "error": "parent_cache_key is required"}, status=400)
+    if not source_url:
+        return JsonResponse({"ok": False, "error": "source_url is required"}, status=400)
+
+    queued_state = mark_source_summary_queued(
+        workspace_id=str(workspace.id),
+        cache_key=parent_cache_key,
+        source_url=source_url,
+        source_title=source_title,
+        source_kind=source_kind,
+        task_id="",
+        run_id="",
+    )
+    if not queued_state.get("ok"):
+        return JsonResponse({"ok": False, "error": queued_state.get("status") or "queue_failed"}, status=400)
+
+    task = refresh_finance_source_summary_task.delay(
+        str(workspace.id),
+        str(request.user.id),
+        parent_cache_key,
+        source_url,
+        source_title,
+        source_kind,
+        int(payload.get("summary_lines") or 6),
+    )
+    queued_state["task_id"] = task.id
+    logger.info(
+        "queued finance source summary workspace_id=%s owner_id=%s cache_key=%s url=%s task_id=%s kind=%s",
+        workspace.id,
+        request.user.id,
+        parent_cache_key,
+        source_url,
+        task.id,
+        source_kind,
+    )
+    return JsonResponse(
+        {
+            "ok": True,
+            "queued": True,
+            "workspace_id": str(workspace.id),
+            "task_id": task.id,
+            "cache_key": parent_cache_key,
+            "state": queued_state.get("state") or {},
         }
     )
 

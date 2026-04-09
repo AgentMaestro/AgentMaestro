@@ -16,7 +16,7 @@ from logging_utils import get_app_logger
 
 from core.services.timezones import get_local_timezone_name
 from google_bridge.models import GoogleAccount
-from google_bridge.services.client import GoogleBridgeClient
+from google_bridge.services.client import GoogleApiError, GoogleBridgeClient
 from google_bridge.services.query_language import QueryLanguageError
 from google_bridge.services.query_planner import QueryLiteral, QueryPlannerError, plan_google_query, _render_clause
 
@@ -30,6 +30,7 @@ logger = get_app_logger(__name__)
 
 _PROMPT_FIELD_ORDER = (
     "account_scope",
+    "account_email",
     "email",
     "google_subject",
     "query",
@@ -111,6 +112,11 @@ def _append_prompt_field(lines: list[str], label: str, value: object) -> None:
     if len(compact) > _PROMPT_VALUE_LIMIT:
         compact = f"{compact[:_PROMPT_VALUE_LIMIT].rstrip()}..."
     lines.append(f"- {label}: {compact}")
+
+
+def _is_google_not_found_error(exc: Exception) -> bool:
+    message = str(exc).strip().lower()
+    return "requested entity was not found" in message or "404" in message or "not found" in message
 
 
 def _build_google_step_prompt(step: dict[str, object], *, index: int, total: int) -> str:
@@ -209,8 +215,10 @@ def execute_google_task(*, payload: dict, workspace=None, owner=None, account: G
 def normalize_google_payload(payload: dict | None) -> dict[str, object]:
     raw = dict(payload or {})
     raw["integration_kind"] = str(raw.get("integration_kind") or "google").strip().lower()
-    raw["google_subject"] = str(raw.get("google_subject") or "").strip()
-    raw["email"] = str(raw.get("email") or "").strip()
+    raw["account_email"] = str(raw.get("account_email") or raw.get("email") or "").strip()
+    raw["account_google_subject"] = str(raw.get("account_google_subject") or raw.get("google_subject") or "").strip()
+    raw["google_subject"] = str(raw.get("google_subject") or raw.get("account_google_subject") or "").strip()
+    raw["email"] = str(raw.get("email") or raw.get("account_email") or "").strip()
     steps = [
         _normalize_google_step(step, defaults=raw, step_index=index)
         for index, step in enumerate(list(raw.get("steps") or []), start=1)
@@ -1107,13 +1115,27 @@ def _execute_google_step(
     account_scope = str(normalized.get("account_scope") or "primary")
     email = str(normalized.get("email") or "").strip()
     google_subject = str(normalized.get("google_subject") or "").strip()
+    account_google_subject = str(normalized.get("account_google_subject") or "").strip()
+    message_id = str(normalized.get("message_id") or "").strip()
     if not email and "@" in google_subject:
         email = google_subject
+    if not google_subject and account_google_subject:
+        google_subject = account_google_subject
+    resolve_scope = account_scope
+    if (
+        str(normalized.get("resource_kind") or "") == "gmail"
+        and str(normalized.get("operation") or "") == "read"
+        and message_id
+        and not email
+        and not google_subject
+        and account_scope != "all"
+    ):
+        resolve_scope = "all"
     selected_accounts = list(
         resolve_google_accounts(
             workspace=workspace,
             owner=owner,
-            account_scope=account_scope,
+            account_scope=resolve_scope,
             google_subject=google_subject,
             email=email,
         )
@@ -1221,8 +1243,24 @@ def _execute_google_step(
         raise GoogleBridgeTaskError(
             f"{resource_kind.title()} read/export tasks require a specific connected account. Use email or google_subject to target the account explicitly."
         )
-    elif normalized.get("account_scope") == "all" and len(selected_accounts) > 1 and operation in {"list", "read"} and not str(normalized.get("message_id") or "").strip():
+    elif normalized.get("account_scope") == "all" and len(selected_accounts) > 1 and operation in {"list", "read"} and not message_id:
         result, summary_text = _execute_merged_list_task(selected_accounts, normalized, resource_kind)
+    elif resource_kind == "gmail" and operation == "read" and message_id and len(selected_accounts) > 1:
+        last_error: Exception | None = None
+        for connection in selected_accounts:
+            try:
+                result, summary_text = _execute_google_task_for_account(connection, normalized, resource_kind, operation)
+                selected_accounts = [connection]
+                break
+            except GoogleApiError as exc:
+                last_error = exc
+                if not _is_google_not_found_error(exc):
+                    raise
+        else:
+            raise GoogleBridgeTaskError(
+                "Google bridge could not find that Gmail message in any connected account. "
+                "Use the returned account_email or google_subject together with message_id."
+            ) from last_error
     elif normalized.get("account_scope") == "all" and len(selected_accounts) > 1 and operation == "read":
         raise GoogleBridgeTaskError(
             "Google bridge read tasks require the specific account from the list result. "
@@ -1295,7 +1333,6 @@ def _execute_merged_list_task(
                     {
                         **dict(item),
                         "account_email": connection.email,
-                        "account_google_subject": connection.google_subject,
                     }
                 )
         elif resource_kind == "drive":
@@ -1305,7 +1342,6 @@ def _execute_merged_list_task(
                     {
                         **dict(item),
                         "account_email": connection.email,
-                        "account_google_subject": connection.google_subject,
                     }
                 )
         else:
@@ -1315,7 +1351,6 @@ def _execute_merged_list_task(
                     {
                         **dict(calendar_item),
                         "account_email": connection.email,
-                        "account_google_subject": connection.google_subject,
                     }
                 )
             for item in items:
@@ -1323,7 +1358,6 @@ def _execute_merged_list_task(
                     {
                         **dict(item),
                         "account_email": connection.email,
-                        "account_google_subject": connection.google_subject,
                     }
                 )
 
@@ -1429,7 +1463,6 @@ def _execute_merged_gmail_settings_list_task(
                 {
                     **dict(item),
                     "account_email": connection.email,
-                    "account_google_subject": connection.google_subject,
                 }
             )
     return (
@@ -1577,15 +1610,19 @@ def _normalize_google_step(step: dict | None, *, defaults: dict[str, object] | N
     raw["integration_kind"] = integration_kind
     raw["resource_kind"] = resource_kind
     raw["account_scope"] = account_scope
+    raw["account_email"] = str(raw.get("account_email") or raw.get("email") or "").strip()
+    raw["account_google_subject"] = str(raw.get("account_google_subject") or raw.get("google_subject") or "").strip()
+    raw["email"] = str(raw.get("email") or raw.get("account_email") or "").strip()
+    raw["google_subject"] = str(raw.get("google_subject") or raw.get("account_google_subject") or "").strip()
     raw["_calendar_id_explicit"] = "calendar_id" in step_data and bool(str(step_data.get("calendar_id") or "").strip())
     raw["_gmail_list_include_read"] = _normalize_bool(raw.get("include_read"))
     raw["max_results"] = int(raw.get("max_results") or 20)
     raw["label_ids"] = _normalize_string_list(raw.get("label_ids"))
     raw["query"] = str(raw.get("query") or "").strip()
     raw["calendar_id"] = str(raw.get("calendar_id") or "primary").strip() or "primary"
-    raw["time_min"] = _normalize_calendar_timestamp(raw.get("time_min"))
-    raw["time_max"] = _normalize_calendar_timestamp(raw.get("time_max"))
-    raw["time_zone"] = _normalize_calendar_timezone_name(raw.get("time_zone"))
+    raw["time_min"] = _normalize_calendar_timestamp(raw.get("time_min") or raw.get("timeMin"))
+    raw["time_max"] = _normalize_calendar_timestamp(raw.get("time_max") or raw.get("timeMax"))
+    raw["time_zone"] = _normalize_calendar_timezone_name(raw.get("time_zone") or raw.get("timeZone"))
     raw["message_id"] = str(raw.get("message_id") or "").strip()
     raw["event_id"] = str(raw.get("event_id") or "").strip()
     raw["draft_id"] = str(raw.get("draft_id") or "").strip()
@@ -1597,6 +1634,7 @@ def _normalize_google_step(step: dict | None, *, defaults: dict[str, object] | N
     raw["bcc"] = _normalize_string_list(raw.get("bcc"))
     raw["attendees"] = _normalize_string_list(raw.get("attendees"))
     raw["send_updates"] = _normalize_calendar_send_updates(raw.get("send_updates"))
+    raw["single_events"] = _normalize_bool(raw.get("single_events") or raw.get("singleEvents"))
     raw["google_subject"] = str(raw.get("google_subject") or "").strip()
     raw["email"] = str(raw.get("email") or "").strip()
     raw["delete_mode"] = str(raw.get("delete_mode") or "").strip().lower()

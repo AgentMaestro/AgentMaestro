@@ -172,7 +172,7 @@ class MassiveMarketDataProvider(MarketDataProvider):
             },
         }
 
-    def get_quote(self, symbol: str) -> dict[str, Any]:
+    def get_quote(self, symbol: str, *, fields: str | list[str] | None = None) -> dict[str, Any]:
         symbol = self._normalize_symbol(symbol)
         payload = self._request_json("GET", f"/v2/snapshot/locale/us/markets/stocks/tickers/{symbol}")
         return self._normalize_snapshot(symbol, payload)

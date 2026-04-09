@@ -177,7 +177,10 @@ class ToolSchemaCoverageTests(TestCase):
         self.assertIn(
             "Search one path/name query at a time", registry_tools["search_files"]["description"]
         )
-        self.assertIn("Hidden paths are included", registry_tools["search_files"]["description"])
+        self.assertIn(
+            "hidden paths are included",
+            registry_tools["search_files"]["description"].lower(),
+        )
         self.assertIn(
             "Test paths are included by default", registry_tools["search_files"]["description"]
         )

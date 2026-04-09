@@ -29,20 +29,23 @@ class MarketDataProvider(FinanceProvider):
     provider_kind = "market_data"
 
     @abstractmethod
-    def get_quote(self, symbol: str) -> dict[str, Any]:
+    def get_quote(self, symbol: str, *, fields: str | list[str] | None = None) -> dict[str, Any]:
         raise NotImplementedError
 
-    def get_quotes(self, symbols: list[str]) -> dict[str, dict[str, Any]]:
+    def get_quotes(self, symbols: list[str], *, fields: str | list[str] | None = None) -> dict[str, dict[str, Any]]:
         normalized: dict[str, dict[str, Any]] = {}
         for symbol in symbols:
             candidate = self._normalize_symbol(symbol)
             if not candidate or candidate in normalized:
                 continue
-            normalized[candidate] = self.get_quote(candidate)
+            normalized[candidate] = self.get_quote(candidate, fields=fields)
         return normalized
 
     @abstractmethod
     def get_history(self, symbol: str, *, timeframe: str, start: datetime | None = None, end: datetime | None = None) -> dict[str, Any]:
+        raise NotImplementedError
+
+    def get_instrument(self, symbol: str, *, projection: str = "fundamental") -> dict[str, Any]:
         raise NotImplementedError
 
     def get_market_hours(self, markets: list[str], *, date=None) -> dict[str, Any]:

@@ -594,7 +594,7 @@ class SchwabMarketDataProvider(MarketDataProvider):
             },
         }
 
-    def get_quotes(self, symbols: list[str]) -> dict[str, dict[str, Any]]:
+    def get_quotes(self, symbols: list[str], *, fields: str | list[str] | None = None) -> dict[str, dict[str, Any]]:
         normalized_symbols: list[str] = []
         seen: set[str] = set()
         for symbol in symbols:
@@ -611,6 +611,7 @@ class SchwabMarketDataProvider(MarketDataProvider):
             params={
                 "symbols": ",".join(normalized_symbols),
                 "indicative": "false",
+                **({"fields": ",".join([str(item).strip() for item in fields if str(item).strip()])} if isinstance(fields, (list, tuple, set)) else ({"fields": str(fields).strip()} if str(fields or "").strip() else {})),
             },
         )
         if isinstance(payload, dict) and str(payload.get("status") or "").strip().lower() == "unavailable":
@@ -626,7 +627,7 @@ class SchwabMarketDataProvider(MarketDataProvider):
             }
         return {symbol: self._normalize_quote_response(symbol, payload) for symbol in normalized_symbols}
 
-    def get_quote(self, symbol: str) -> dict[str, Any]:
+    def get_quote(self, symbol: str, *, fields: str | list[str] | None = None) -> dict[str, Any]:
         symbol = self._normalize_symbol(symbol)
         if not symbol:
             return {
@@ -635,7 +636,7 @@ class SchwabMarketDataProvider(MarketDataProvider):
                 "status": "unavailable",
                 "message": "Schwab quote symbol is empty.",
             }
-        return self.get_quotes([symbol]).get(
+        return self.get_quotes([symbol], fields=fields).get(
             symbol,
             {
                 "provider": self.provider_name,
@@ -644,6 +645,79 @@ class SchwabMarketDataProvider(MarketDataProvider):
                 "message": "Schwab quote request returned no data.",
             },
         )
+
+    @staticmethod
+    def _instrument_payload_for_symbol(payload: Any, symbol: str) -> dict[str, Any]:
+        if isinstance(payload, dict):
+            for key in (symbol, symbol.upper(), symbol.lower()):
+                value = payload.get(key)
+                if isinstance(value, dict):
+                    return value
+                if isinstance(value, list) and value and isinstance(value[0], dict):
+                    return value[0]
+            for key in ("instruments", "instrument", "results", "fundamental"):
+                value = payload.get(key)
+                if isinstance(value, dict):
+                    return value
+                if isinstance(value, list) and value and isinstance(value[0], dict):
+                    return value[0]
+            if len(payload) == 1:
+                only_value = next(iter(payload.values()))
+                if isinstance(only_value, dict):
+                    return only_value
+        if isinstance(payload, list) and payload and isinstance(payload[0], dict):
+            return payload[0]
+        return {}
+
+    def get_instrument(self, symbol: str, *, projection: str = "fundamental") -> dict[str, Any]:
+        symbol = self._normalize_symbol(symbol)
+        if not symbol:
+            return {
+                "provider": self.provider_name,
+                "symbol": "",
+                "projection": projection,
+                "status": "unavailable",
+                "message": "Schwab instrument symbol is empty.",
+            }
+        payload = self._request_json(
+            "GET",
+            "/instruments",
+            params={
+                "symbol": symbol,
+                "projection": str(projection or "fundamental").strip() or "fundamental",
+            },
+        )
+        if isinstance(payload, dict) and str(payload.get("status") or "").strip().lower() == "unavailable":
+            return {
+                "provider": self.provider_name,
+                "symbol": symbol,
+                "projection": projection,
+                "status": payload.get("status") or "unavailable",
+                "message": payload.get("message") or "Schwab instrument request failed.",
+                "status_code": payload.get("status_code"),
+            }
+        payload_dict = payload if isinstance(payload, dict) else {}
+        instrument_payload = self._instrument_payload_for_symbol(payload, symbol)
+        if not instrument_payload:
+            return {
+                "provider": self.provider_name,
+                "symbol": symbol,
+                "projection": projection,
+                "status": payload_dict.get("status") or "unavailable",
+                "message": "Schwab instrument response did not include the requested symbol.",
+                "request_id": payload_dict.get("request_id") or payload_dict.get("requestId") or "",
+            }
+        return {
+            "provider": self.provider_name,
+            "symbol": symbol,
+            "projection": str(projection or "fundamental").strip() or "fundamental",
+            "request_id": payload_dict.get("request_id") or payload_dict.get("requestId") or "",
+            "status": payload_dict.get("status") or "ok",
+            "as_of": datetime.utcnow().isoformat() + "Z",
+            "ticker": instrument_payload.get("symbol") or symbol,
+            "snapshot": instrument_payload,
+            "fundamental": instrument_payload.get("fundamental") or instrument_payload,
+        }
 
     def get_history(self, symbol: str, *, timeframe: str, start=None, end=None) -> dict[str, Any]:
         symbol = self._normalize_symbol(symbol)
@@ -1167,14 +1241,27 @@ class SchwabBrokerageProvider(BrokerageProvider):
                 continue
             instrument = position.get("instrument") or {}
             symbol = str(instrument.get("symbol") or "").strip()
+            asset_type = str(instrument.get("assetType") or position.get("assetType") or "").strip().upper()
+            underlying_symbol = str(
+                instrument.get("underlyingSymbol")
+                or instrument.get("underlying_symbol")
+                or position.get("underlyingSymbol")
+                or position.get("underlying_symbol")
+                or ""
+            ).strip().upper()
+            long_quantity = float(position.get("longQuantity") or 0)
+            short_quantity = float(position.get("shortQuantity") or 0)
+            quantity = long_quantity if long_quantity else (-short_quantity if short_quantity else 0.0)
             normalized_positions.append(
                 {
                     "symbol": symbol,
                     "description": instrument.get("description") or "",
                     "cusip": instrument.get("cusip") or "",
-                    "quantity": float(position.get("longQuantity") or position.get("shortQuantity") or 0),
-                    "long_quantity": float(position.get("longQuantity") or 0),
-                    "short_quantity": float(position.get("shortQuantity") or 0),
+                    "asset_type": asset_type,
+                    "underlying_symbol": underlying_symbol,
+                    "quantity": quantity,
+                    "long_quantity": long_quantity,
+                    "short_quantity": short_quantity,
                     "average_price": float(position.get("averagePrice") or position.get("averageLongPrice") or 0),
                     "market_value": float(position.get("marketValue") or 0),
                     "current_day_profit_loss": float(position.get("currentDayProfitLoss") or 0),

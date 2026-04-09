@@ -10,6 +10,7 @@ from agents.models import Agent
 from core.models import Workspace, WorkspaceMembership
 from runs.models import AgentRun, AgentStep
 from core.services.limits import LimitExceeded
+from memory.models import ScheduledTask
 from memory.scheduled_tasks import create_scheduled_task
 from tools.models import ToolCall, ToolDefinition
 from tools.services.execution import ToolrunnerError, execute_tool_call
@@ -525,7 +526,7 @@ def test_execute_native_run_scheduled_task_skips_toolrunner_http(monkeypatch, fa
     tool_call.refresh_from_db()
     assert tool_call.status == ToolCall.Status.COMPLETED
     assert tool_call.result["scheduled_task_id"] == str(scheduled_task.id)
-    assert tool_call.result["status"] == "awaiting_approval"
+    assert tool_call.result["status"] == "launched"
     assert tool_call.result["launched"] is True
     assert tool_call.result["queued"] is False
 

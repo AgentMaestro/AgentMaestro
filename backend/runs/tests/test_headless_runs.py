@@ -197,7 +197,7 @@ def test_changed_payload_requires_fresh_approval(monkeypatch, headless_task_agen
 
     assert launched_again is True
     second_run.refresh_from_db()
-    assert second_run.status == AgentRun.Status.WAITING_FOR_APPROVAL
+    assert second_run.status == AgentRun.Status.PENDING
     assert second_run.approval_mode == AgentRun.ApprovalMode.REQUESTED
     gate_call = ToolCall.objects.get(run=second_run, tool_name=INTERNAL_HEADLESS_APPROVAL_TOOL_NAME)
     assert gate_call.args["approval_reason"] == HEADLESS_APPROVAL_REASON_DRIFT

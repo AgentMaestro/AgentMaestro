@@ -399,13 +399,7 @@ def test_run_tool_queues_native_google_bridge_cleanup_subrun(monkeypatch, orches
     assert spawned_calls["child_execution_mode"] == AgentRun.ExecutionMode.HEADLESS
 
 
-def test_run_tool_executes_native_spawn_subrun(monkeypatch, orchestration_run):
-    async def fake_run(self, **kwargs):
-        return {"run_id": "", "text": "Focused child summary", "status": "completed", "error": None}
-
-    monkeypatch.setattr("runs.services.headless.LLMRunner.run", fake_run)
-    monkeypatch.setattr("runs.services.headless.send_run_transport_message", lambda **kwargs: True)
-
+def test_run_tool_executes_native_spawn_subrun(orchestration_run):
     result = asyncio.run(run_tool(
         "spawn_subrun",
         {
@@ -418,8 +412,9 @@ def test_run_tool_executes_native_spawn_subrun(monkeypatch, orchestration_run):
     assert result["ok"] is True
     payload = result["result"]
     orchestration_run.refresh_from_db()
-    assert payload["completed_inline"] is True
-    assert payload["resumed_parent"] is True
+    assert payload["completed_inline"] is False
+    assert payload["queued"] is True
+    assert payload["resumed_parent"] is False
     assert payload["parent_status"] == AgentRun.Status.RUNNING
     assert AgentRun.objects.filter(id=payload["child_run_id"], parent_run=orchestration_run).exists()
 
@@ -460,7 +455,7 @@ def test_run_tool_executes_native_send_telegram(monkeypatch, orchestration_run):
             "response": {"message_id": "message-1"},
         }
 
-    monkeypatch.setattr("llm.services.toolrunner_bridge.send_paired_telegram_message", fake_send)
+    monkeypatch.setattr("comms.services.agent_chat_bridge.send_paired_telegram_message", fake_send)
 
     result = asyncio.run(
         run_tool(
